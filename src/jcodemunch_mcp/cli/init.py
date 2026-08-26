@@ -35,7 +35,6 @@ Always use jCodemunch-MCP tools for code navigation. Never fall back to Read, Gr
 - symbol by name → `search_symbols` (add `kind=`, `language=`, `file_pattern=`, `decorator=` to narrow)
 - decorator-aware queries → `search_symbols(decorator="X")` to find symbols with a specific decorator (e.g. `@property`, `@route`); combine with set-difference to find symbols *lacking* a decorator (e.g. "which endpoints lack CSRF protection?")
 - string, comment, config value → `search_text` (supports regex, `context_lines`)
-- database columns (dbt/SQLMesh) → `search_columns`
 
 **Reading code:**
 - before opening any file → `get_file_outline` first
@@ -747,11 +746,11 @@ def _get_active_tools() -> set[str] | None:
     # ⚠⚠ ASK the builder; do not reconstruct its answer (#507). This used to
     # rebuild the active set from `tool_profile` + the baked `_PROFILE_TIERS`,
     # which omits three inputs `tools/list` actually reads:
-    #   1. the SESSION tier override — `set_tool_tier`, and also `announce_model`
-    #      via `resolve_model_to_tier`, so an agent that announces a small model
+    #   1. the SESSION tier override and `announce_model` via
+    #      `resolve_model_to_tier`, so an agent that announces a small model
     #      and then reads the guide diverges without configuring anything;
     #   2. `tool_tier_bundles`, which lets a user redefine what a tier contains;
-    #   3. the `languages` gate, which drops `search_columns` when SQL is off.
+    #   3. the `languages` gate — removed together with `search_columns`.
     # Measured on one process: 70, 15 and 1 unmounted names respectively, and
     # the `init` half of the last two is written into the user's CLAUDE.md and
     # stays there.
@@ -789,7 +788,7 @@ def _front_door_tool_names() -> set[str]:
     except Exception:
         logger.debug("could not read the front-door tool list", exc_info=True)
     return names or {"order", "menu", "route", "jcodemunch_guide",
-                     "announce_model", "set_tool_tier"}
+                     "announce_model"}
 
 
 # Regex matching tool names in backtick contexts:

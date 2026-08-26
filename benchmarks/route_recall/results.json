@@ -1,49 +1,46 @@
 {
   "summary": {
-    "queries": 59,
-    "catalog_actions": 91,
+    "queries": 40,
+    "catalog_actions": 52,
     "menu_recall": {
-      "@1": 47.5,
-      "@3": 66.1,
-      "@5": 74.6,
-      "@10": 78.0
+      "@1": 55.0,
+      "@3": 67.5,
+      "@5": 75.0,
+      "@10": 75.0
     },
     "route_recall": {
-      "@1": 71.2,
-      "@3": 86.4
+      "@1": 75.0,
+      "@3": 87.5
     },
     "blind_floor_kset": {
       "@1": {
         "actions": [
-          "digest"
+          "find_references"
         ],
-        "pct": 5.1
+        "pct": 7.5
       },
       "@3": {
         "actions": [
           "assemble_task_context",
-          "digest",
-          "find_references"
+          "find_references",
+          "get_repo_outline"
         ],
-        "pct": 13.6
+        "pct": 20.0
       }
     },
     "route_vs_floor_pts": {
-      "@1": 66.1,
-      "@3": 72.8
+      "@1": 67.5,
+      "@3": 67.5
     },
     "route_path_split": {
-      "rule": 24,
-      "fallback": 35
+      "rule": 17,
+      "fallback": 23
     },
     "route_misses": [
-      "list functions longer than 50 lines with deep nesting in the parser",
       "I need this function plus everything it imports",
       "is this name used anywhere at all or can I drop it",
       "what is the import chain from this file outward",
-      "how often does this file get touched",
       "which modules are too tangled together",
-      "pull down a github project so I can explore it",
       "I just edited a file, refresh it"
     ],
     "menu_misses": [
@@ -51,27 +48,22 @@
       "which file contains the message connection refused",
       "find every place we swallow an exception without logging",
       "show me the body of this function",
-      "I need this function plus everything it imports",
       "who calls this",
       "what is the import chain from this file outward",
       "what are the natural modules in this system",
       "how concentrated is this codebase and how deep does it nest",
-      "how risky is this pull request",
-      "how often does this file get touched",
       "how complicated is this one function",
-      "how much of this code actually runs in production"
+      "which modules are too tangled together"
     ],
     "leakage": {
-      "mean_name_overlap": 0.133,
-      "mean_desc_overlap": 0.36,
-      "queries_containing_target_name_token": 19,
+      "mean_name_overlap": 0.154,
+      "mean_desc_overlap": 0.346,
+      "queries_containing_target_name_token": 15,
       "high_leak_queries": [
-        "what columns does the orders model have",
         "which symbols changed between these two commits",
         "is it safe to delete this function",
         "read this folder in so I can ask about it",
         "I just edited a file, refresh it",
-        "draw me a diagram of that",
         "give me a plan for renaming this across the codebase"
       ]
     }
@@ -87,7 +79,7 @@
       "route_rank": 1,
       "route_path": "rule",
       "menu_top3": [
-        "finalize_handoff",
+        "search_ast",
         "get_ranked_context",
         "get_session_stats"
       ],
@@ -110,7 +102,7 @@
       "menu_top3": [
         "get_file_content",
         "get_file_outline",
-        "get_file_risk"
+        "get_file_tree"
       ],
       "route_proposed": [
         "search_text"
@@ -128,9 +120,9 @@
       "route_rank": 1,
       "route_path": "rule",
       "menu_top3": [
-        "find_similar_symbols",
         "find_references",
-        "find_unused_paths"
+        "find_similar_symbols",
+        "find_dead_code"
       ],
       "route_proposed": [
         "search_ast",
@@ -141,46 +133,24 @@
       "leak_desc": 0.111
     },
     {
-      "query": "what columns does the orders model have",
-      "group": "locate",
-      "targets": [
-        "search_columns"
-      ],
-      "menu_rank": 1,
-      "route_rank": 1,
-      "route_path": "fallback",
-      "menu_top3": [
-        "search_columns",
-        "announce_model",
-        "import_runtime_signal"
-      ],
-      "route_proposed": [
-        "search_columns",
-        "announce_model",
-        "import_runtime_signal"
-      ],
-      "leak_name": 0.5,
-      "leak_desc": 0.286
-    },
-    {
       "query": "list functions longer than 50 lines with deep nesting in the parser",
       "group": "locate",
       "targets": [
         "search_ast",
         "winnow_symbols"
       ],
-      "menu_rank": 4,
-      "route_rank": null,
+      "menu_rank": 2,
+      "route_rank": 2,
       "route_path": "fallback",
       "menu_top3": [
         "list_repos",
-        "list_workspaces",
-        "get_untested_symbols"
+        "search_ast",
+        "get_dead_code_v2"
       ],
       "route_proposed": [
         "list_repos",
-        "list_workspaces",
-        "get_untested_symbols"
+        "search_ast",
+        "get_dead_code_v2"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.333
@@ -220,12 +190,12 @@
       "menu_top3": [
         "find_similar_symbols",
         "index_dependency",
-        "diff_health_radar"
+        "get_changed_symbols"
       ],
       "route_proposed": [
         "find_similar_symbols",
         "index_dependency",
-        "diff_health_radar"
+        "get_changed_symbols"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.2
@@ -234,21 +204,20 @@
       "query": "which symbols changed between these two commits",
       "group": "locate",
       "targets": [
-        "get_changed_symbols",
-        "get_symbol_diff"
+        "get_changed_symbols"
       ],
       "menu_rank": 1,
       "route_rank": 1,
       "route_path": "fallback",
       "menu_top3": [
         "get_changed_symbols",
-        "get_pr_risk_profile",
-        "get_symbol_diff"
+        "get_hotspots",
+        "get_related_symbols"
       ],
       "route_proposed": [
         "get_changed_symbols",
-        "get_pr_risk_profile",
-        "get_symbol_diff"
+        "get_hotspots",
+        "get_related_symbols"
       ],
       "leak_name": 0.667,
       "leak_desc": 0.714
@@ -280,7 +249,6 @@
       "query": "I do not know this repo, what should I look at first",
       "group": "locate",
       "targets": [
-        "digest",
         "get_repo_map",
         "get_repo_outline",
         "suggest_queries"
@@ -290,13 +258,13 @@
       "route_path": "fallback",
       "menu_top3": [
         "get_repo_map",
-        "get_parity_map",
-        "embed_repo"
+        "get_repo_health",
+        "get_repo_outline"
       ],
       "route_proposed": [
         "get_repo_map",
-        "get_parity_map",
-        "embed_repo"
+        "get_repo_health",
+        "get_repo_outline"
       ],
       "leak_name": 0.333,
       "leak_desc": 0.545
@@ -311,9 +279,9 @@
       "route_rank": 1,
       "route_path": "rule",
       "menu_top3": [
-        "get_parity_map",
-        "finalize_handoff",
-        "get_call_hierarchy"
+        "get_call_hierarchy",
+        "search_ast",
+        "get_impact_preview"
       ],
       "route_proposed": [
         "get_symbol_source"
@@ -333,12 +301,12 @@
       "menu_top3": [
         "get_file_content",
         "get_file_outline",
-        "get_file_risk"
+        "get_file_tree"
       ],
       "route_proposed": [
         "get_file_content",
         "get_file_outline",
-        "get_file_risk"
+        "get_file_tree"
       ],
       "leak_name": 0.333,
       "leak_desc": 0.111
@@ -349,18 +317,18 @@
       "targets": [
         "get_context_bundle"
       ],
-      "menu_rank": null,
+      "menu_rank": 5,
       "route_rank": null,
       "route_path": "fallback",
       "menu_top3": [
-        "get_parity_map",
         "search_ast",
-        "get_file_risk"
+        "check_references",
+        "check_rename_safe"
       ],
       "route_proposed": [
-        "get_parity_map",
         "search_ast",
-        "get_file_risk"
+        "check_references",
+        "check_rename_safe"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.125
@@ -377,12 +345,12 @@
       "menu_top3": [
         "get_file_outline",
         "find_similar_symbols",
-        "get_delivery_metrics"
+        "get_file_content"
       ],
       "route_proposed": [
         "get_file_outline",
         "find_similar_symbols",
-        "get_delivery_metrics"
+        "get_file_content"
       ],
       "leak_name": 0.333,
       "leak_desc": 0.625
@@ -400,8 +368,8 @@
       "route_path": "rule",
       "menu_top3": [
         "check_edit_safe",
-        "get_endpoint_impact",
-        "get_changed_symbols"
+        "get_changed_symbols",
+        "search_ast"
       ],
       "route_proposed": [
         "get_blast_radius"
@@ -422,7 +390,7 @@
       "menu_top3": [
         "check_edit_safe",
         "get_symbol_provenance",
-        "check_embedding_drift"
+        "get_dead_code_v2"
       ],
       "route_proposed": [
         "get_call_hierarchy"
@@ -437,18 +405,18 @@
         "find_importers",
         "find_references"
       ],
-      "menu_rank": 2,
-      "route_rank": 2,
+      "menu_rank": 1,
+      "route_rank": 1,
       "route_path": "fallback",
       "menu_top3": [
-        "import_runtime_signal",
         "find_importers",
-        "get_coupling_metrics"
+        "get_repo_map",
+        "get_tectonic_map"
       ],
       "route_proposed": [
-        "import_runtime_signal",
         "find_importers",
-        "get_coupling_metrics"
+        "get_repo_map",
+        "get_tectonic_map"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.6
@@ -461,13 +429,13 @@
         "check_references",
         "find_references"
       ],
-      "menu_rank": 5,
+      "menu_rank": 4,
       "route_rank": null,
       "route_path": "rule",
       "menu_top3": [
-        "find_unused_paths",
-        "get_group_contracts",
-        "get_parity_map"
+        "check_rename_safe",
+        "get_blast_radius",
+        "get_dead_code_v2"
       ],
       "route_proposed": [
         "search_text"
@@ -486,79 +454,13 @@
       "route_path": "rule",
       "menu_top3": [
         "get_class_hierarchy",
-        "find_implementations",
-        "get_endpoint_impact"
+        "find_implementations"
       ],
       "route_proposed": [
         "get_class_hierarchy"
       ],
       "leak_name": 0.333,
       "leak_desc": 0.444
-    },
-    {
-      "query": "do we have circular imports",
-      "group": "relate",
-      "targets": [
-        "get_dependency_cycles"
-      ],
-      "menu_rank": 1,
-      "route_rank": 1,
-      "route_path": "fallback",
-      "menu_top3": [
-        "get_dependency_cycles",
-        "check_references",
-        "check_rename_safe"
-      ],
-      "route_proposed": [
-        "get_dependency_cycles",
-        "check_references",
-        "check_rename_safe"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.2
-    },
-    {
-      "query": "what breaks if I change the POST orders endpoint",
-      "group": "relate",
-      "targets": [
-        "get_endpoint_impact"
-      ],
-      "menu_rank": 1,
-      "route_rank": 1,
-      "route_path": "rule",
-      "menu_top3": [
-        "get_endpoint_impact",
-        "check_edit_safe",
-        "get_signal_chains"
-      ],
-      "route_proposed": [
-        "get_endpoint_impact",
-        "get_blast_radius"
-      ],
-      "leak_name": 0.333,
-      "leak_desc": 0.778
-    },
-    {
-      "query": "how does an incoming HTTP request travel through this code",
-      "group": "relate",
-      "targets": [
-        "get_signal_chains"
-      ],
-      "menu_rank": 3,
-      "route_rank": 3,
-      "route_path": "fallback",
-      "menu_top3": [
-        "find_dead_code",
-        "get_dead_code_v2",
-        "get_signal_chains"
-      ],
-      "route_proposed": [
-        "find_dead_code",
-        "get_dead_code_v2",
-        "get_signal_chains"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.3
     },
     {
       "query": "who wrote this and why has it kept changing",
@@ -583,28 +485,6 @@
       "leak_desc": 0.444
     },
     {
-      "query": "which of our repos depend on which other ones",
-      "group": "relate",
-      "targets": [
-        "get_cross_repo_map"
-      ],
-      "menu_rank": 2,
-      "route_rank": 2,
-      "route_path": "fallback",
-      "menu_top3": [
-        "list_repos",
-        "get_cross_repo_map",
-        "get_dependency_cycles"
-      ],
-      "route_proposed": [
-        "list_repos",
-        "get_cross_repo_map",
-        "get_dependency_cycles"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.625
-    },
-    {
       "query": "what is the import chain from this file outward",
       "group": "relate",
       "targets": [
@@ -614,14 +494,14 @@
       "route_rank": null,
       "route_path": "fallback",
       "menu_top3": [
-        "get_signal_chains",
         "find_importers",
-        "import_runtime_signal"
+        "get_architecture_metrics",
+        "get_file_content"
       ],
       "route_proposed": [
-        "get_signal_chains",
         "find_importers",
-        "import_runtime_signal"
+        "get_architecture_metrics",
+        "get_file_content"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.444
@@ -630,7 +510,6 @@
       "query": "give me an overview of this codebase",
       "group": "shape",
       "targets": [
-        "digest",
         "get_repo_map",
         "get_repo_outline"
       ],
@@ -663,12 +542,12 @@
       "menu_top3": [
         "get_repo_outline",
         "get_repo_map",
-        "diff_health_radar"
+        "list_repos"
       ],
       "route_proposed": [
         "get_repo_outline",
         "get_repo_map",
-        "diff_health_radar"
+        "list_repos"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.286
@@ -684,7 +563,6 @@
       "route_path": "rule",
       "menu_top3": [
         "get_call_hierarchy",
-        "get_coupling_metrics",
         "index_dependency"
       ],
       "route_proposed": [
@@ -692,70 +570,6 @@
       ],
       "leak_name": 0.0,
       "leak_desc": 0.25
-    },
-    {
-      "query": "where is every route annotation in the project",
-      "group": "shape",
-      "targets": [
-        "get_decorator_census"
-      ],
-      "menu_rank": 2,
-      "route_rank": 1,
-      "route_path": "rule",
-      "menu_top3": [
-        "get_project_intel",
-        "get_decorator_census",
-        "get_signal_chains"
-      ],
-      "route_proposed": [
-        "get_decorator_census",
-        "search_symbols",
-        "search_text"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.75
-    },
-    {
-      "query": "what packages make up this monorepo",
-      "group": "shape",
-      "targets": [
-        "list_workspaces"
-      ],
-      "menu_rank": 2,
-      "route_rank": 2,
-      "route_path": "fallback",
-      "menu_top3": [
-        "index_dependency",
-        "list_workspaces"
-      ],
-      "route_proposed": [
-        "index_dependency",
-        "list_workspaces"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.167
-    },
-    {
-      "query": "what does the docker and CI setup do here",
-      "group": "shape",
-      "targets": [
-        "get_project_intel"
-      ],
-      "menu_rank": 1,
-      "route_rank": 1,
-      "route_path": "fallback",
-      "menu_top3": [
-        "get_project_intel",
-        "diff_health_radar",
-        "get_pr_risk_profile"
-      ],
-      "route_proposed": [
-        "get_project_intel",
-        "diff_health_radar",
-        "get_pr_risk_profile"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.444
     },
     {
       "query": "how concentrated is this codebase and how deep does it nest",
@@ -778,45 +592,24 @@
       "leak_desc": 0.3
     },
     {
-      "query": "which symbols matter most architecturally",
-      "group": "shape",
-      "targets": [
-        "get_symbol_importance"
-      ],
-      "menu_rank": 1,
-      "route_rank": 1,
-      "route_path": "fallback",
-      "menu_top3": [
-        "get_symbol_importance",
-        "get_changed_symbols",
-        "get_related_symbols"
-      ],
-      "route_proposed": [
-        "get_symbol_importance",
-        "get_changed_symbols",
-        "get_related_symbols"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.6
-    },
-    {
       "query": "what are the riskiest parts of this repo",
       "group": "assess",
       "targets": [
-        "get_file_risk",
         "get_hotspots",
         "get_repo_health"
       ],
-      "menu_rank": 6,
-      "route_rank": 1,
-      "route_path": "rule",
+      "menu_rank": 3,
+      "route_rank": 3,
+      "route_path": "fallback",
       "menu_top3": [
-        "get_pr_risk_profile",
-        "embed_repo",
-        "get_cross_repo_map"
+        "get_repo_map",
+        "resolve_repo",
+        "get_repo_health"
       ],
       "route_proposed": [
-        "get_file_risk"
+        "get_repo_map",
+        "resolve_repo",
+        "get_repo_health"
       ],
       "leak_name": 0.333,
       "leak_desc": 0.25
@@ -895,83 +688,21 @@
         "find_dead_code",
         "get_dead_code_v2"
       ],
-      "menu_rank": 2,
-      "route_rank": 2,
-      "route_path": "fallback",
-      "menu_top3": [
-        "find_unused_paths",
-        "find_dead_code",
-        "get_dead_code_v2"
-      ],
-      "route_proposed": [
-        "find_unused_paths",
-        "find_dead_code",
-        "get_dead_code_v2"
-      ],
-      "leak_name": 0.333,
-      "leak_desc": 0.333
-    },
-    {
-      "query": "which functions have no test covering them",
-      "group": "assess",
-      "targets": [
-        "get_untested_symbols"
-      ],
       "menu_rank": 1,
       "route_rank": 1,
       "route_path": "fallback",
       "menu_top3": [
-        "get_untested_symbols",
-        "test_summarizer",
-        "get_dead_code_v2"
+        "find_dead_code",
+        "get_dead_code_v2",
+        "check_delete_safe"
       ],
       "route_proposed": [
-        "get_untested_symbols",
-        "test_summarizer",
-        "get_dead_code_v2"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.429
-    },
-    {
-      "query": "how risky is this pull request",
-      "group": "assess",
-      "targets": [
-        "get_pr_risk_profile"
-      ],
-      "menu_rank": null,
-      "route_rank": 1,
-      "route_path": "rule",
-      "menu_top3": [
-        "test_summarizer"
-      ],
-      "route_proposed": [
-        "get_pr_risk_profile"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.0
-    },
-    {
-      "query": "how often does this file get touched",
-      "group": "assess",
-      "targets": [
-        "get_churn_rate"
-      ],
-      "menu_rank": null,
-      "route_rank": null,
-      "route_path": "fallback",
-      "menu_top3": [
-        "get_file_content",
-        "get_file_outline",
-        "get_file_tree"
-      ],
-      "route_proposed": [
-        "get_file_content",
-        "get_file_outline",
-        "get_file_tree"
+        "find_dead_code",
+        "get_dead_code_v2",
+        "check_delete_safe"
       ],
       "leak_name": 0.333,
-      "leak_desc": 0.143
+      "leak_desc": 0.333
     },
     {
       "query": "how complicated is this one function",
@@ -983,9 +714,9 @@
       "route_rank": 1,
       "route_path": "rule",
       "menu_top3": [
-        "get_file_risk",
-        "get_parity_map",
-        "get_untested_symbols"
+        "search_ast",
+        "assemble_task_context",
+        "check_delete_safe"
       ],
       "route_proposed": [
         "get_symbol_complexity"
@@ -997,46 +728,23 @@
       "query": "which modules are too tangled together",
       "group": "assess",
       "targets": [
-        "get_architecture_metrics",
-        "get_coupling_metrics"
+        "get_architecture_metrics"
       ],
-      "menu_rank": 5,
+      "menu_rank": null,
       "route_rank": null,
       "route_path": "fallback",
       "menu_top3": [
-        "get_decorator_census",
         "check_delete_safe",
-        "check_edit_safe"
+        "check_edit_safe",
+        "get_call_hierarchy"
       ],
       "route_proposed": [
-        "get_decorator_census",
         "check_delete_safe",
-        "check_edit_safe"
+        "check_edit_safe",
+        "get_call_hierarchy"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.167
-    },
-    {
-      "query": "are we breaking our own layering rules",
-      "group": "assess",
-      "targets": [
-        "get_layer_violations"
-      ],
-      "menu_rank": 2,
-      "route_rank": 2,
-      "route_path": "fallback",
-      "menu_top3": [
-        "get_group_contracts",
-        "get_layer_violations",
-        "check_rename_safe"
-      ],
-      "route_proposed": [
-        "get_group_contracts",
-        "get_layer_violations",
-        "check_rename_safe"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.286
     },
     {
       "query": "which code should be pulled out into a shared module",
@@ -1062,93 +770,6 @@
       "leak_desc": 0.4
     },
     {
-      "query": "how much of this code actually runs in production",
-      "group": "assess",
-      "targets": [
-        "get_runtime_coverage"
-      ],
-      "menu_rank": null,
-      "route_rank": 1,
-      "route_path": "rule",
-      "menu_top3": [
-        "find_dead_code",
-        "get_dead_code_v2",
-        "get_changed_symbols"
-      ],
-      "route_proposed": [
-        "get_runtime_coverage"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.111
-    },
-    {
-      "query": "which functions are hit hardest at runtime",
-      "group": "assess",
-      "targets": [
-        "find_hot_paths"
-      ],
-      "menu_rank": 3,
-      "route_rank": 3,
-      "route_path": "fallback",
-      "menu_top3": [
-        "get_runtime_coverage",
-        "import_runtime_signal",
-        "find_hot_paths"
-      ],
-      "route_proposed": [
-        "get_runtime_coverage",
-        "import_runtime_signal",
-        "find_hot_paths"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.286
-    },
-    {
-      "query": "what have we shipped that stuck over the last month",
-      "group": "assess",
-      "targets": [
-        "get_delivery_metrics"
-      ],
-      "menu_rank": 1,
-      "route_rank": 1,
-      "route_path": "fallback",
-      "menu_top3": [
-        "get_delivery_metrics",
-        "test_summarizer",
-        "get_blast_radius"
-      ],
-      "route_proposed": [
-        "get_delivery_metrics",
-        "test_summarizer",
-        "get_blast_radius"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.4
-    },
-    {
-      "query": "is our CLAUDE.md wasting tokens on stale instructions",
-      "group": "assess",
-      "targets": [
-        "audit_agent_config",
-        "suggest_corrections"
-      ],
-      "menu_rank": 1,
-      "route_rank": 1,
-      "route_path": "fallback",
-      "menu_top3": [
-        "audit_agent_config",
-        "jcodemunch_guide",
-        "suggest_corrections"
-      ],
-      "route_proposed": [
-        "audit_agent_config",
-        "jcodemunch_guide",
-        "suggest_corrections"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.444
-    },
-    {
       "query": "read this folder in so I can ask about it",
       "group": "ingest",
       "targets": [
@@ -1159,13 +780,13 @@
       "route_path": "fallback",
       "menu_top3": [
         "index_folder",
-        "get_delivery_metrics",
-        "get_repo_map"
+        "get_repo_map",
+        "get_changed_symbols"
       ],
       "route_proposed": [
         "index_folder",
-        "get_delivery_metrics",
-        "get_repo_map"
+        "get_repo_map",
+        "get_changed_symbols"
       ],
       "leak_name": 0.5,
       "leak_desc": 0.1
@@ -1176,18 +797,18 @@
       "targets": [
         "index_repo"
       ],
-      "menu_rank": 5,
-      "route_rank": null,
+      "menu_rank": 2,
+      "route_rank": 2,
       "route_path": "fallback",
       "menu_top3": [
-        "get_project_intel",
         "assemble_task_context",
-        "get_churn_rate"
+        "index_repo",
+        "list_repos"
       ],
       "route_proposed": [
-        "get_project_intel",
         "assemble_task_context",
-        "get_churn_rate"
+        "index_repo",
+        "list_repos"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.2
@@ -1199,43 +820,21 @@
         "index_file",
         "register_edit"
       ],
-      "menu_rank": 5,
+      "menu_rank": 4,
       "route_rank": null,
       "route_path": "fallback",
       "menu_top3": [
-        "get_file_risk",
         "get_file_content",
-        "get_file_outline"
+        "get_file_outline",
+        "get_file_tree"
       ],
       "route_proposed": [
-        "get_file_risk",
         "get_file_content",
-        "get_file_outline"
+        "get_file_outline",
+        "get_file_tree"
       ],
       "leak_name": 0.5,
       "leak_desc": 0.286
-    },
-    {
-      "query": "turn on semantic search for this project",
-      "group": "ingest",
-      "targets": [
-        "embed_repo"
-      ],
-      "menu_rank": 7,
-      "route_rank": 1,
-      "route_path": "rule",
-      "menu_top3": [
-        "plan_turn",
-        "get_project_intel",
-        "search_columns"
-      ],
-      "route_proposed": [
-        "embed_repo",
-        "search_symbols",
-        "search_text"
-      ],
-      "leak_name": 0.0,
-      "leak_desc": 0.571
     },
     {
       "query": "how many tokens have I saved so far",
@@ -1248,8 +847,8 @@
       "route_path": "rule",
       "menu_top3": [
         "get_session_stats",
-        "get_decorator_census",
-        "get_delivery_metrics"
+        "get_symbol_source",
+        "get_ranked_context"
       ],
       "route_proposed": [
         "get_session_stats",
@@ -1283,7 +882,6 @@
       "query": "what changed since I last worked on this",
       "group": "meta",
       "targets": [
-        "digest",
         "get_changed_symbols"
       ],
       "menu_rank": 1,
@@ -1291,32 +889,14 @@
       "route_path": "rule",
       "menu_top3": [
         "get_changed_symbols",
-        "digest",
-        "get_watch_status"
+        "get_hotspots",
+        "get_blast_radius"
       ],
       "route_proposed": [
         "get_changed_symbols"
       ],
       "leak_name": 0.333,
-      "leak_desc": 0.5
-    },
-    {
-      "query": "draw me a diagram of that",
-      "group": "transform",
-      "targets": [
-        "render_diagram"
-      ],
-      "menu_rank": 1,
-      "route_rank": 1,
-      "route_path": "rule",
-      "menu_top3": [
-        "render_diagram"
-      ],
-      "route_proposed": [
-        "render_diagram"
-      ],
-      "leak_name": 0.5,
-      "leak_desc": 0.333
+      "leak_desc": 0.25
     },
     {
       "query": "give me a plan for renaming this across the codebase",
@@ -1345,13 +925,13 @@
       "targets": [
         "assemble_task_context"
       ],
-      "menu_rank": 3,
+      "menu_rank": 1,
       "route_rank": 1,
       "route_path": "rule",
       "menu_top3": [
-        "set_tool_tier",
-        "get_parity_map",
-        "assemble_task_context"
+        "assemble_task_context",
+        "get_hotspots",
+        "search_ast"
       ],
       "route_proposed": [
         "assemble_task_context"

@@ -172,10 +172,9 @@ def _build_skill_content() -> str:
         "",
         "## Multi-process awareness (v1.106.0)",
         "",
-        "If multiple agent sessions share this repo, `get_watch_status` "
-        "surfaces `watcher_holder` per repo (pid, client_id, started_at, "
-        "age_seconds). When `watched_by_another_process: true`, our watcher "
-        "is intentionally idle — another process is keeping the index fresh.",
+        "If multiple agent sessions share this repo, the watcher is "
+        "coordinated automatically: when another process is already keeping "
+        "the index fresh, the local watcher stays idle.",
         "",
         "## Tier model",
         "",

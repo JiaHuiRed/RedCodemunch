@@ -1,3 +1,7 @@
+# RedCodemunch — Agent Guide
+
+> **Fork context:** This repo is **RedCodemunch**, a fork of jcodemunch-mcp trimmed from 91 to 52 tools based on real session usage (2026-08-26). Why & what changed: [README.cn.md](README.cn.md) · [CHANGELOG.md](CHANGELOG.md). Every tool named below exists in this fork.
+
 ## Code Exploration Policy
 
 Always use jCodemunch-MCP tools for code navigation. Never fall back to Read, Grep, Glob, or Bash for code exploration.
@@ -11,7 +15,6 @@ Always use jCodemunch-MCP tools for code navigation. Never fall back to Read, Gr
 - symbol by name → `search_symbols` (add `kind=`, `language=`, `file_pattern=`, `decorator=` to narrow)
 - decorator-aware queries → `search_symbols(decorator="X")` to find symbols with a specific decorator (e.g. `@property`, `@route`); combine with set-difference to find symbols *lacking* a decorator (e.g. "which endpoints lack CSRF protection?")
 - string, comment, config value → `search_text` (supports regex, `context_lines`)
-- database columns (dbt/SQLMesh) → `search_columns`
 
 **Reading code:**
 - before opening any file → `get_file_outline` first
@@ -63,8 +66,6 @@ Always use jCodemunch-MCP tools for code navigation. Never fall back to Read, Gr
 - `_meta.confidence` (0–1) — calibrated retrieval-quality score on `search_symbols` / `plan_turn` / `get_ranked_context`. ≥ 0.8 → trust the top result; ≤ 0.4 → widen the search or report a gap
 - `_meta.freshness` — `{fresh, edited_uncommitted, stale_index}` counts plus `repo_is_stale` flag. Per-result `_freshness` field on each symbol entry
 - If `repo_is_stale=true`, suggest `index_folder` before claiming current behaviour
-- For latency / cache health: `analyze_perf` (in-memory by default; `window=1h|24h|7d|all` reads `~/.code-index/telemetry.db` when `perf_telemetry_enabled` is on)
-- After a representative workload on a new repo, run `tune_weights` to learn per-repo retrieval weights from the ranking ledger
 
 ## Model-Driven Tool Tiering
 

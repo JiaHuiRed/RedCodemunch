@@ -1,7 +1,7 @@
 {
  "summary": {
   "cases": 40,
-  "catalog_actions": 91,
+  "catalog_actions": 52,
   "sample": {
    "source": "rknighton/jcm-route-benchmark-corpus v0.1.0 (MIT-0), data/route_candidates_v0.1.csv sha256 25d09f6ae9e8e668d1a3b9a30755cf8dbd7d063ce08868529cc152fdfe84b86e",
    "seed": 421,
@@ -72,26 +72,24 @@
    "curated_rule_fired": 31,
    "catalog_fallback": 9,
    "recommendations_returned": {
-    "1": 2,
-    "2": 27,
+    "1": 3,
+    "2": 26,
     "3": 11
    },
    "rank1_picks": {
     "search_symbols": 24,
+    "announce_model": 2,
     "assemble_task_context": 2,
     "search_text": 2,
+    "jcodemunch_guide": 2,
     "check_delete_safe": 1,
     "get_context_bundle": 1,
-    "get_symbol_complexity": 1,
-    "tune_weights": 1,
+    "get_related_symbols": 1,
     "get_changed_symbols": 1,
-    "announce_model": 1,
     "get_file_outline": 1,
     "get_call_hierarchy": 1,
-    "set_tool_tier": 1,
-    "audit_agent_config": 1,
-    "check_edit_safe": 1,
-    "jcodemunch_guide": 1
+    "index_repo": 1,
+    "check_edit_safe": 1
    },
    "note": "A curated rule returns ONE action, so @3 cannot recover from a wrong @1 on those cases -- which is why @3 barely moves. The single dominant rule is /find|locate|where is|look up|search for|definition of/ -> search_symbols, and agent-emitted task strings almost all open with 'find'. Human wording varies far more, so this collapse is specific to the emitted distribution and invisible in the human-phrased corpora."
   },
@@ -271,9 +269,9 @@
    ],
    "emitted_task": "Determine whether the context-assembly scale parameter is driven by file count or symbol count, comparing 10 files with 1,000 symbols versus 100 files with 1,000 symbols",
    "route_actions": [
-    "get_symbol_complexity",
     "get_related_symbols",
-    "get_file_risk"
+    "get_symbol_complexity",
+    "get_changed_symbols"
    ],
    "rank": null,
    "leak_name": 0.5,
@@ -287,9 +285,9 @@
    ],
    "emitted_task": "How does the optimizer normalize or weight provided intervals when scoring, and does mixing long and short intervals distort the score?",
    "route_actions": [
-    "tune_weights",
     "announce_model",
-    "find_implementations"
+    "find_implementations",
+    "get_related_symbols"
    ],
    "rank": null,
    "leak_name": 0.0,
@@ -322,7 +320,7 @@
    ],
    "rank": null,
    "leak_name": 0.333,
-   "leak_desc": 0.167
+   "leak_desc": 0.111
   },
   {
    "case_id": "4143abdd-a492-5fda-b53e-827ee600ebc3",
@@ -366,8 +364,8 @@
    "emitted_task": "assess how complete the jdocmunch-mcp documentation-database CLI is, and whether it supports adding a parallel task/agent like a Documentation Explorer in one command",
    "route_actions": [
     "assemble_task_context",
-    "audit_agent_config",
-    "get_signal_chains"
+    "jcodemunch_guide",
+    "find_similar_symbols"
    ],
    "rank": null,
    "leak_name": 0.0,
@@ -416,7 +414,7 @@
    "route_actions": [
     "announce_model",
     "index_dependency",
-    "embed_repo"
+    "index_repo"
    ],
    "rank": null,
    "leak_name": 0.0,
@@ -591,9 +589,9 @@
    ],
    "emitted_task": "Determine whether the configured hook makes it impossible to spawn a top-level thread that fails to close its associated munch tool",
    "route_actions": [
-    "set_tool_tier",
     "jcodemunch_guide",
-    "summarize_repo"
+    "get_architecture_metrics",
+    "get_repo_health"
    ],
    "rank": null,
    "leak_name": 0.0,
@@ -608,9 +606,9 @@
    ],
    "emitted_task": "index the 7 days to die game XML files and config assets into the existing 7d2d repo index so they're searchable without going to the install directory",
    "route_actions": [
-    "audit_agent_config",
     "index_repo",
-    "index_file"
+    "index_file",
+    "index_folder"
    ],
    "rank": null,
    "leak_name": 0.333,
@@ -673,8 +671,7 @@
    ],
    "emitted_task": "Update the feedback loop arrows in the architecture diagram so the two arrow colors are clearly distinguished and labeled: one for database work (add annotations, corrected metadata, relationship records) and one for configuration/YAML policy work (adjust alias thresholds, graph policy), both flowing back into the database",
    "route_actions": [
-    "check_edit_safe",
-    "render_diagram"
+    "check_edit_safe"
    ],
    "rank": null,
    "leak_name": 0.0,
@@ -754,8 +751,8 @@
    "emitted_task": "Correct the tool inventory: remove J-Munch MCP and Munch Studio Server as installable tools, keeping only JCodemunch, JDocMunch, and JDataMunch, and reclassify the rest as supporting tooling, docs, or examples",
    "route_actions": [
     "jcodemunch_guide",
-    "finalize_handoff",
-    "set_tool_tier"
+    "list_repos",
+    "get_session_context"
    ],
    "rank": null,
    "leak_name": 0.0,
@@ -775,7 +772,7 @@
    ],
    "rank": 2,
    "leak_name": 0.0,
-   "leak_desc": 0.143
+   "leak_desc": 0.0
   }
  ]
 }

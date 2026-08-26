@@ -91,7 +91,6 @@ Controls which languages are parsed during indexing. When set, only listed langu
 ```
 
 When `"sql"` is removed from the list:
-- `search_columns` tool is auto-removed from `list_tools()`
 - The dbt context provider is disabled
 - SQL files are not parsed (no symbols extracted)
 
@@ -101,7 +100,7 @@ The full list of supported language identifiers matches the values in `LANGUAGE_
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `disabled_tools` | list | `["test_summarizer"]` | Tool names to remove from `list_tools()` schema. Ships with `test_summarizer` disabled — it is a diagnostic that probes the AI summarizer — so out of the box the schema carries 90 of the 91 canonical tools. Delete it from the list to expose it. Project-level disabling also blocks execution via `call_tool()`. |
+| `disabled_tools` | list | `[]` | Tool names to remove from `list_tools()` schema and block execution via `call_tool()`. Defaults to an empty list — no tools are pre-disabled. |
 | `descriptions` | dict | `{}` | Override tool and parameter descriptions. See [Descriptions](#descriptions) below. |
 | `tool_profile` | string | `"full"` | Which tool tier `list_tools()` exposes: `core`, `standard`, or `full`. New installs are *initialized* to the compact core tier by `init`/`install` writing this key; the in-code fallback stays `"full"` so existing installs are unaffected. `set_tool_tier` switches tiers in-session without editing config; `jcodemunch_guide` is present at every tier. |
 | `tool_tier_bundles` | dict | the built-in tiers (`{"core": [...], "standard": [...]}`, too long to inline) | Override the tool lists per tier. Ships populated with the same names as the built-in `_TOOL_TIER_CORE` / `_TOOL_TIER_STANDARD` constants, so the shipped value and the fallback agree. Missing or malformed entries fall back to those constants. |

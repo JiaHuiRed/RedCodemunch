@@ -25,9 +25,7 @@ mislabelled. They become a THIRD answer â€” ``events_semantic_label_unknown`` â€
 disclosed by every consumer that reads the column.
 
 Helper names are prefixed ``_r186``; a plain ``_state`` helper once outranked
-``token_tracker._State`` for a golden replay query and cost a red CI run. The
-replay fixture also queries ``analyze_perf`` and ``build_identity_channel``, so no
-helper here carries either name.
+``token_tracker._State`` for a golden replay query and cost a red CI run.
 """
 
 from __future__ import annotations
@@ -44,7 +42,6 @@ from jcodemunch_mcp.retrieval import regret as _r186_regret
 from jcodemunch_mcp.retrieval import tuning as _r186_tuning
 from jcodemunch_mcp.retrieval.tuning import WeightTuner
 from jcodemunch_mcp.storage import token_tracker as _r186_tt
-from jcodemunch_mcp.tools import analyze_perf as _r186_perf_mod
 from jcodemunch_mcp.tools.get_ranked_context import get_ranked_context
 
 _R186_FUSION_TOOL = "get_ranked_context_fusion"
@@ -357,37 +354,6 @@ class TestRegretDoesNotClusterOnTheMislabel:
             "acme/widget", storage_path=_r186_ledger["base"], all_time=True
         )
         assert "events_semantic_label_unknown" not in out
-
-
-# --- analyze_perf ------------------------------------------------------------ #
-
-
-class TestPerfLedgerSummaryDiscloses:
-    def test_mislabelled_rows_are_counted_apart(self):
-        rows = [_r186_row(_R186_FUSION_TOOL, 1) for _ in range(3)]
-        rows += [_r186_row("search_symbols", 1) for _ in range(2)]
-        summary = _r186_perf_mod._ledger_summary(rows, top=10)
-        by_repo = summary["by_repo"][0]
-        assert by_repo["semantic_used"] == 2
-        assert by_repo["semantic_label_unknown"] == 3
-
-    def test_a_clean_ledger_keeps_the_old_shape(self):
-        """Compatibility is testable, not asserted: no new key for a caller whose
-        ledger holds no mislabelled row."""
-        rows = [_r186_row("search_symbols", 1), _r186_row("search_symbols", 0)]
-        summary = _r186_perf_mod._ledger_summary(rows, top=10)
-        assert "semantic_label_unknown" not in summary["by_repo"][0]
-        assert summary["by_repo"][0]["semantic_used"] == 1
-
-    def test_a_pre_fix_ledger_is_still_readable(self, _r186_ledger):
-        """The rows are history. Nothing here rewrites or drops them."""
-        _r186_seed(
-            _r186_ledger["state"], tool=_R186_FUSION_TOOL, count=5,
-            confidence=0.5, semantic=True,
-        )
-        rows = _r186_tt.ranking_db_query(base_path=_r186_ledger["base"], repo="acme/widget")
-        assert len(rows) == 5
-        assert all(r[9] == 1 for r in rows), "history must not be rewritten"
 
 
 # --- drift guard ------------------------------------------------------------- #

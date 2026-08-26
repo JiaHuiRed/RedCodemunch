@@ -22,7 +22,7 @@ def test_registry_loads_all_tier1_encoders():
     expected = {
         "find_references", "find_importers", "get_call_hierarchy",
         "get_dependency_graph", "get_blast_radius", "get_impact_preview",
-        "get_signal_chains", "get_dependency_cycles", "get_tectonic_map",
+        "get_tectonic_map",
         "search_symbols", "search_text", "search_ast",
         "get_file_outline", "get_repo_outline", "get_ranked_context",
     }
@@ -220,20 +220,6 @@ def test_get_blast_radius_round_trip():
     assert out["symbol"]["name"] == "get_user"
     assert isinstance(out["overall_risk_score"], float)
     assert out["overall_risk_score"] == 0.75
-
-
-def test_get_dependency_cycles_round_trip():
-    resp = {
-        "repo": "acme/app",
-        "cycle_count": 1,
-        "cycles": [["a.py", "b->c.py", "c.py"]],
-        "_meta": {"timing_ms": 1.0},
-    }
-    out = _rt("get_dependency_cycles", resp)
-    assert len(out["cycles"]) == 1
-    assert isinstance(out["cycle_count"], int)
-    assert out["cycle_count"] == 1
-    assert out["cycles"][0] == ["a.py", "b->c.py", "c.py"]
 
 
 def test_search_text_round_trip():
@@ -542,50 +528,6 @@ def test_get_repo_outline_default_path_never_drops_data():
         ],
         "_meta": {"timing_ms": 1.0},
     }),
-    ("get_signal_chains", {
-        "repo": "a/b",
-        "gateway_count": 1,
-        "chain_count": 2,
-        "orphan_symbols": 0,
-        "orphan_symbol_pct": 0.0,
-        "chains": [
-            {
-                "gateway": "routes.py::create_user",
-                "gateway_name": "create_user",
-                "kind": "http",
-                "label": "POST /api/users",
-                "depth": 3,
-                "reach": 4,
-                "symbols": ["create_user", "validate", "save", "notify"],
-                "files_touched": ["routes.py", "validators.py", "repo.py", "mailer.py"],
-                "file_count": 4,
-            },
-            {
-                "gateway": "cli.py::seed_db",
-                "gateway_name": "seed_db",
-                "kind": "cli",
-                "label": "cli:seed-db",
-                "depth": 2,
-                "reach": 3,
-                "symbols": ["seed_db", "generate", "insert"],
-                "files_touched": ["cli.py", "factory.py", "repo.py"],
-                "file_count": 3,
-            },
-        ],
-        "kind_summary": {"http": 1, "cli": 1},
-        "_meta": {"timing_ms": 5.0, "max_depth": 5, "include_tests": True, "symbols_on_chains": 6, "total_functions_methods": 12},
-    }),
-    ("get_signal_chains", {
-        "repo": "a/b",
-        "symbol": "validate",
-        "symbol_id": "validators.py::validate",
-        "chain_count": 1,
-        "chains": [
-            {"gateway": "routes.py::create_user", "gateway_name": "create_user", "kind": "http", "label": "POST /api/users", "chain_reach": 4, "depth_from_gateway": 1},
-        ],
-        "on_no_chain": False,
-        "_meta": {"timing_ms": 3.0, "max_depth": 5, "include_tests": False, "symbols_on_chains": 1, "total_functions_methods": 8, "total_gateways": 1},
-    }),
     ("search_ast", {
         "result_count": 1,
         "query": "call:print",
@@ -622,78 +564,6 @@ def test_remaining_tier1_round_trip(tool, resp):
     for table_key in ("affected_symbols", "chains", "results", "context_items", "plates"):
         if table_key in resp:
             assert table_key in out, f"{tool} lost {table_key}"
-
-
-def test_get_signal_chains_lookup_round_trip():
-    resp = {
-        "repo": "a/b",
-        "symbol": "validate",
-        "symbol_id": "validators.py::validate",
-        "chain_count": 1,
-        "chains": [
-            {"gateway": "routes.py::create_user", "gateway_name": "create_user", "kind": "http", "label": "POST /api/users", "chain_reach": 4, "depth_from_gateway": 1},
-        ],
-        "on_no_chain": False,
-        "_meta": {"timing_ms": 3.0, "max_depth": 5, "include_tests": False, "symbols_on_chains": 1, "total_functions_methods": 8, "total_gateways": 1},
-    }
-    out = _rt("get_signal_chains", resp)
-    assert out["symbol"] == "validate"
-    assert out["symbol_id"] == "validators.py::validate"
-    assert out["on_no_chain"] is False
-    assert out["chains"][0]["chain_reach"] == 4
-    assert out["chains"][0]["depth_from_gateway"] == 1
-    assert out["_meta"] == {"timing_ms": 3.0, "total_gateways": 1}
-
-
-def test_get_signal_chains_discovery_meta_shape():
-    resp = {
-        "repo": "a/b",
-        "gateway_count": 1,
-        "chain_count": 2,
-        "orphan_symbols": 0,
-        "orphan_symbol_pct": 0.0,
-        "chains": [
-            {
-                "gateway": "routes.py::create_user",
-                "gateway_name": "create_user",
-                "kind": "http",
-                "label": "POST /api/users",
-                "depth": 3,
-                "reach": 4,
-                "symbols": ["create_user", "validate", "save", "notify"],
-                "files_touched": ["routes.py", "validators.py", "repo.py", "mailer.py"],
-                "file_count": 4,
-            },
-        ],
-        "kind_summary": {"http": 1},
-        "_meta": {"timing_ms": 5.0, "max_depth": 5, "include_tests": True, "symbols_on_chains": 4, "total_functions_methods": 12},
-    }
-    out = _rt("get_signal_chains", resp)
-    assert out["_meta"] == {
-        "timing_ms": 5.0,
-        "max_depth": 5,
-        "include_tests": True,
-        "symbols_on_chains": 4,
-        "total_functions_methods": 12,
-    }
-
-
-def test_get_signal_chains_no_gateway_round_trip():
-    resp = {
-        "repo": "a/b",
-        "gateway_count": 0,
-        "chain_count": 0,
-        "chains": [],
-        "gateway_warning": "No gateways detected.",
-        "_meta": {"timing_ms": 1.0},
-    }
-    out = _rt("get_signal_chains", resp)
-    assert out["gateway_count"] == 0
-    assert out["chain_count"] == 0
-    assert out["gateway_warning"] == "No gateways detected."
-    assert isinstance(out["chains"], list)
-    assert out["chains"] == []
-    assert out["_meta"] == {"timing_ms": 1.0}
 
 
 def test_get_tectonic_map_round_trip_realistic():

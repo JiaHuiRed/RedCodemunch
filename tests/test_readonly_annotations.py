@@ -66,12 +66,12 @@ def test_representative_read_and_write_tools():
             f"{read_tool} should be read-only"
         )
 
-    # check_embedding_drift is annotation-only non-read-only (force=true re-pins
+    # check_embedding_drift was annotation-only non-read-only (force=true re-pins
     # the canary) — a dual-mode tool NOT in STATE_CHANGING_ACTIONS but still marked
-    # mutating for plan mode, matching jdoc/jdata (v1.108.110).
+    # mutating for plan mode, matching jdoc/jdata (v1.108.110). It is gone from
+    # the RedCodemunch catalog; register_edit covers the edit-registration path.
     for write_tool in (
         "index_folder", "register_edit", "index_dependency",
-        "set_tool_tier", "check_embedding_drift",
     ):
         assert write_tool in by_name, f"{write_tool} unexpectedly absent"
         assert by_name[write_tool].annotations.readOnlyHint is False, (

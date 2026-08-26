@@ -179,10 +179,10 @@ class TestContributions:
         rows, names = catalog
         # A query mixing a token the target scores on with tokens it does not,
         # and tripping no rule, so the lexical branch is the one under test.
-        task = "decorator zzqqx wwvvk"
+        task = "winnow zzqqx wwvvk"
         assert not _counter.classify_intent(task, names)
         exp = explain_route(
-            task, "get_decorator_census", catalog_rows=rows, catalog_names=names,
+            task, "winnow_symbols", catalog_rows=rows, catalog_names=names,
         )
         assert exp["contributions"]
         assert any(c["points"] == 0.0 for c in exp["contributions"])

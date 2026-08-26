@@ -71,8 +71,8 @@ def test_counter_surface_collapses_to_front_door():
     _surface("counter")
     names = {t.name for t in asyncio.run(server.list_tools())}
     assert counter.FRONT_DOOR <= names
-    # Always-present controls survive so tier switching / guide still work.
-    assert {"set_tool_tier", "announce_model", "jcodemunch_guide"} <= names
+    # Always-present controls survive so the guide still works.
+    assert {"announce_model", "jcodemunch_guide"} <= names
     # Everything else is collapsed away.
     assert "search_symbols" not in names
     assert len(names) <= 8
@@ -179,8 +179,6 @@ def test_route_classify_intent_pure():
 @pytest.mark.parametrize(
     "task,expected",
     [
-        ("draw me a diagram of that", "render_diagram"),
-        ("visualize the call graph", "render_diagram"),
         ("give me a plan for renaming this across the codebase", "plan_refactoring"),
         ("walk me through extracting this into a shared module", "plan_refactoring"),
         ("set me up with everything I need to debug this bug", "assemble_task_context"),
@@ -209,32 +207,7 @@ def test_diagram_rule_does_not_steal_the_graph_rules():
         )
 
 
-def test_transform_rules_yield_primary_to_the_tool_that_feeds_them():
-    """render_diagram consumes another tool's output and has nothing to draw
-    without it, so a task naming BOTH must lead with the data fetch and offer
-    the render as an alternate. This is why the transform block sits late in
-    _INTENT_RULES; moving it above the graph rules silently inverts the pair."""
-    actions = [
-        r["action"]
-        for r in counter.classify_intent("visualize the call graph", server._catalog_names())
-    ]
-    assert actions[0] == "get_call_hierarchy", f"data fetch must lead; got {actions}"
-    assert "render_diagram" in actions, f"render must still be offered; got {actions}"
-
-
 # --- Scorer: function words must not outrank real terms --------------------- #
-
-def test_pronoun_does_not_outrank_the_matching_action():
-    """Regression: idf is computed over description prose, so "me" -- absent from
-    every description -- drew the HIGHEST weight in the query, then substring-hit
-    a third of the catalog inside snake_case names. Measured before the fix:
-    check_rena(me)_safe scored 19.3 on "draw me a diagram of that" against
-    render_diagram's 16.5 for the actual word "diagram"."""
-    rows = server._catalog_rows()
-    hits = [r["action"] for r in counter.search_catalog(rows, "draw me a diagram of that", 5)]
-    assert hits[0] == "render_diagram", f"expected render_diagram first; got {hits}"
-    assert "check_rename_safe" not in hits[:3], f"pronoun noise resurfaced: {hits}"
-
 
 def test_whole_word_name_hit_outranks_a_fragment():
     """A token matching a name SEGMENT is evidence; the same token buried inside a

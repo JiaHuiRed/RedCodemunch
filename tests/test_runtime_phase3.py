@@ -1,4 +1,4 @@
-"""Phase 3: get_runtime_coverage, find_hot_paths, find_unused_paths."""
+"""Phase 3: get_runtime_coverage, find_hot_paths."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 
 from jcodemunch_mcp.runtime.ingest import ingest_otel_file
 from jcodemunch_mcp.tools.find_hot_paths import find_hot_paths
-from jcodemunch_mcp.tools.find_unused_paths import find_unused_paths
 from jcodemunch_mcp.tools.get_runtime_coverage import get_runtime_coverage
 from jcodemunch_mcp.storage.sqlite_store import SQLiteIndexStore
 
@@ -182,63 +181,3 @@ def test_hot_paths_top_n_clamps(tmp_path):
     assert len(out["results"]) == 2
 
 
-# ──────────────────────────────────────────────────────────────────────
-# find_unused_paths
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_unused_paths_refuses_when_no_runtime(tmp_path):
-    """With zero runtime data, every symbol would trivially qualify — refuse."""
-    _seed_index(tmp_path)
-    out = find_unused_paths(repo="local/phase3", storage_path=str(tmp_path))
-    assert out["results"] == []
-    assert out["_meta"]["runtime_data_present"] is False
-
-
-def test_unused_paths_lists_dark_symbols(tmp_path):
-    _store, db_path, repo = _seed_index(tmp_path)
-    _ingest_baseline(db_path, tmp_path)
-    out = find_unused_paths(repo=repo, storage_path=str(tmp_path))
-    names = sorted(r["name"] for r in out["results"])
-    # create_user and delete_user have no runtime hits.
-    # logout/login/get_users were hit. test_* and main excluded by default.
-    assert "create_user" in names
-    assert "delete_user" in names
-    assert "logout" not in names
-    assert "test_get_users" not in names  # excluded as test file
-    assert "main" not in names             # excluded as entry-point filename
-
-
-def test_unused_paths_include_tests(tmp_path):
-    _store, db_path, repo = _seed_index(tmp_path)
-    _ingest_baseline(db_path, tmp_path)
-    out = find_unused_paths(repo=repo, include_tests=True, storage_path=str(tmp_path))
-    names = {r["name"] for r in out["results"]}
-    assert "test_get_users" in names
-
-
-def test_unused_paths_include_entry_points(tmp_path):
-    _store, db_path, repo = _seed_index(tmp_path)
-    _ingest_baseline(db_path, tmp_path)
-    out = find_unused_paths(repo=repo, include_entry_points=True, storage_path=str(tmp_path))
-    names = {r["name"] for r in out["results"]}
-    assert "main" in names
-
-
-def test_unused_paths_reason_classification(tmp_path):
-    _store, db_path, repo = _seed_index(tmp_path)
-    _ingest_baseline(db_path, tmp_path)
-    out = find_unused_paths(repo=repo, storage_path=str(tmp_path))
-    for entry in out["results"]:
-        assert entry["reason"] == "no_runtime_evidence"
-        assert entry["last_seen"] == ""
-
-
-def test_unused_paths_meta_counts(tmp_path):
-    _store, db_path, repo = _seed_index(tmp_path)
-    _ingest_baseline(db_path, tmp_path)
-    out = find_unused_paths(repo=repo, storage_path=str(tmp_path))
-    assert out["_meta"]["total_symbols_scanned"] == 7
-    assert out["_meta"]["excluded_test_files"] >= 1
-    assert out["_meta"]["excluded_entry_points"] >= 1
-    assert out["_meta"]["runtime_data_present"] is True

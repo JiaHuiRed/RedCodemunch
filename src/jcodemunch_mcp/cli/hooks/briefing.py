@@ -103,15 +103,14 @@ def run_subagentstart() -> int:
             "search_text, get_ranked_context, find_importers, find_references, "
             "check_references, get_dependency_graph, get_class_hierarchy, "
             "get_call_hierarchy, get_blast_radius, get_impact_preview, "
-            "get_changed_symbols, find_dead_code, get_untested_symbols, "
-            "get_symbol_complexity, get_churn_rate, get_hotspots, get_repo_health, "
-            "get_coupling_metrics, get_extraction_candidates, check_rename_safe, "
+            "get_changed_symbols, find_dead_code, "
+            "get_symbol_complexity, get_hotspots, get_repo_health, "
+            "get_extraction_candidates, check_rename_safe, "
             "plan_refactoring, "
             "get_file_outline, get_file_tree, get_repo_outline, index_folder, "
-            "index_repo, embed_repo, plan_turn, suggest_queries, "
+            "index_repo, plan_turn, suggest_queries, "
             "get_session_context, get_session_snapshot, get_session_stats, "
-            "get_cross_repo_map, get_layer_violations, audit_agent_config, "
-            "get_dead_code_v2, search_columns"
+            "get_dead_code_v2"
         )
         parts.append("\nUse `plan_turn` to get recommended approach for your task.")
 

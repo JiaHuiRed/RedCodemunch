@@ -1,22 +1,14 @@
-"""v1.108.0 — explicit-paths indexing (Change A) + workspace-scoped project
-intel (Change C).
+"""v1.108.0 — explicit-paths indexing (Change A).
 
 Change A adds `paths=[...]` to `index_folder` plus a `--paths-from FILE | -`
 CLI flag on `jcodemunch-mcp index` so an agent can index exactly the files
 git just touched without paying the cost of a full tree walk.
-
-Change C adds a `scope_path` kwarg to `get_project_intel` and a new
-`list_workspaces` tool that enumerates monorepo members from
-pnpm/yarn/npm/turborepo/lerna/rush/Go/Cargo manifests.
 """
 
 from __future__ import annotations
 
 import io
-import json
 from pathlib import Path
-
-import pytest
 
 
 # --------------------------------------------------------------------------- #
@@ -222,145 +214,3 @@ class TestLoadIndexPathsFromArg:
         paths, err = _load_index_paths_from_arg(str(tmp_path / "missing.txt"))
         assert paths is None
         assert "cannot read" in (err or "").lower()
-
-
-# --------------------------------------------------------------------------- #
-# Change C — list_workspaces + get_project_intel(scope_path=)                 #
-# --------------------------------------------------------------------------- #
-
-@pytest.fixture
-def pnpm_monorepo(tmp_path: Path) -> Path:
-    """A small pnpm-style monorepo: packages/api + packages/web."""
-    (tmp_path / "pnpm-workspace.yaml").write_text(
-        "packages:\n  - 'packages/*'\n",
-        encoding="utf-8",
-    )
-    pkg_api = tmp_path / "packages" / "api"
-    pkg_api.mkdir(parents=True)
-    (pkg_api / "package.json").write_text(json.dumps({"name": "@acme/api"}))
-    (pkg_api / "Dockerfile").write_text("FROM node:20\nEXPOSE 3000\n")
-    (pkg_api / "index.js").write_text("function main(){return 1}\n")
-
-    pkg_web = tmp_path / "packages" / "web"
-    pkg_web.mkdir(parents=True)
-    (pkg_web / "package.json").write_text(json.dumps({"name": "@acme/web"}))
-    (pkg_web / "index.js").write_text("function root(){return 2}\n")
-
-    return tmp_path
-
-
-@pytest.fixture
-def pnpm_indexed(pnpm_monorepo: Path):
-    from jcodemunch_mcp.tools.index_folder import index_folder
-    result = index_folder(
-        path=str(pnpm_monorepo),
-        use_ai_summaries=False,
-        incremental=False,
-    )
-    assert result.get("success") is True, result
-    return result["repo"]
-
-
-class TestListWorkspaces:
-    def test_pnpm_detected(self, pnpm_indexed):
-        from jcodemunch_mcp.tools.list_workspaces import list_workspaces
-        out = list_workspaces(repo=pnpm_indexed)
-        assert "error" not in out, out
-        ws = out["result"]["workspaces"]
-        paths = {w["path"] for w in ws}
-        assert "packages/api" in paths
-        assert "packages/web" in paths
-        names = {w["package_name"] for w in ws}
-        assert "@acme/api" in names
-        assert "@acme/web" in names
-        assert "pnpm" in out["result"]["managers"]
-        assert out["result"]["is_monorepo"] is True
-
-    def test_non_monorepo_returns_empty_list(self, tmp_path: Path):
-        # Index a flat folder
-        (tmp_path / "a.py").write_text("def a():\n    return 1\n")
-        from jcodemunch_mcp.tools.index_folder import index_folder
-        idx_res = index_folder(
-            path=str(tmp_path), use_ai_summaries=False, incremental=False,
-        )
-        assert idx_res.get("success") is True
-
-        from jcodemunch_mcp.tools.list_workspaces import list_workspaces
-        out = list_workspaces(repo=idx_res["repo"])
-        assert "error" not in out, out
-        assert out["result"]["workspaces"] == []
-        assert out["result"]["is_monorepo"] is False
-
-    def test_cargo_workspace(self, tmp_path: Path):
-        (tmp_path / "Cargo.toml").write_text(
-            '[workspace]\nmembers = ["crates/foo", "crates/bar"]\n',
-            encoding="utf-8",
-        )
-        foo = tmp_path / "crates" / "foo"
-        foo.mkdir(parents=True)
-        (foo / "Cargo.toml").write_text('[package]\nname = "foo"\nversion = "0.1.0"\n')
-        (foo / "src").mkdir()
-        (foo / "src" / "lib.rs").write_text("pub fn hello() {}\n")
-
-        bar = tmp_path / "crates" / "bar"
-        bar.mkdir(parents=True)
-        (bar / "Cargo.toml").write_text('[package]\nname = "bar"\nversion = "0.1.0"\n')
-        (bar / "src").mkdir()
-        (bar / "src" / "lib.rs").write_text("pub fn there() {}\n")
-
-        from jcodemunch_mcp.tools.index_folder import index_folder
-        idx_res = index_folder(path=str(tmp_path), use_ai_summaries=False, incremental=False)
-        assert idx_res.get("success") is True
-
-        from jcodemunch_mcp.tools.list_workspaces import list_workspaces
-        out = list_workspaces(repo=idx_res["repo"])
-        ws = out["result"]["workspaces"]
-        paths = {w["path"] for w in ws}
-        names = {w["package_name"] for w in ws}
-        assert "crates/foo" in paths
-        assert "crates/bar" in paths
-        assert "foo" in names
-        assert "bar" in names
-        assert "cargo" in out["result"]["managers"]
-
-
-class TestScopedProjectIntel:
-    def test_scope_path_restricts_to_subtree(self, pnpm_indexed):
-        from jcodemunch_mcp.tools.get_project_intel import get_project_intel
-        # Repo-wide: should find the per-package Dockerfile too
-        full = get_project_intel(repo=pnpm_indexed, category="infra")
-        assert "error" not in full
-        # Scoped: should still find the Dockerfile (it's under packages/api)
-        scoped = get_project_intel(
-            repo=pnpm_indexed, category="infra", scope_path="packages/api",
-        )
-        assert "error" not in scoped, scoped
-        assert scoped.get("scope_path") == "packages/api"
-        # The scoped query found at least one Dockerfile
-        api_infra = scoped["categories"].get("infra", {})
-        assert len(api_infra.get("dockerfiles") or []) >= 1
-
-    def test_scope_path_excludes_other_packages(self, pnpm_indexed):
-        from jcodemunch_mcp.tools.get_project_intel import get_project_intel
-        scoped_web = get_project_intel(
-            repo=pnpm_indexed, category="deps", scope_path="packages/web",
-        )
-        assert "error" not in scoped_web
-        deps = scoped_web["categories"].get("deps", {})
-        # When scoped to packages/web, the api package.json should NOT be found
-        pkg_jsons = deps.get("npm_packages") or deps.get("package_json") or []
-        # Either it's there with just web's package.json, or there's a scripts dict
-        # The most important assertion: api's package.json isn't surfaced
-        flat_str = json.dumps(deps)
-        assert "@acme/api" not in flat_str
-
-    def test_invalid_scope_path_errors(self, pnpm_indexed):
-        from jcodemunch_mcp.tools.get_project_intel import get_project_intel
-        out = get_project_intel(repo=pnpm_indexed, scope_path="does/not/exist")
-        assert "error" in out
-        assert "not a directory" in out["error"].lower()
-
-    def test_scope_path_traversal_rejected(self, pnpm_indexed):
-        from jcodemunch_mcp.tools.get_project_intel import get_project_intel
-        out = get_project_intel(repo=pnpm_indexed, scope_path="../etc")
-        assert "error" in out

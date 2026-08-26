@@ -111,7 +111,9 @@ def test_meta_json_blob_survives_delimiter_heavy_content():
 def test_every_schema_declares_verdict_as_a_meta_json_blob():
     """The allowlist is strict, so a schema that forgets verdict silently drops it."""
     mods = _schema_modules()
-    assert len(mods) >= 15, f"expected the full schema set, found {len(mods)}"
+    # 13 after the RedCodemunch slimming cut (2 tier-1 schemas removed with
+    # their tools); the assert is a floor, not an exact pin.
+    assert len(mods) >= 13, f"expected the full schema set, found {len(mods)}"
     missing = [m.__name__ for m in mods if "verdict" not in getattr(m, "_META_JSON", ())]
     assert not missing, f"schemas that would drop _meta.verdict: {missing}"
 

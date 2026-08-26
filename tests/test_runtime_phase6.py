@@ -59,7 +59,6 @@ if _HAS_STARLETTE:
     )
     from jcodemunch_mcp.runtime.http_routes import make_runtime_routes
     from jcodemunch_mcp.storage.sqlite_store import SQLiteIndexStore
-    from jcodemunch_mcp.tools.get_redaction_log import get_redaction_log
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -374,57 +373,3 @@ def test_otel_route_handles_gzip_content_encoding(app, tmp_path):
     assert resp.json()["mapped"] == 1
 
 
-# ──────────────────────────────────────────────────────────────────────
-# get_redaction_log MCP tool
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_get_redaction_log_surfaces_live_ingest_redactions(app, tmp_path):
-    _seed_index(tmp_path)
-    payload = (
-        '2026-05-10T12:00:00Z ERROR contacting alice@example.com:\n'
-        'Traceback (most recent call last):\n'
-        '  File "app/handlers.py", line 12, in process_request\n'
-        '    pass\n'
-        'ValueError: contacting alice@example.com\n'
-    )
-    client = TestClient(app)
-    resp = client.post(
-        "/runtime/stack",
-        content=payload,
-        headers={"X-JCM-Repo": "local/phase6"},
-    )
-    assert resp.status_code == 200
-    out = get_redaction_log(repo="local/phase6", storage_path=str(tmp_path))
-    assert "error" not in out, out
-    assert out["total_redactions"] >= 1
-    assert "stack_log" in out["sources"]
-    labels = {p["pattern"] for p in out["patterns"]}
-    assert "email_address" in labels
-
-
-def test_get_redaction_log_filters_by_source(app, tmp_path):
-    _seed_index(tmp_path)
-    # Fire a stack-log ingest so there's at least one source row.
-    payload = (
-        'ERROR something:\n'
-        'Traceback (most recent call last):\n'
-        '  File "app/handlers.py", line 12, in process_request\n'
-        '    pass\n'
-        'ValueError: alice@example.com\n'
-    )
-    TestClient(app).post(
-        "/runtime/stack",
-        content=payload,
-        headers={"X-JCM-Repo": "local/phase6"},
-    )
-    out = get_redaction_log(repo="local/phase6", source="otel", storage_path=str(tmp_path))
-    # No otel ingests happened → no patterns surface for that source.
-    assert out["total_redactions"] == 0
-
-
-def test_get_redaction_log_rejects_unknown_source(tmp_path):
-    _seed_index(tmp_path)
-    out = get_redaction_log(repo="local/phase6", source="bogus", storage_path=str(tmp_path))
-    assert "error" in out
-    assert "unknown source" in out["error"]

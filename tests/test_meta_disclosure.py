@@ -1,7 +1,7 @@
-"""Tests for T15: _meta.methodology + _meta.confidence_level on all 6 analytical tools.
+"""Tests for T15: _meta.methodology + _meta.confidence_level on all 5 analytical tools.
 
 All tests use the small_index / medium_index / hierarchy_index fixtures from conftest.py.
-Tools that require git or a local repo (get_churn_rate, get_hotspots) are tested for
+Tools that require git or a local repo (get_hotspots) are tested for
 _meta field presence; git-specific results are not asserted.
 """
 
@@ -10,7 +10,6 @@ import pytest
 from jcodemunch_mcp.tools.get_call_hierarchy import get_call_hierarchy
 from jcodemunch_mcp.tools.get_impact_preview import get_impact_preview
 from jcodemunch_mcp.tools.get_symbol_complexity import get_symbol_complexity
-from jcodemunch_mcp.tools.get_churn_rate import get_churn_rate
 from jcodemunch_mcp.tools.get_hotspots import get_hotspots
 from jcodemunch_mcp.tools.get_repo_health import get_repo_health
 from jcodemunch_mcp.tools.search_symbols import search_symbols
@@ -123,38 +122,6 @@ class TestGetSymbolComplexityMeta:
             pytest.skip("no function in index")
         r = get_symbol_complexity(repo=repo, symbol_id=sid, storage_path=store)
         assert r["_meta"]["confidence_level"] == "medium"
-
-
-class TestGetChurnRateMeta:
-
-    def test_methodology_present_no_git(self, small_index):
-        """get_churn_rate returns error for no-git repos but we can test _meta on an error
-        path. Since small_index has no git repo, we test the error path doesn't hide meta.
-        Use a real git-available scenario via the tool's internal error response.
-        """
-        # The tool may return an error for no-git index; that's OK — we just
-        # check that if it returns a success, _meta has the right fields.
-        repo, store = small_index["repo"], small_index["store"]
-        r = get_churn_rate(repo=repo, target="utils.py", storage_path=store)
-        # Either error (no source_root or not a git repo) or success
-        if "error" in r:
-            pytest.skip("get_churn_rate requires git; skipping meta check for error path")
-        assert "_meta" in r
-        assert r["_meta"].get("methodology") == "git_log"
-        assert r["_meta"].get("confidence_level") == "high"
-
-    def test_methodology_field_name(self):
-        """Verify the methodology constant is correct (import-only check)."""
-        from jcodemunch_mcp.tools.get_churn_rate import get_churn_rate as _fn
-        import inspect
-        src = inspect.getsource(_fn)
-        assert '"git_log"' in src
-
-    def test_confidence_field_name(self):
-        from jcodemunch_mcp.tools.get_churn_rate import get_churn_rate as _fn
-        import inspect
-        src = inspect.getsource(_fn)
-        assert '"high"' in src
 
 
 class TestGetHotspotsMeta:

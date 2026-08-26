@@ -68,10 +68,7 @@ FRONT_DOOR: frozenset[str] = frozenset({"order", "menu", "route"})
 # dispatching one, so the front door reads as read-only by default.
 STATE_CHANGING_ACTIONS: frozenset[str] = frozenset({
     "index_repo", "index_folder", "index_file", "index_dependency",
-    "invalidate_cache", "register_edit", "tune_weights",
-    "set_tool_tier", "announce_model", "embed_repo",
-    "import_runtime_signal", "summarize_repo",
-    "finalize_handoff",  # persists a session handoff record (#374)
+    "register_edit", "announce_model",
 })
 
 # Forward-looking tripwire. ``order`` refuses to dispatch any action whose name
@@ -208,7 +205,6 @@ EXAMPLES: dict[str, dict] = {
     # symbol + text search
     "search_symbols": {"repo": "owner/name", "query": "parse config", "kind": "function"},
     "search_text": {"repo": "owner/name", "query": "TODO|FIXME", "is_regex": True, "context_lines": 2},
-    "search_columns": {"repo": "owner/name", "query": "user_id"},
     "search_ast": {"repo": "owner/name", "pattern": "nesting:>4"},
     # reading
     "get_file_outline": {"repo": "owner/name", "file_path": "src/app.py"},
@@ -220,13 +216,6 @@ EXAMPLES: dict[str, dict] = {
     "get_repo_outline": {"repo": "owner/name"},
     "get_repo_map": {"repo": "owner/name", "token_budget": 4000},
     "get_file_tree": {"repo": "owner/name", "path_prefix": "src/"},
-    "digest": {"repo": "owner/name"},
-    "finalize_handoff": {
-        "repo": "owner/name",
-        "task": "Audit the authentication surface",
-        "sections": [{"heading": "Findings", "content": "…markdown authored by the assistant…"}],
-        "evidence_refs": ["src/auth.py::login#function"],
-    },
     # relationships / impact
     "find_importers": {"repo": "owner/name", "file_path": "src/app.py"},
     "find_references": {"repo": "owner/name", "identifier": "parse_config"},
@@ -365,17 +354,6 @@ _INTENT_RULES: list[tuple[re.Pattern, str, str]] = [
     # the cases it names. Same reasoning as the .212 transform block, one
     # direction reversed.
 
-    # An HTTP endpoint is not a symbol, and `get_blast_radius` cannot accept
-    # one -- so its `\b(break|impact|affect)\b` rule claiming this query handed
-    # the user a tool that could not answer it.
-    (re.compile(r"\b(get|post|put|patch|delete|head|options)\s+/?\S*\b.*\b"
-                r"(endpoint|route|api)\b|"
-                r"\b(endpoint|route)\b[^.]{0,40}\b(break|breaks|impact|affect|"
-                r"depend|change|changing)\b|"
-                r"\b(break|breaks|impact|affect|change|changing)\b[^.]{0,40}\b"
-                r"(endpoint|api route)\b", re.I),
-     "get_endpoint_impact", "Endpoint-centric impact: what breaks if this HTTP route changes."),
-
     # "break callers if I edit this signature" is a SAFETY question. The callers
     # rule below answers a narrower one (who calls it) and stops there.
     (re.compile(r"\b(safe|safely|going to break|will (it|this) break|hurt anyone|"
@@ -392,13 +370,6 @@ _INTENT_RULES: list[tuple[re.Pattern, str, str]] = [
                 r"caught\b[^.]{0,30}\b(ignor\w+|nothing)|"
                 r"bare (except|catch)|anti[- ]?pattern)\b", re.I),
      "search_ast", "AST pattern match for structural anti-patterns a name search cannot express."),
-
-    # A census of annotations, not a lookup of one.
-    (re.compile(r"\b(every|all|inventory|census|which|what)\b[^.]{0,40}\b"
-                r"(decorators?|annotations?|attributes?)\b|"
-                r"\b(decorators?|annotations?)\b[^.]{0,30}\b(across|used|show up|"
-                r"in the (project|codebase|repo))\b", re.I),
-     "get_decorator_census", "Repo-wide census of decorators / annotations / attributes."),
 
     # ⚠ "semantic search for this project" contains the literal substring
     # "search for", which is why `search_symbols` claimed a request to BUILD the
@@ -438,9 +409,6 @@ _INTENT_RULES: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"\b(concentrated|concentration|piled into|spread out|evenly)\b|"
                 r"\bhow (deep|many layers)\b[^.]{0,30}\b(nest\w*|dependenc\w+|go)\b", re.I),
      "get_architecture_metrics", "Concentration, dependency depth and modularity in one call."),
-    (re.compile(r"\b(riskiest|most risky|most dangerous|careful editing|be careful)\b|"
-                r"\bwhich (files?|parts?)\b[^.]{0,30}\b(risk|risky|careful)\b", re.I),
-     "get_file_risk", "Per-symbol composite risk, highest first."),
     (re.compile(r"\b(risky|risk|nervous|dangerous|safe)\b[^.]{0,40}\b"
                 r"(pull request|\bpr\b|merge|merging|branch)\b|"
                 r"\b(pull request|\bpr\b|merging)\b[^.]{0,25}\b(risk|risky|safe)\b", re.I),
@@ -449,11 +417,6 @@ _INTENT_RULES: list[tuple[re.Pattern, str, str]] = [
                 r"[^.]{0,30}\b(function|method|this one|it)\b|"
                 r"\bhow many branches\b|\bcyclomatic\b", re.I),
      "get_symbol_complexity", "Cyclomatic complexity, nesting and parameter count for one symbol."),
-    (re.compile(r"\b(actually (runs?|runs in|executed)|really (runs?|used))\b"
-                r"[^.]{0,30}\b(production|prod|live|runtime)\b|"
-                r"\b(never|not) (get |gets |be )?exercised\b|"
-                r"\bhow much of (this|the) code\b[^.]{0,30}\b(runs?|used)\b", re.I),
-     "get_runtime_coverage", "Runtime coverage: which indexed symbols have trace evidence."),
 
     # --- stateful: session / recent-change intents --------------------------- #
     # Read the session journal / working-tree delta, not the whole index.
@@ -505,23 +468,6 @@ _INTENT_RULES: list[tuple[re.Pattern, str, str]] = [
      "get_dependency_graph", "Map file-level import dependencies."),
     (re.compile(r"\bhealth\b|\bhotspot|\bcomplexit|\bchurn\b|\brisk\b", re.I),
      "get_repo_health", "Repo-level health, hotspots, and risk."),
-    # --- transform: act on another tool's OUTPUT ------------------------------ #
-    # These consume a prior result rather than querying the index, so none of the
-    # words an agent would actually type ("diagram", "a plan for renaming") appear
-    # in the catalog text the lexical fallback ranks over -- measured route recall
-    # for this whole group was 0% before these rules existed.
-    #
-    # Placed LATE on purpose, two constraints at once. Late enough that a specific
-    # data-fetch intent still wins primary: "visualize the call graph" must lead
-    # with get_call_hierarchy, because render_diagram consumes that output and has
-    # nothing to draw without it. Early enough to precede the generic "\bplan\b"
-    # rule below, which would otherwise claim every refactor-plan request.
-    #
-    # High-precision nouns only. A bare "graph"/"render"/"map" would capture the
-    # call-graph, import-graph and topology intents -- the failure these rules
-    # exist to fix, inverted.
-    (re.compile(r"\b(diagram|mermaid|flowchart|graphviz|visuali[sz]e|visuali[sz]ation)\b", re.I),
-     "render_diagram", "Render a graph-producing tool's output as an annotated Mermaid diagram."),
     # A REQUEST for a plan is not a mutation command, so this is deliberately not
     # leading-anchored the way the imperative rules above are.
     (re.compile(r"\b(plan|steps|walk me through)\b[^.]{0,40}"

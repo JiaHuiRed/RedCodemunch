@@ -1,6 +1,6 @@
 """v1.108.162 — server-owned canonical handoff contract (#374).
 
-finalize_handoff (tool) assembles a deterministic Markdown handoff from
+finalize_handoff (module) assembles a deterministic Markdown handoff from
 caller-authored sections, attests evidence_refs against the session's
 retrieval record (yield tracker served ids), persists it session-scoped, and
 returns a compact receipt; munch://handoff/<id> (resource) serves the
@@ -13,7 +13,6 @@ example parity is enforced by test_counter.py's live-schema validation.
 
 import asyncio
 import hashlib
-import json
 
 import pytest
 
@@ -155,54 +154,3 @@ class TestResource:
         r = self._receipt()
         handoff.clear_handoffs()  # new session == fresh process state
         assert handoff.get_handoff(r["handoff_id"]) is None
-
-
-class TestServerDispatch:
-    ARGS = {
-        "repo": "owner/name",
-        "task": "Audit",
-        "sections": [{"heading": "H", "content": "C"}],
-        "evidence_refs": ["src/dispatch_probe.py::run#function"],
-    }
-
-    def test_success_is_plain_content_list(self):
-        token_tracker.note_served(["src/dispatch_probe.py::run#function"])
-        from jcodemunch_mcp import server
-        res = asyncio.run(server.call_tool("finalize_handoff", dict(self.ARGS)))
-        assert isinstance(res, list)
-        receipt = json.loads(res[0].text)
-        assert receipt["schema"] == "jcodemunch.handoff/v1"
-
-    def test_invalid_finalization_is_error_result(self):
-        from jcodemunch_mcp import server
-        from mcp.types import CallToolResult
-        bad = dict(self.ARGS, evidence_refs=["never::served#function"])
-        res = asyncio.run(server.call_tool("finalize_handoff", bad))
-        assert isinstance(res, CallToolResult) and res.isError
-        body = json.loads(res.content[0].text)
-        assert body["unknown_refs"] == ["never::served#function"]
-
-
-class TestRegistration:
-    def test_all_registration_surfaces(self):
-        from jcodemunch_mcp import server
-        assert "finalize_handoff" in server._CANONICAL_TOOL_NAMES
-        cats = dict(server._SNIPPET_TOOL_CATEGORIES)
-        assert "finalize_handoff" in cats["Session-Aware Routing"]
-        tools = {t.name: t for t in server._build_tools_list()}
-        assert "finalize_handoff" in tools
-
-    def test_counter_gate_and_example(self):
-        from jcodemunch_mcp import counter
-        assert counter.is_state_changing("finalize_handoff")
-        assert "finalize_handoff" in counter.EXAMPLES
-        # order() without opt-in refuses (state-changing)
-        names = ["finalize_handoff"]
-        assert counter.order_gate("finalize_handoff", names, allow_state_change=False)
-        assert counter.order_gate("finalize_handoff", names, allow_state_change=True) is None
-
-    def test_read_only_hint_false(self):
-        from jcodemunch_mcp import server
-        tools = server._build_tools_list()
-        t = next(t for t in tools if t.name == "finalize_handoff")
-        assert t.annotations is not None and t.annotations.readOnlyHint is False

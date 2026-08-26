@@ -36,9 +36,10 @@ RESULTS = BENCH / "results.json"           # visible corpus, MEASURED not GATED
 HOLDOUT_RESULTS = BENCH / "holdout_results.json"   # the gate
 HOLDOUT_CORPUS = BENCH / "holdout.json"
 
-#: Catalog actions visible under `full`, pinned 2026-08-02 at v1.108.218.
+#: Catalog actions visible under `full`, pinned 2026-08-26 at the RedCodemunch
+#: slimming cut (A/D-class tools removed: 91 -> 52).
 #: Raising this is the deliberate act the moratorium exists to require.
-CATALOG_CEILING = 91
+CATALOG_CEILING = 52
 
 # --------------------------------------------------------------------------- #
 # Exit conditions. ALL must hold before CATALOG_CEILING may rise.               #

@@ -10,7 +10,7 @@ from jcodemunch_mcp.server import server, list_tools, call_tool, _coerce_argumen
 
 @pytest.mark.asyncio
 async def test_server_lists_all_tools():
-    """Test that server lists all enabled tools (test_summarizer disabled by default)."""
+    """Test that server lists all enabled tools (post-slimming catalog: 52)."""
     from jcodemunch_mcp import config as config_module
     from copy import deepcopy
 
@@ -21,41 +21,30 @@ async def test_server_lists_all_tools():
     try:
         tools = await list_tools()
 
-        assert len(tools) == 90  # +1: finalize_handoff (canonical handoff, #374)
+        assert len(tools) == 52
 
         names = {t.name for t in tools}
         expected = {
-            "index_repo", "index_folder", "index_file", "index_dependency", "summarize_repo",
+            "index_repo", "index_folder", "index_file", "index_dependency",
             "list_repos", "resolve_repo",
             "get_file_tree", "get_file_outline", "get_file_content", "get_symbol_source",
-            "search_symbols", "invalidate_cache", "search_text", "get_repo_outline",
-            "find_importers", "find_references", "check_references", "search_columns", "get_context_bundle",
+            "search_symbols", "search_text", "search_ast", "get_repo_outline",
+            "find_importers", "find_references", "check_references", "get_context_bundle",
             "get_session_stats", "get_session_context", "get_session_snapshot", "plan_turn", "register_edit",
             "get_dependency_graph", "get_blast_radius",
-            "get_symbol_diff", "get_class_hierarchy", "get_related_symbols", "suggest_queries",
-            "get_symbol_importance", "get_repo_map", "find_similar_symbols", "find_dead_code",
-            "get_changed_symbols", "get_ranked_context", "assemble_task_context", "embed_repo",
-            "get_cross_repo_map", "get_group_contracts",
+            "get_class_hierarchy", "get_related_symbols", "suggest_queries",
+            "get_repo_map", "find_similar_symbols", "find_dead_code",
+            "get_changed_symbols", "get_ranked_context", "assemble_task_context",
             "get_call_hierarchy", "get_impact_preview",
-            "get_dependency_cycles", "get_coupling_metrics", "get_layer_violations",
+            "get_architecture_metrics", "get_hotspots", "get_repo_health",
             "check_rename_safe", "check_delete_safe", "check_edit_safe", "find_implementations",
             "get_dead_code_v2", "get_extraction_candidates",
             "plan_refactoring",
-            "get_symbol_complexity", "get_churn_rate", "get_delivery_metrics", "get_parity_map", "get_hotspots", "get_repo_health",
-            "audit_agent_config", "get_untested_symbols", "search_ast",
-            "get_tectonic_map", "get_signal_chains", "get_decorator_census",
-            "get_architecture_metrics", "render_diagram",
-            "get_project_intel", "list_workspaces",
-            "get_symbol_provenance", "get_pr_risk_profile", "get_endpoint_impact",
-            "winnow_symbols", "get_watch_status", "analyze_perf", "tune_weights",
-            "check_embedding_drift", "suggest_corrections",
-            "set_tool_tier", "announce_model", "jcodemunch_guide",
-            "digest", "finalize_handoff", "diff_health_radar", "get_file_risk",
-            "import_runtime_signal", "get_runtime_coverage", "find_hot_paths", "find_unused_paths",
-            "get_redaction_log",
+            "get_symbol_complexity", "get_symbol_provenance", "get_tectonic_map",
+            "winnow_symbols",
+            "announce_model", "jcodemunch_guide",
         }
         assert names == expected
-        assert "test_summarizer" not in names  # disabled by default in DEFAULTS
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -626,7 +615,7 @@ async def test_sql_removed_auto_disables_search_columns(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sql_enabled_keeps_search_columns(monkeypatch):
-    """search_columns should stay enabled when SQL is in languages."""
+    """search_columns was removed in the slimming; no SQL gating remains."""
     from jcodemunch_mcp import config as config_module
 
     orig_config = config_module._GLOBAL_CONFIG.copy()
@@ -637,9 +626,7 @@ async def test_sql_enabled_keeps_search_columns(monkeypatch):
         config_module._GLOBAL_CONFIG["disabled_tools"] = []
 
         tools = await list_tools()
-        tool_names = [t.name for t in tools]
-
-        assert "search_columns" in tool_names
+        assert all(t.name != "search_columns" for t in tools)
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -711,18 +698,15 @@ async def test_disabled_tools_filtered_from_schema(monkeypatch):
     config_module._GLOBAL_CONFIG.clear()
 
     try:
-        config_module._GLOBAL_CONFIG["disabled_tools"] = ["index_repo", "search_columns"]
+        config_module._GLOBAL_CONFIG["disabled_tools"] = ["index_repo"]
 
         tools = await list_tools()
         tool_names = [t.name for t in tools]
 
         assert "index_repo" not in tool_names
-        assert "search_columns" not in tool_names
         assert "get_file_tree" in tool_names  # Not disabled
-        # 90 default tools + test_summarizer (config cleared) - 2 disabled = 89
-        # set_tool_tier + announce_model are undisableable; jcodemunch_guide
-        # is in _ALWAYS_PRESENT_TOOLS for tier survival but honors disabled_tools.
-        assert len(tools) == 89
+        # 52 tools - 1 disabled = 51 (announce_model is undisableable).
+        assert len(tools) == 51
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -730,7 +714,7 @@ async def test_disabled_tools_filtered_from_schema(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_disabled_tools_empty_all_tools_present(monkeypatch):
-    """When disabled_tools is empty, all tools are present (90 default + test_summarizer)."""
+    """When disabled_tools is empty, all tools are present."""
     from jcodemunch_mcp import config as config_module
 
     orig_config = config_module._GLOBAL_CONFIG.copy()
@@ -740,7 +724,7 @@ async def test_disabled_tools_empty_all_tools_present(monkeypatch):
         config_module._GLOBAL_CONFIG["disabled_tools"] = []
 
         tools = await list_tools()
-        assert len(tools) == 91  # 90 + test_summarizer (config cleared, so disabled gate off)
+        assert len(tools) == 52
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -748,20 +732,19 @@ async def test_disabled_tools_empty_all_tools_present(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tier_controls_undisableable_by_default():
-    """Default behavior (issue #299): set_tool_tier and announce_model survive disabled_tools."""
+    """Default behavior (issue #299): announce_model survives disabled_tools."""
     from jcodemunch_mcp import config as config_module
 
     orig_config = config_module._GLOBAL_CONFIG.copy()
     config_module._GLOBAL_CONFIG.clear()
 
     try:
-        config_module._GLOBAL_CONFIG["disabled_tools"] = ["set_tool_tier", "announce_model"]
+        config_module._GLOBAL_CONFIG["disabled_tools"] = ["announce_model"]
         # allow_disabling_tier_controls not set; defaults False
 
         tools = await list_tools()
         names = {t.name for t in tools}
 
-        assert "set_tool_tier" in names
         assert "announce_model" in names
     finally:
         config_module._GLOBAL_CONFIG.clear()
@@ -811,32 +794,6 @@ async def test_tier_controls_call_time_rejection_with_escape_hatch():
         payload = json.loads(result.content[0].text)
         assert "error" in payload
         assert "disabled" in payload["error"].lower()
-    finally:
-        config_module._GLOBAL_CONFIG.clear()
-        config_module._GLOBAL_CONFIG.update(orig_config)
-        _reset_session_tiers()
-
-
-@pytest.mark.asyncio
-async def test_tier_controls_call_time_allowed_without_escape_hatch():
-    """Without escape hatch, set_tool_tier is callable even if listed in disabled_tools."""
-    from jcodemunch_mcp import config as config_module
-    from jcodemunch_mcp.server import _reset_session_tiers
-
-    orig_config = config_module._GLOBAL_CONFIG.copy()
-    config_module._GLOBAL_CONFIG.clear()
-
-    try:
-        config_module._GLOBAL_CONFIG["disabled_tools"] = ["set_tool_tier"]
-        # allow_disabling_tier_controls not set; defaults False
-
-        result = await call_tool("set_tool_tier", {"tier": "core"})
-        payload = json.loads(result[0].text)
-        # Tool actually runs (no project-disabled error). It may succeed or
-        # return a tier-related error, but NOT the "disabled in this project"
-        # message that the escape hatch unlocks.
-        if "error" in payload:
-            assert "disabled in this project" not in payload["error"]
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -919,7 +876,7 @@ async def test_sql_language_gating_removes_search_columns(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sql_in_languages_keeps_search_columns(monkeypatch):
-    """When sql IS in languages, search_columns remains in the schema."""
+    """search_columns was removed; no SQL gating re-enables it."""
     from jcodemunch_mcp import config as config_module
 
     orig_config = config_module._GLOBAL_CONFIG.copy()
@@ -932,8 +889,7 @@ async def test_sql_in_languages_keeps_search_columns(monkeypatch):
         tools = await list_tools()
         tool_names = [t.name for t in tools]
 
-        # search_columns must be present when sql is in languages
-        assert "search_columns" in tool_names
+        assert "search_columns" not in tool_names
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -1132,14 +1088,14 @@ async def test_tool_profile_core():
     try:
         tools = await list_tools()
         names = {t.name for t in tools}
-        # Core tier + force-included tools (set_tool_tier, announce_model, jcodemunch_guide)
-        assert names == _TOOL_TIER_CORE | {"set_tool_tier", "announce_model", "jcodemunch_guide"}
+        # Core tier + force-included tools (announce_model, jcodemunch_guide)
+        assert names == _TOOL_TIER_CORE | {"announce_model", "jcodemunch_guide"}
         # Core must include the essentials
         for essential in ("search_symbols", "get_symbol_source", "list_repos",
                           "get_file_tree", "index_folder"):
             assert essential in names, f"{essential} missing from core profile"
         # Core must NOT include advanced tools
-        for excluded in ("plan_refactoring", "get_hotspots", "audit_agent_config",
+        for excluded in ("plan_refactoring", "get_hotspots",
                          "get_session_stats", "plan_turn"):
             assert excluded not in names, f"{excluded} should not be in core profile"
     finally:
@@ -1163,15 +1119,14 @@ async def test_tool_profile_standard():
     try:
         tools = await list_tools()
         names = {t.name for t in tools}
-        # Standard tier + force-included tools (set_tool_tier, announce_model, jcodemunch_guide)
-        assert names == _TOOL_TIER_STANDARD | {"set_tool_tier", "announce_model", "jcodemunch_guide"}
+        # Standard tier + force-included tools (announce_model, jcodemunch_guide)
+        assert names == _TOOL_TIER_STANDARD | {"announce_model", "jcodemunch_guide"}
         # Standard includes analytics
         assert "get_hotspots" in names
         assert "get_blast_radius" in names
         # Standard excludes power-user tools
         assert "plan_refactoring" not in names
         assert "get_session_stats" not in names
-        assert "audit_agent_config" not in names
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -1190,11 +1145,9 @@ async def test_tool_profile_full_is_default():
     try:
         tools = await list_tools()
         names = {t.name for t in tools}
-        # Full profile includes everything except default-disabled test_summarizer
+        # Full profile includes everything, nothing disabled by default
         assert "plan_refactoring" in names
         assert "get_session_stats" in names
-        assert "audit_agent_config" in names
-        assert "test_summarizer" not in names  # disabled by default, not by profile
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -1347,7 +1300,6 @@ def test_generate_template_disabled_tools_reference_includes_runtime_switch_tool
     from jcodemunch_mcp.config import generate_template
 
     text = generate_template()
-    assert '// "set_tool_tier",' in text
     assert '// "announce_model",' in text
     assert '// "jcodemunch_guide",' in text
 
@@ -1489,7 +1441,7 @@ async def test_jcodemunch_guide_returns_current_snippet():
 @pytest.mark.asyncio
 async def test_jcodemunch_guide_honors_disabled_tools():
     """Issue #298: listing jcodemunch_guide in disabled_tools hides it. The
-    runtime tier controls (set_tool_tier, announce_model) remain undisableable."""
+    runtime control (announce_model) remains undisableable."""
     from jcodemunch_mcp import config as config_module
 
     orig_config = config_module._GLOBAL_CONFIG.copy()
@@ -1497,12 +1449,11 @@ async def test_jcodemunch_guide_honors_disabled_tools():
 
     try:
         config_module._GLOBAL_CONFIG["disabled_tools"] = [
-            "jcodemunch_guide", "set_tool_tier", "announce_model",
+            "jcodemunch_guide", "announce_model",
         ]
         tools = await list_tools()
         names = {t.name for t in tools}
         assert "jcodemunch_guide" not in names
-        assert "set_tool_tier" in names
         assert "announce_model" in names
     finally:
         config_module._GLOBAL_CONFIG.clear()

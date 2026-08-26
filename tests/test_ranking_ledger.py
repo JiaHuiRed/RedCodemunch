@@ -157,37 +157,6 @@ class TestRankingDbQuery:
         assert out2[0][2] == "plan_turn"  # tool column index
 
 
-class TestAnalyzePerfLedgerView:
-    def test_ledger_summary_aggregates(self, monkeypatch, tmp_path):
-        _enable(monkeypatch)
-        from jcodemunch_mcp.tools.analyze_perf import analyze_perf
-
-        for q, repo, conf, ident, sem in [
-            ("a", "r1", 0.8, True, False),
-            ("b", "r1", 0.9, False, True),
-            ("c", "r2", 0.5, False, False),
-        ]:
-            tt.record_ranking_event(
-                tool="search_symbols", repo=repo, query=q, returned_ids=[],
-                confidence=conf, identity_hit=ident, semantic_used=sem,
-            )
-
-        out = analyze_perf(window="all", ledger=True, storage_path=str(tmp_path))
-        led = out["ranking_ledger"]
-        assert led["total_events"] == 3
-        repos = {entry["repo"]: entry for entry in led["by_repo"]}
-        assert repos["r1"]["events"] == 2
-        assert repos["r1"]["identity_hits"] == 1
-        assert repos["r1"]["semantic_used"] == 1
-        assert repos["r2"]["avg_confidence"] == 0.5
-
-    def test_ledger_view_off_by_default(self, monkeypatch, tmp_path):
-        _enable(monkeypatch)
-        from jcodemunch_mcp.tools.analyze_perf import analyze_perf
-        out = analyze_perf(window="session", storage_path=str(tmp_path))
-        assert "ranking_ledger" not in out
-
-
 class TestSearchSymbolsRecordsLedgerEvent:
     def test_search_invokes_record_ranking_event(self, tmp_path, monkeypatch):
         """Patch the recorder to capture invocations from search_symbols."""

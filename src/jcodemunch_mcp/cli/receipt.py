@@ -34,7 +34,6 @@ _TOOL_MULTIPLIERS: dict[str, float] = {
     # Pure retrieval — narrow query against indexed corpus.
     "search_symbols": 20.0,
     "search_text": 12.0,
-    "search_columns": 15.0,
     "search_ast": 18.0,
     "get_ranked_context": 18.0,
     "winnow_symbols": 15.0,
@@ -46,7 +45,6 @@ _TOOL_MULTIPLIERS: dict[str, float] = {
     # Repo structure / orientation.
     "get_repo_outline": 8.0,
     "get_file_tree": 4.0,
-    "get_project_intel": 12.0,
     "get_session_context": 6.0,
     "get_session_snapshot": 6.0,
     # Graph queries — the structurally hardest things to do with grep.
@@ -55,34 +53,23 @@ _TOOL_MULTIPLIERS: dict[str, float] = {
     "check_references": 15.0,
     "get_call_hierarchy": 30.0,
     "get_dependency_graph": 25.0,
-    "get_dependency_cycles": 25.0,
     "get_blast_radius": 35.0,
     "get_class_hierarchy": 20.0,
-    "get_layer_violations": 20.0,
     "get_extraction_candidates": 25.0,
-    "get_signal_chains": 30.0,
-    "get_cross_repo_map": 25.0,
     "get_related_symbols": 18.0,
     # Risk / health / quality — composite metrics that have no naive
     # equivalent (you'd have to write the analysis yourself).
-    "get_pr_risk_profile": 40.0,
     "get_repo_health": 35.0,
     "get_hotspots": 25.0,
     "get_symbol_complexity": 12.0,
-    "get_churn_rate": 6.0,
     "get_symbol_provenance": 15.0,
-    "get_untested_symbols": 30.0,
     "find_dead_code": 35.0,
     "get_dead_code_v2": 35.0,
     "get_tectonic_map": 30.0,
-    "get_coupling_metrics": 20.0,
-    "get_symbol_importance": 15.0,
     # Refactoring / maintenance.
     "plan_refactoring": 25.0,
     "check_rename_safe": 15.0,
-    "get_symbol_diff": 12.0,
     "get_changed_symbols": 12.0,
-    "audit_agent_config": 8.0,
     # Indexing / repo management.
     "resolve_repo": 3.0,
     "list_repos": 2.0,

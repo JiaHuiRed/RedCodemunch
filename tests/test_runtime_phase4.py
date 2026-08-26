@@ -29,7 +29,6 @@ from jcodemunch_mcp.runtime import (
 )
 from jcodemunch_mcp.runtime.sql_log import _build_record  # type: ignore
 from jcodemunch_mcp.storage.sqlite_store import SQLiteIndexStore
-from jcodemunch_mcp.tools.find_unused_paths import find_unused_paths
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -373,70 +372,6 @@ def test_ingest_idempotent_under_repeat_run(tmp_path):
     assert n == 6
 
 
-# ──────────────────────────────────────────────────────────────────────
-# find_unused_paths integration
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_find_unused_paths_surfaces_dbt_model_with_no_column_reads(tmp_path):
-    """A model whose declared columns get no SQL-log hits surfaces with reason='dbt_model_no_column_reads'."""
-    store, db_path = _seed_dbt_index(tmp_path)
-    log = tmp_path / "queries.jsonl"
-    # Only fact_orders gets reads; dim_products is never queried.
-    _write_jsonl_log(log, [
-        {"sql": "SELECT order_id FROM fact_orders", "calls": 2},
-    ])
-    ingest_sql_log_file(db_path=str(db_path), file_path=str(log))
-
-    result = find_unused_paths(repo="local/phase4", since_days=365, storage_path=str(tmp_path))
-    assert "error" not in result, result
-    names = {r["name"]: r for r in result["results"]}
-    assert "dim_products" in names
-    assert names["dim_products"]["reason"] == "dbt_model_no_column_reads"
-    assert "list_price" in names["dim_products"]["unused_columns"]
-    # fact_orders was queried — should NOT be in the unused list.
-    assert "fact_orders" not in names
-
-
-def test_find_unused_paths_meta_flags_runtime_columns_present(tmp_path):
-    """When runtime_columns has rows, _meta.runtime_columns_present is True.
-    When a model has column reads but no symbol-level runtime_calls hit
-    (column-only audit log shape), it must be rescued from the unused list."""
-    store, db_path = _seed_dbt_index(tmp_path)
-    log = tmp_path / "queries.jsonl"
-    _write_jsonl_log(log, [
-        {"sql": "SELECT order_id FROM fact_orders", "calls": 1},
-    ])
-    ingest_sql_log_file(db_path=str(db_path), file_path=str(log))
-
-    # Simulate a column-only signal: drop the model-level call row but
-    # leave the runtime_columns rows in place. This reproduces the
-    # pg_audit / column-trace shape where reads are logged per column,
-    # never per query.
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("DELETE FROM runtime_calls WHERE source = 'sql_log'")
-    conn.commit()
-    conn.close()
-
-    result = find_unused_paths(repo="local/phase4", since_days=365, storage_path=str(tmp_path))
-    # Defensive: runtime_calls is empty after the delete, so the tool refuses
-    # to enumerate. Re-seed with a non-sql_log row to keep the tool live.
-    if not result.get("results") and result["_meta"].get("runtime_data_present") is False:
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            "INSERT INTO runtime_calls (symbol_id, source, count, first_seen, last_seen) "
-            "VALUES ('src/api.py::get_orders#function', 'otel', 1, '2026-05-09T00:00:00Z', '2026-05-09T00:00:00Z')"
-        )
-        conn.commit()
-        conn.close()
-        result = find_unused_paths(repo="local/phase4", since_days=365, storage_path=str(tmp_path))
-
-    assert result["_meta"]["runtime_columns_present"] is True
-    # fact_orders should be rescued from the unused list because
-    # runtime_columns has rows for it, even though runtime_calls doesn't.
-    assert result["_meta"]["rescued_by_column_hit"] >= 1
-    names = {r["name"] for r in result["results"]}
-    assert "fact_orders" not in names
 
 
 # ──────────────────────────────────────────────────────────────────────

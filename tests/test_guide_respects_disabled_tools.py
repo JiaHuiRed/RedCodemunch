@@ -64,12 +64,12 @@ def cfg():
 
 class TestTheGuideMatchesWhatDispatchAccepts:
     def test_a_disabled_tool_is_not_advertised(self, cfg):
-        cfg["disabled_tools"] = ["test_summarizer"]
+        cfg["disabled_tools"] = ["winnow_symbols"]
         cfg["tool_profile"] = "full"
 
         advertised = _advertised(server._generate_claude_md_snippet())
 
-        assert "test_summarizer" not in advertised, (
+        assert "winnow_symbols" not in advertised, (
             "the guide advertises a tool call_tool rejects before the handler runs"
         )
 
@@ -79,11 +79,11 @@ class TestTheGuideMatchesWhatDispatchAccepts:
         leaving the test above looking like a contrived case."""
         from jcodemunch_mcp.config import DEFAULTS
 
-        assert DEFAULTS["disabled_tools"] == ["test_summarizer"]
+        assert DEFAULTS["disabled_tools"] == []
 
     def test_no_advertised_tool_is_unmounted(self, cfg):
         """The general property, not the one instance."""
-        cfg["disabled_tools"] = ["test_summarizer", "find_dead_code"]
+        cfg["disabled_tools"] = ["winnow_symbols", "find_dead_code"]
         cfg["tool_profile"] = "full"
 
         ghosts = _advertised(server._generate_claude_md_snippet()) - _mounted()
@@ -91,9 +91,8 @@ class TestTheGuideMatchesWhatDispatchAccepts:
         assert not ghosts, f"guide advertises unmounted tools: {sorted(ghosts)}"
 
     def test_an_ordinary_tool_is_filtered_too(self, cfg):
-        """`test_summarizer` is disabled by default, so fixing only that name
-        would pass the first test. A second, ordinary tool proves the filter is
-        general."""
+        """`test_summarizer` died with the RedCodemunch slimming cut, so a
+        second, ordinary tool proves the filter is general."""
         cfg["disabled_tools"] = ["find_dead_code"]
         cfg["tool_profile"] = "full"
 
@@ -111,11 +110,11 @@ class TestWhatMustNotChange:
 
         advertised = _advertised(server._generate_claude_md_snippet())
 
-        assert "test_summarizer" in advertised
+        assert "search_symbols" in advertised
         assert not (advertised - _mounted())
 
     def test_the_snippet_keeps_its_shape(self, cfg):
-        cfg["disabled_tools"] = ["test_summarizer"]
+        cfg["disabled_tools"] = ["winnow_symbols"]
         cfg["tool_profile"] = "full"
 
         snippet = server._generate_claude_md_snippet()

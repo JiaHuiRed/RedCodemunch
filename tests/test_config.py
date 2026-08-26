@@ -113,7 +113,7 @@ class TestConfigDefaults:
         ("max_folder_files", 2000),
         ("max_index_files", 10000),
         ("languages", None),
-        ("disabled_tools", ["test_summarizer"]),
+        ("disabled_tools", []),
         ("server_output", "adaptive"),
         ("server_output_threshold", 0.15),
     ], ids=[
@@ -1702,9 +1702,9 @@ class TestClaudeMdGenerate:
         """--generate outputs every tool this process will actually dispatch.
 
         ⚠ #495: this asserted every CANONICAL name appeared, which encoded the
-        defect rather than catching it. `disabled_tools` ships as
-        `["test_summarizer"]`, so a snippet naming every canonical tool names one
-        that `call_tool` rejects before the handler runs. The property wanted is
+        defect rather than catching it. When `disabled_tools` lowered a tool,
+        a snippet naming every canonical tool named one that `call_tool`
+        rejects before the handler runs. The property wanted is
         "advertises what it will dispatch", not "advertises everything".
         """
         from jcodemunch_mcp.server import _run_claude_md, _build_tools_list
@@ -1753,7 +1753,7 @@ class TestClaudeMdGenerate:
         We clear disabled_tools so the full unfiltered list is returned, then
         verify the canonical tuple is a superset of what the builder produces.
         Tools can appear in _CANONICAL_TOOL_NAMES but not in the live list
-        (e.g. test_summarizer, which is disabled by default) — that's fine.
+        (e.g. a tool absent from the live list due to disabled_tools) — that's fine.
         The reverse (a built tool absent from the canonical list) is the error.
         """
         import jcodemunch_mcp.config as cfg_mod
@@ -2035,7 +2035,7 @@ class TestConfigTypeValidation:
     @pytest.mark.parametrize("key,bad_value,expected_default", [
         ("context_providers", '"true"', True),   # String instead of bool
         ("max_folder_files", "2000.5", 2000),    # Float instead of int
-        ("disabled_tools", '{"tool": "name"}', ["test_summarizer"]),  # Object instead of list
+        ("disabled_tools", '{"tool": "name"}', []),  # Object instead of list
         ("extra_extensions", '[".lua"]', {}),     # List instead of dict
         ("meta_fields", '{"invalid": "dict"}', []),  # Dict instead of list
         ("server_output", '"banana"', "adaptive"),

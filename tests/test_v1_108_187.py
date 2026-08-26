@@ -19,7 +19,7 @@ no features. For `search_symbols_fusion` there is no such discriminator: pre-fix
 timestamp column exists to bound it by, so its history is unseparable and the recency
 window is the only remedy. A heuristic there would be worse than the gap.
 
-Helper names are prefixed ``_r187``; the replay fixture queries ``analyze_perf``,
+Helper names are prefixed ``_r187``; the replay fixture queries
 ``build_identity_channel``, ``attach_confidence`` and ``_State``, so no helper here
 carries any of those names.
 """
@@ -37,7 +37,6 @@ from jcodemunch_mcp.retrieval import ledger_trust as _r187_trust
 from jcodemunch_mcp.retrieval import regret as _r187_regret
 from jcodemunch_mcp.retrieval.confidence import attach_confidence as _r187_conf
 from jcodemunch_mcp.storage import token_tracker as _r187_tt
-from jcodemunch_mcp.tools import analyze_perf as _r187_perf_mod
 from jcodemunch_mcp.tools.get_ranked_context import get_ranked_context
 from jcodemunch_mcp.tools.search_symbols import search_symbols
 
@@ -352,26 +351,3 @@ class TestRegretIgnoresFeaturelessRows:
         assert "events_without_ledger_features" not in out
 
 
-# --- analyze_perf ----------------------------------------------------------- #
-
-
-class TestPerfLedgerSummary:
-    def test_a_default_is_not_counted_as_an_identity_miss(self):
-        rows = [_r187_row(_R187_GRC, None, 0) for _ in range(3)]
-        rows += [_r187_row("search_symbols", 9.0, 1) for _ in range(2)]
-        by_repo = _r187_perf_mod._ledger_summary(rows, top=10)["by_repo"][0]
-        assert by_repo["identity_hits"] == 2
-        assert by_repo["no_ledger_features"] == 3
-
-    def test_a_clean_ledger_keeps_the_old_shape(self):
-        rows = [_r187_row("search_symbols", 9.0, 1), _r187_row("search_symbols", 4.0, 0)]
-        by_repo = _r187_perf_mod._ledger_summary(rows, top=10)["by_repo"][0]
-        assert "no_ledger_features" not in by_repo
-        assert by_repo["identity_hits"] == 1
-
-    def test_a_pre_fix_ledger_is_still_readable(self, _r187_env):
-        """The rows are history. Nothing here rewrites or drops them."""
-        _r187_seed(_r187_env["state"], [(_R187_GRC, None, None, 0, 2)] * 5)
-        rows = _r187_tt.ranking_db_query(base_path=_r187_env["ledger"], repo="acme/widget")
-        assert len(rows) == 5
-        assert all(r[6] is None and r[10] == 0 for r in rows), "history must not be rewritten"

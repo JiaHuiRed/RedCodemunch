@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Changed - RedCodemunch slimming: 39 of 91 tools removed
+
+Fork trimmed to its real usage surface (measured across three months of session
+telemetry: 30 of 91 tools ever called; 62 never used). Catalog 91 → 52, verified
+index-consistent after surgery (`_CANONICAL_TOOL_NAMES` == `all_tools` ==
+dispatch chain, AST-checked).
+
+- **Removed (39):** AI-summarizer / embedding runtime
+  (`summarize_repo`, `test_summarizer`, `embed_repo`, `check_embedding_drift`,
+  `get_symbol_diff`), runtime-trace (`import_runtime_signal`,
+  `get_runtime_coverage`, `find_hot_paths`, `find_unused_paths`,
+  `get_redaction_log`), big-repo governance metrics
+  (`get_dependency_cycles`, `get_coupling_metrics`, `get_layer_violations`,
+  `get_cross_repo_map`, `get_group_contracts`, `get_signal_chains`,
+  `get_decorator_census`, `render_diagram`, `get_project_intel`,
+  `list_workspaces`, `get_symbol_importance`, `get_parity_map`,
+  `get_churn_rate`, `get_delivery_metrics`, `get_untested_symbols`,
+  `diff_health_radar`, `get_pr_risk_profile`, `get_endpoint_impact`,
+  `get_file_risk`, `digest`, `finalize_handoff`), session-runtime self-tuning
+  (`analyze_perf`, `tune_weights`, `audit_agent_config`, `get_watch_status`,
+  `invalidate_cache`, `suggest_corrections`, `set_tool_tier`), DB columns
+  (`search_columns`).
+- **Implemented at the tool boundary, not the module level.** Modules whose
+  functions are still called by kept tools (e.g. `embed_repo._detect_provider`,
+  `invalidate_cache._force_full_reindex`, `get_dependency_cycles._find_cycles`,
+  `flow_edges.resolve_flow_edges`) keep their implementation; only the tool
+  registration is gone. 20 tool files deleted outright, CLI subcommands audited
+  (CLI-only commands like `reflect.py` moved out with their tools), compact
+  encoding schemas for removed tools dropped.
+- **server.py shrank by ~2,000 lines** (10,929 → ~8,800); tier bundles,
+  counter intents, and examples kept in lockstep with the catalog.
+- **Benchmarks:** `route_recall` corpus re-cut to the live catalog (59 → 40
+  queries, artifacts regenerated via `run_route_recall.py --write`).
+- **Tests:** 7,709 passed / 38 failed / 120 skipped on this repo, all 38
+  failures pre-existing Windows grammar issues in
+  `tree-sitter-language-pack` (C/Arduino/Bash/Ada/Apex/Clojure parsing),
+  confirmed by failing identically on clean HEAD before the cut.
+
 ### Fixed - `from . import <sibling>` built an edge to `__init__.py` (#550, @rknighton)
 
 `from . import receipts` in `evidence/producers.py` is a dependency on

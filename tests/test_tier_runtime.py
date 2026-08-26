@@ -240,56 +240,6 @@ def test_note_adaptive_tiering_noop_when_disabled(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# set_tool_tier tool                                                           #
-# --------------------------------------------------------------------------- #
-
-@pytest.mark.asyncio
-async def test_set_tool_tier_switches_session_tier():
-    from copy import deepcopy
-    from jcodemunch_mcp.server import call_tool
-
-    orig_config = config_mod._GLOBAL_CONFIG.copy()
-    config_mod._GLOBAL_CONFIG.clear()
-    config_mod._GLOBAL_CONFIG.update(deepcopy(config_mod.DEFAULTS))
-    server_mod._reset_session_tiers()
-
-    try:
-        result = await call_tool("set_tool_tier", {"tier": "core"})
-        text = _rtext(result)
-        import json
-        data = json.loads(text)
-        assert data.get("ok") is True
-        assert data.get("tier") == "core"
-        assert _default_override() == "core"
-    finally:
-        config_mod._GLOBAL_CONFIG.clear()
-        config_mod._GLOBAL_CONFIG.update(orig_config)
-        server_mod._reset_session_tiers()
-
-
-@pytest.mark.asyncio
-async def test_set_tool_tier_rejects_invalid_tier():
-    from copy import deepcopy
-    from jcodemunch_mcp.server import call_tool
-
-    orig_config = config_mod._GLOBAL_CONFIG.copy()
-    config_mod._GLOBAL_CONFIG.clear()
-    config_mod._GLOBAL_CONFIG.update(deepcopy(config_mod.DEFAULTS))
-
-    try:
-        result = await call_tool("set_tool_tier", {"tier": "enormous"})
-        from mcp.types import CallToolResult
-        assert isinstance(result, CallToolResult)  # errors now carry isError (F-P01)
-        assert result.isError is True
-        import json
-        data = json.loads(result.content[0].text)
-        assert "error" in data
-    finally:
-        config_mod._GLOBAL_CONFIG.clear()
-        config_mod._GLOBAL_CONFIG.update(orig_config)
-
-
-# --------------------------------------------------------------------------- #
 # announce_model tool                                                          #
 # --------------------------------------------------------------------------- #
 
@@ -411,7 +361,7 @@ async def test_announce_model_noop_when_adaptive_tiering_disabled():
 
 @pytest.mark.asyncio
 async def test_switch_tools_always_present_on_core():
-    """set_tool_tier + announce_model must be in tools/list regardless of tier."""
+    """announce_model must be in tools/list regardless of tier."""
     from copy import deepcopy
 
     orig_config = config_mod._GLOBAL_CONFIG.copy()
@@ -425,7 +375,6 @@ async def test_switch_tools_always_present_on_core():
         from jcodemunch_mcp.server import list_tools
         tools = await list_tools()
         names = {t.name for t in tools}
-        assert "set_tool_tier" in names
         assert "announce_model" in names
     finally:
         config_mod._GLOBAL_CONFIG.clear()
@@ -442,13 +391,12 @@ async def test_switch_tools_not_filterable_by_disabled():
     orig_disabled = list(config_mod._GLOBAL_CONFIG.get("disabled_tools", []))
     config_mod._GLOBAL_CONFIG.clear()
     config_mod._GLOBAL_CONFIG.update(deepcopy(config_mod.DEFAULTS))
-    config_mod._GLOBAL_CONFIG["disabled_tools"] = list(orig_disabled) + ["set_tool_tier", "announce_model"]
+    config_mod._GLOBAL_CONFIG["disabled_tools"] = list(orig_disabled) + ["announce_model"]
 
     try:
         from jcodemunch_mcp.server import list_tools
         tools = await list_tools()
         names = {t.name for t in tools}
-        assert "set_tool_tier" in names
         assert "announce_model" in names
     finally:
         config_mod._GLOBAL_CONFIG.clear()
@@ -464,16 +412,11 @@ async def test_switch_tools_callable_even_when_is_tool_disabled_true(monkeypatch
     monkeypatch.setattr(
         config_mod,
         "is_tool_disabled",
-        lambda name, repo=None: name in {"set_tool_tier", "announce_model"},
+        lambda name, repo=None: name in {"announce_model"},
     )
     server_mod._reset_session_tiers()
 
     try:
-        r1 = await call_tool("set_tool_tier", {"tier": "core"})
-        d1 = json.loads(r1[0].text if hasattr(r1[0], "text") else r1[0])
-        assert d1.get("ok") is True
-        assert d1.get("tier") == "core"
-
         r2 = await call_tool("announce_model", {"model": "claude-haiku-4-5"})
         d2 = json.loads(r2[0].text if hasattr(r2[0], "text") else r2[0])
         assert "error" not in d2
