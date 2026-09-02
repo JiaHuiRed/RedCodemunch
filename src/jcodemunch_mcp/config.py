@@ -353,6 +353,24 @@ DEFAULTS = {
     "exclude_secret_patterns": [],
     "exclude_skip_directories": [],
     "extra_extensions": {},
+    # Racket only, and deliberately NOT a generic `definition_forms` map. A
+    # Racket project routinely defines its own defining forms via
+    # `define-syntax` -- congame binds ~448 symbols through `defstep`,
+    # `defstudy` and `defvar` -- and no static parser can know what those bind.
+    # Declaring them here is the user ASSERTING it, which is the only safe
+    # source for that claim. Clojure, Elixir and Common Lisp have the same
+    # blindness, but none of them has been measured, so a shared key would be a
+    # general promise backed by one data point. If a second language earns one,
+    # `<lang>_definition_forms` appears beside this and unification becomes a
+    # decision with evidence behind it.
+    "racket_definition_forms": {},
+    # Racket only. `#lang` names a READER, and tree-sitter-racket reads
+    # S-expressions, so a `.rkt` whose reader is Markdown (`punct`) or at-exp
+    # text (`conscript`) must be told apart before the grammar runs. Built-in
+    # lists cover the distribution's langs; a project's own lang is unknown to
+    # them and is treated as a document (no symbols) until promoted here:
+    # {"conscript": "at-exp"}. Values: "sexp", "at-exp", "text".
+    "racket_langs": {},
     "context_providers": True,
     "meta_fields": [],  # [] = no _meta (token-efficient; set null in config for all fields)
     "languages": None,  # None = all languages
@@ -364,6 +382,11 @@ DEFAULTS = {
     # "counter" by _fresh_config_content — so a package update never silently
     # collapses a user's tool surface.
     "tool_surface": "full",  # "full" or "counter"
+    # ⚠ Purely a display latch for the surface OFFER (surface_offer.py). It
+    # never affects which tools are served; setting it true only stops the
+    # status commands re-asking. It exists so "no thanks" is a supported
+    # permanent answer that does not require accepting the offer to silence it.
+    "surface_offer_seen": False,
     "tool_tier_bundles": {
         "core": [
             "index_repo", "index_folder", "index_file",
@@ -399,11 +422,19 @@ DEFAULTS = {
             "get_architecture_metrics",
         ],
     },
+    # ⚠⚠ No entry here targets "standard", and that is deliberate. This map
+    # drives a MID-SESSION switch, and `full` -> `standard` drops 6.7% of the
+    # schema payload while invalidating the whole cached prefix -- 174 requests
+    # to repay itself with an empty history, 864 with 100k of it. It is a fine
+    # STARTUP `tool_profile` and a losing transition, so the two must not be
+    # confused. `tier_switch_cost.classify` refuses it at the switch regardless;
+    # routing two of the most common models at it would just mean every such
+    # session opened with a refusal. `core` is the real narrowing (4 requests).
     "model_tier_map": {
         "claude-opus": "full",
-        "claude-sonnet": "standard",
+        "claude-sonnet": "full",
         "claude-haiku": "core",
-        "gpt-4o": "standard",
+        "gpt-4o": "full",
         "gpt-5": "full",
         "o1": "full",
         "llama": "core",
@@ -415,11 +446,9 @@ DEFAULTS = {
     "server_output": "adaptive",  # "raw", "encoded", or "adaptive"
     "server_output_threshold": 0.15,  # Minimum savings ratio for adaptive mode
     "disabled_tools": [],
-    # When True, `disabled_tools` may include `set_tool_tier` and
-    # `announce_model`. Default False keeps the in-session tier-switch
-    # safety net intact; opt-in is for users who want to claw back two
-    # tool slots (e.g. against Antigravity's 50-tool cap) and accept that
-    # they cannot switch tiers mid-session. Issue #299, requested by @kecsap.
+    # When True, `disabled_tools` may include `announce_model`. Default False
+    # keeps the model-selection safety net intact; opt-in is for users who want
+    # to claw back a tool slot (e.g. against Antigravity's 50-tool cap).
     "allow_disabling_tier_controls": False,
     "descriptions": {},
     "transport": "stdio",
@@ -504,12 +533,15 @@ CONFIG_TYPES = {
     "exclude_secret_patterns": list,
     "exclude_skip_directories": list,
     "extra_extensions": dict,
+    "racket_definition_forms": dict,
+    "racket_langs": dict,
     "context_providers": bool,
     "meta_fields": (list, type(None)),
     "languages": (list, type(None)),
     "languages_adaptive": bool,
     "tool_profile": str,
     "tool_surface": str,
+    "surface_offer_seen": bool,
     "tool_tier_bundles": dict,
     "model_tier_map": dict,
     "adaptive_tiering": bool,
@@ -978,6 +1010,33 @@ def _ensure_loaded() -> None:
         load_config(create_missing=False)
     except Exception:
         logger.debug("Lazy config load failed; answering from defaults", exc_info=True)
+
+
+def racket_config_digest(repo: str | None) -> str:
+    """Fingerprint of the config that changes what the Racket parser EMITS.
+
+    `racket_definition_forms` and `racket_langs` alter extraction for
+    unchanged file content, and the incremental indexer skips unchanged
+    content by design. So a declaration added after an index exists applied
+    to nothing until each file was edited -- measured: `check-admin ABSENT`
+    across an incremental reindex, present only after a full one -- which is
+    the "parameter present and doing nothing" defect (#508). The digest is
+    stamped on the index at save; a mismatch at the next index forces one
+    full re-parse, the way `PARSER_GENERATION` does for a code change.
+    Empty when neither key is set, so an unconfigured project never differs.
+    """
+    forms = get("racket_definition_forms", {}, repo=repo) or {}
+    langs = get("racket_langs", {}, repo=repo) or {}
+    if not isinstance(forms, dict):
+        forms = {}
+    if not isinstance(langs, dict):
+        langs = {}
+    if not forms and not langs:
+        return ""
+    import hashlib
+    import json as _json
+    payload = _json.dumps({"forms": forms, "langs": langs}, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def get(key: str, default: Any = None, repo: str | None = None) -> Any:
@@ -2070,6 +2129,26 @@ def generate_template() -> str:
   //   Map additional file extensions to languages.
   //   Example: {{".mpl": "cpp"}} to parse .mpl files as C++.
 
+  // "racket_definition_forms": {{}},
+  //   Racket only. Declare a project's own defining macros so what they bind
+  //   becomes searchable. Each value is what the form binds: function,
+  //   constant, class or type. Where the name sits is read from the source.
+  //   Example: {{"defstep": "function", "defstudy": "constant"}}
+  //   This is an assertion jCodeMunch cannot verify; a wrong entry indexes a
+  //   name Racket does not bind. Built-in forms always win over declarations.
+
+  // "racket_langs": {{}},
+  //   Racket only. A `#lang` line names a reader, and the parser reads
+  //   S-expressions, so a `.rkt` in a project's own lang is treated as a
+  //   document (no symbols) until you say what its syntax is:
+  //   "sexp" (plain S-expressions), "at-exp" (at-exp text bodies over
+  //   Racket, e.g. conscript) or "text" (Markdown, Scribble -- never walked).
+  //   An at-exp lang with its own command character takes the object form:
+  //   Example: {{"conscript": "at-exp", "mylang": {{"tier": "at-exp", "command_char": "◊"}}}}
+  //   Example: {{"conscript": "at-exp", "punct": "text"}}
+  //   A key also matches its sub-langs (`conscript` covers
+  //   `conscript/with-require`). Distribution langs are built in.
+
   // "context_providers": true,
   //   Enable context providers for enhanced AI summarization.
   //   Set false to disable (faster indexing, less context).
@@ -2143,6 +2222,14 @@ def generate_template() -> str:
   // default to "counter"; set "full" here to advertise all tool schemas.
   // "tool_surface": "full",
 
+  // === Surface Offer ===
+  // Existing installs keep the tool_surface they were created with, because
+  // upgrade_config cannot back-inject that key. The status commands
+  // (`surface`, `install-status`) therefore print a one-time priced offer to
+  // move to the current default. Set true to stop being asked; it changes
+  // nothing about which tools are served.
+  // "surface_offer_seen": false,
+
   // === Compact Schemas ===
   // When true, strips rarely-used advanced parameters (debug, fusion, semantic_*,
   // fuzzy_*, etc.) from tool schemas. The server still accepts them — they're just
@@ -2185,16 +2272,15 @@ def generate_template() -> str:
   ],
 
   // === Tier-control escape hatch (issue #299) ===
-  // By default, `set_tool_tier` and `announce_model` survive `disabled_tools`
-  // so users can't lock themselves out of in-session tier switching. Set this
-  // to true to opt out of that safety net — useful when you're at a hard tool
-  // cap (e.g. Antigravity's 50-tool limit) and want to claw back two slots,
-  // and you accept that you can't switch tiers mid-session.
+  // By default, `announce_model` survives `disabled_tools` so model
+  // identification remains available. Set this to true to opt out of that
+  // safety net — useful when you're at a hard tool cap (e.g. Antigravity's
+  // 50-tool limit) and want to claw back a slot.
   // "allow_disabling_tier_controls": false,
 
   // === Tool Tier Bundles ===
-  // Which tools belong to each tier. Edit freely. Both tool_profile (below)
-  // and the runtime set_tool_tier / announce_model tools read from here.
+  // Which tools belong to each tier. Edit freely. tool_profile (below) reads
+  // from here.
   // NOTE: disabled_tools applies AFTER tier filtering — a tool listed both
   // in a bundle and in disabled_tools will not be exposed regardless of tier.
   "tool_tier_bundles": {{
@@ -2215,24 +2301,16 @@ def generate_template() -> str:
       "search_text", "get_context_bundle", "get_ranked_context",
       "assemble_task_context",
       "find_importers", "find_references",
-      "summarize_repo", "embed_repo", "index_dependency", "suggest_queries",
-      "search_columns", "check_references",
+      "index_dependency", "suggest_queries", "check_references",
       "get_dependency_graph", "get_class_hierarchy",
       "get_related_symbols", "get_call_hierarchy",
       "get_blast_radius", "check_rename_safe", "check_delete_safe", "check_edit_safe",
       "find_implementations",
       "get_impact_preview", "get_changed_symbols",
-      "get_symbol_diff", "get_symbol_provenance",
-      "get_pr_risk_profile", "get_endpoint_impact", "get_symbol_complexity",
-      "get_churn_rate", "get_delivery_metrics", "get_parity_map", "get_hotspots",
-      "get_symbol_importance", "get_repo_map", "find_dead_code",
-      "get_dead_code_v2", "get_untested_symbols", "find_similar_symbols",
-      "get_repo_health", "search_ast", "winnow_symbols",
-      "get_dependency_cycles", "get_coupling_metrics",
-      "get_layer_violations", "get_cross_repo_map", "get_group_contracts",
-      "get_tectonic_map", "get_signal_chains", "get_decorator_census",
-      "get_architecture_metrics", "render_diagram",
-      "get_project_intel", "list_workspaces", "invalidate_cache"
+      "get_symbol_provenance", "get_symbol_complexity", "get_hotspots",
+      "get_repo_map", "find_dead_code", "get_dead_code_v2",
+      "find_similar_symbols", "get_repo_health", "search_ast", "winnow_symbols",
+      "get_tectonic_map", "get_architecture_metrics"
     ]
   }},
 
@@ -2243,11 +2321,16 @@ def generate_template() -> str:
   // glob, substring, "*", hardcoded "full" fallback in that order.
   // Keep keys specific where possible: very short substrings (e.g. "o1") can
   // over-match model ids that merely contain that token.
+  // No entry targets "standard", deliberately: this map drives a MID-SESSION
+  // switch, and full -> standard drops 6.7% of the schema payload while
+  // invalidating the whole cached prefix (174 requests to repay itself, 864
+  // with 100k of history). It is a fine startup tool_profile and a losing
+  // transition; the server refuses it at the switch either way.
   "model_tier_map": {{
     "claude-opus": "full",
-    "claude-sonnet": "standard",
+    "claude-sonnet": "full",
     "claude-haiku": "core",
-    "gpt-4o": "standard",
+    "gpt-4o": "full",
     "gpt-5": "full",
     "o1": "full",
     "llama": "core",
@@ -2259,9 +2342,7 @@ def generate_template() -> str:
   // identifier self-reported by the agent via plan_turn(model=...) or
   // announce_model(). When false (default), the static tool_profile above
   // controls the exposed tools for the whole session — the runtime tools
-  // accept their arguments but do not switch tiers. set_tool_tier is always
-  // honored regardless of this flag (explicit user override, not automatic
-  // behavior).
+  // accept their arguments but do not switch tiers.
   // "adaptive_tiering": false,
 
   // === Descriptions ===

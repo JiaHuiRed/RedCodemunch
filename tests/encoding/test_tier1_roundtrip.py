@@ -528,13 +528,26 @@ def test_get_repo_outline_default_path_never_drops_data():
         ],
         "_meta": {"timing_ms": 1.0},
     }),
+
     ("search_ast", {
-        "result_count": 1,
-        "query": "call:print",
-        "results": [
-            {"file": "a.py", "line": 10, "match_type": "call", "snippet": "print(x)", "symbol_id": "s1", "symbol_name": "foo"},
+        "repo": "a/b",
+        "total_matches": 2,
+        "pattern": "todo_fixme",
+        "severity_counts": {"info": 1, "warning": 1},
+        "truncated": False,
+        "matches": [
+            # Common columns plus a pattern-specific key (`marker`).
+            {"file": "a.py", "line": 10, "end_line": 10, "column": 0,
+             "language": "python", "pattern": "todo_fixme", "severity": "info",
+             "snippet": "# TODO: unfinished", "enclosing_symbol": "a.py::foo",
+             "symbol_kind": "function", "symbol_complexity": 3, "marker": "TODO"},
+            # A different detector, carrying a DIFFERENT pattern-specific key.
+            {"file": "b.py", "line": 4, "end_line": 12, "column": 4,
+             "language": "python", "pattern": "nested_loops", "severity": "warning",
+             "snippet": "for i in ...", "enclosing_symbol": "b.py::bar",
+             "symbol_kind": "function", "symbol_complexity": 9, "loop_depth": 3},
         ],
-        "_meta": {"timing_ms": 1.0, "files_searched": 20},
+        "_meta": {"elapsed_ms": 1, "files_scanned": 20, "files_with_matches": 2},
     }),
     ("get_ranked_context", {
         "total_tokens": 500,
@@ -559,11 +572,33 @@ def test_get_repo_outline_default_path_never_drops_data():
     }),
 ])
 def test_remaining_tier1_round_trip(tool, resp):
+    """Every list-of-dicts in the response must survive with its row count.
+
+    ⚠⚠ This asserted key PRESENCE over a HARDCODED list of five table keys
+    ("affected_symbols", "chains", "results", "context_items", "plates"). A
+    tool whose key was not in that list -- search_ast's `matches` -- ran the
+    loop body zero times and was asserted about NOTHING, which is how #553
+    kept a green round-trip test while serving an empty table for every
+    language and preset.
+
+    The list is now derived from the RESPONSE, which is the producer's truth,
+    rather than from a roster someone has to remember to extend. Row COUNT,
+    not key presence: a key that survives holding zero rows is the defect.
+    """
     out = _rt(tool, resp)
-    # Just confirm the decode produces something usable with table keys preserved.
-    for table_key in ("affected_symbols", "chains", "results", "context_items", "plates"):
-        if table_key in resp:
-            assert table_key in out, f"{tool} lost {table_key}"
+    checked = 0
+    for key, value in resp.items():
+        if key.startswith("_") or not isinstance(value, list) or not value:
+            continue
+        if not all(isinstance(row, dict) for row in value):
+            continue  # list of scalars, not a table
+        checked += 1
+        assert key in out, f"{tool} lost table {key!r} entirely"
+        assert len(out[key]) == len(value), (
+            f"{tool}: table {key!r} went in with {len(value)} row(s) and came "
+            f"back with {len(out[key])}"
+        )
+    assert checked, f"{tool}: fixture holds no table -- this case asserts nothing"
 
 
 def test_get_tectonic_map_round_trip_realistic():

@@ -60,6 +60,8 @@ LANGUAGE_EXTENSIONS = {
     ".cjs": "javascript",
     ".jsx": "javascript",
     ".ts": "typescript",
+    ".mts": "typescript",
+    ".cts": "typescript",
     ".tsx": "tsx",
     ".go": "go",
     ".rs": "rust",
@@ -423,30 +425,59 @@ RUST_SPEC = LanguageSpec(
     ts_language="rust",
     symbol_node_types={
         "function_item": "function",
+        # ⚠ A trait method with a signature and NO default body
+        # (`fn required(&self) -> u32;`) is a `function_signature_item`, a
+        # different node type from `function_item`. Omitting it indexed only
+        # the trait methods that happen to carry a default -- i.e. the API
+        # surface a caller must implement was the half we could not find.
+        # Measured on ripgrep: 6 missing.
+        "function_signature_item": "function",
         "struct_item": "type",
         "enum_item": "type",
+        # ⚠ `union` is rare in application code and absent from ripgrep
+        # entirely, which is why a 110-file corpus run scored this gap as zero.
+        # It yielded NO symbol at all -- not even the name.
+        "union_item": "type",
         "trait_item": "type",
-        "impl_item": "class",
+        # ⚠ A trait's ASSOCIATED TYPE (`type Captures;`) is `associated_type`,
+        # a different node from the `type_item` an impl writes. Same shape as
+        # `function_signature_item` one line up, and the same consequence: the
+        # half of a trait's contract an implementor MUST supply was the half
+        # we could not find. `Matcher::Captures` and `Sink::Error` in ripgrep.
+        "associated_type": "type",
+        # ⚠⚠ `impl_item` is a CONTAINER but NOT a symbol, and the two lists
+        # below say so separately. It sat here mapped to "class" for the
+        # extractor's whole life and never produced one symbol, because no
+        # `name_fields` entry could name it -- so removing it changes no
+        # output. It must stay absent: `impl Foo` is a naming scope, there is
+        # no `impl` a caller can import, and emitting one would duplicate
+        # `struct Foo` and score as a fabrication against `syn`, which does
+        # not treat an impl block as a definition either.
         "type_item": "type",
     },
     name_fields={
         "function_item": "name",
+        "function_signature_item": "name",
         "struct_item": "name",
         "enum_item": "name",
+        "union_item": "name",
         "trait_item": "name",
+        "associated_type": "name",
         "type_item": "name",
     },
     param_fields={
         "function_item": "parameters",
+        "function_signature_item": "parameters",
     },
     return_type_fields={
         "function_item": "return_type",
+        "function_signature_item": "return_type",
     },
     docstring_strategy="preceding_comment",
     decorator_node_type="attribute_item",
     container_node_types=["impl_item", "trait_item"],
     constant_patterns=["const_item", "static_item"],
-    type_patterns=["struct_item", "enum_item", "trait_item", "type_item"],
+    type_patterns=["struct_item", "enum_item", "union_item", "trait_item", "type_item"],
 )
 
 

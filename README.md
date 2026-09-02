@@ -158,9 +158,9 @@ That's the highlight reel. The complete tour of 90+ tools, the MUNCH compact wir
 <!-- WHATSNEW:START -->
 #### What's new
 
-- **[v1.108.299](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.299)** (2026-08-25) — A name the file never spells
-- **[v1.108.298](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.298)** (2026-08-25) — A campaign that saw nothing
-- **[v1.108.297](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.297)** (2026-08-25) — The counter that never moved
+- **[v1.108.315](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.315)** (2026-09-01) — A fix for a false positive can install a false negative
+- **[v1.108.314](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.314)** (2026-09-01) — A rate written for a future date is wrong for every day before it
+- **[v1.108.313](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.313)** (2026-08-31) — An install created before a default can never learn there is a choice
 <!-- WHATSNEW:END -->
 
 ---
@@ -223,6 +223,56 @@ Deferred definitions are excluded from the system-prompt prefix and appended inl
 ## Security, privacy, and background behavior
 
 Local-first by design: indexes live at `~/.code-index/`, and the base package's only default network behavior is an anonymous savings counter (random ID plus aggregate token counts, no code, no paths, no PII; opt out with `share_savings: false`). Everything the server does beyond answering a tool call (file watching, the opt-in login service, license validation, model downloads, org reporting) is opt-in or opt-out, visible, and reversible, and every item is enumerated in **[SECURITY.md](SECURITY.md#background-behavior-fully-disclosed)** alongside the path-traversal, symlink, and secret-redaction controls.
+
+---
+
+## Per-project configuration
+
+Most settings live in the global `~/.code-index/config.jsonc`, but any of them can be overridden for a single repository by dropping a `.jcodemunch.jsonc` at its root. It is an **overlay**: keys it declares win, keys it omits fall through to global and then to the built-in default, so it only needs to contain what differs.
+
+```jsonc
+// <your-repo>/.jcodemunch.jsonc
+{
+  "max_file_size": 1048576,
+  "languages": ["python", "typescript", "racket"]
+}
+```
+
+### Declaring Racket defining forms
+
+Racket projects routinely define their own defining forms with `define-syntax`, and a static parser cannot know what those bind — `(defstep (check-admin) ...)` is indistinguishable from a function call. Declaring them makes their bindings searchable:
+
+```jsonc
+{
+  "racket_definition_forms": {
+    "defstep":  "function",
+    "defstudy": "constant",
+    "defvar":   "constant",
+    "define-schema": "class"
+  }
+}
+```
+
+Each entry maps a form name to what it binds: `function`, `constant`, `class` or `type`. Where the name sits is read from the source rather than declared — `(defstep (check-admin) ...)` takes the head of the parameter list, `(defstudy consent ...)` takes the bare symbol — so a form that appears in both shapes works either way.
+
+⚠ This is an assertion, not something jCodeMunch can verify. A wrong declaration puts a name in the index that Racket does not actually bind. Declarations are also matched only after every built-in form, so declaring `define` or `struct` has no effect — the built-in handling wins.
+
+### Declaring what a Racket `#lang` looks like
+
+A `#lang` line names a *reader*, and jCodeMunch's Racket parser reads S-expressions. The distribution's langs are built in (`racket/*`, `typed/racket*`, `s-exp`, `info`, `at-exp …`, and the document langs `scribble/*`, `pollen`, `punct`, `markdown` …), but a project's own lang is unknown to it and is treated as a document — no symbols, still text-searchable — until you say what its syntax is:
+
+```jsonc
+{
+  "racket_langs": {
+    "conscript": "at-exp",
+    "mylang": "sexp"
+  }
+}
+```
+
+`sexp` is plain S-expressions; `at-exp` is at-exp text bodies over Racket (read with `@` as the command character, exactly as `#lang at-exp` reads them, so prose containing `;` `"` `#` or `|` is prose); `text` is a document language that is never walked. A key also covers its sub-langs (`conscript` matches `conscript/with-require`), and a project may demote a lang as well as promote one. An at-exp lang whose reader uses another command character declares it with the object form — `"mylang": {"tier": "at-exp", "command_char": "◊"}` — the way Racket's `make-at-readtable` takes `#:command-char`.
+
+Both keys change what the parser emits for *unchanged* files, so a change to either is stamped on the index and forces one full re-parse on the next index (`rebuild_reason: "racket_config_changed"`); you do not need to touch the files or clear the index. An index holding Racket files that was built before this stamp existed re-parses once the same way (`rebuild_reason: "racket_index_predates_gate"`).
 
 ---
 

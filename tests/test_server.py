@@ -752,55 +752,6 @@ async def test_tier_controls_undisableable_by_default():
 
 
 @pytest.mark.asyncio
-async def test_tier_controls_disableable_with_escape_hatch():
-    """allow_disabling_tier_controls=True (issue #299) lets users disable tier controls."""
-    from jcodemunch_mcp import config as config_module
-
-    orig_config = config_module._GLOBAL_CONFIG.copy()
-    config_module._GLOBAL_CONFIG.clear()
-
-    try:
-        config_module._GLOBAL_CONFIG["disabled_tools"] = ["set_tool_tier", "announce_model"]
-        config_module._GLOBAL_CONFIG["allow_disabling_tier_controls"] = True
-
-        tools = await list_tools()
-        names = {t.name for t in tools}
-
-        assert "set_tool_tier" not in names
-        assert "announce_model" not in names
-        # Other tools still present.
-        assert "search_symbols" in names
-    finally:
-        config_module._GLOBAL_CONFIG.clear()
-        config_module._GLOBAL_CONFIG.update(orig_config)
-
-
-@pytest.mark.asyncio
-async def test_tier_controls_call_time_rejection_with_escape_hatch():
-    """With escape hatch on, calling set_tool_tier returns the project-disabled error."""
-    from jcodemunch_mcp import config as config_module
-    from jcodemunch_mcp.server import _reset_session_tiers
-
-    orig_config = config_module._GLOBAL_CONFIG.copy()
-    config_module._GLOBAL_CONFIG.clear()
-
-    try:
-        config_module._GLOBAL_CONFIG["disabled_tools"] = ["set_tool_tier"]
-        config_module._GLOBAL_CONFIG["allow_disabling_tier_controls"] = True
-
-        result = await call_tool("set_tool_tier", {"tier": "core"})
-        from mcp.types import CallToolResult
-        assert isinstance(result, CallToolResult) and result.isError is True
-        payload = json.loads(result.content[0].text)
-        assert "error" in payload
-        assert "disabled" in payload["error"].lower()
-    finally:
-        config_module._GLOBAL_CONFIG.clear()
-        config_module._GLOBAL_CONFIG.update(orig_config)
-        _reset_session_tiers()
-
-
-@pytest.mark.asyncio
 async def test_meta_fields_null_keeps_meta_envelope():
     """meta_fields=null passes through tool-native _meta unchanged."""
     from jcodemunch_mcp import config as config_module
@@ -1262,9 +1213,14 @@ def test_model_tier_map_default_present():
     mp = DEFAULTS["model_tier_map"]
     assert isinstance(mp, dict)
     assert mp["claude-opus"] == "full"
-    assert mp["claude-sonnet"] == "standard"
     assert mp["claude-haiku"] == "core"
     assert mp["*"] == "full"
+    # ⚠ `claude-sonnet` deliberately no longer names a tier here. It routed at
+    # "standard", a MID-SESSION narrowing that costs a full cache rewrite to
+    # save 6.7% of the payload -- 174 requests to repay itself. Pinning the
+    # literal made this test the defect's witness rather than its guard, so it
+    # asserts the PROPERTY instead; `test_tier_switch_cost.py` owns the rule.
+    assert set(mp.values()) <= {"core", "standard", "full"}
 
 
 def test_adaptive_tiering_defaults_false():

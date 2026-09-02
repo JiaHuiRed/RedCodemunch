@@ -1,23 +1,23 @@
 {
-  "current": "1.108.299",
+  "current": "1.108.315",
   "entries": [
     {
-      "version": "1.108.299",
-      "date": "2026-08-25",
-      "title": "A name the file never spells",
-      "summary": "`(struct posn (x y))` binds `posn?`, `posn-x` and `posn-y` as well as `posn`, and those are the names callers actually write -- but none of them occur anywhere in the file, so they exist in the index only if synthesised. They now are, sharing the struct form's byte range, so `get_symbol_source(\"posn-x\")`"
+      "version": "1.108.315",
+      "date": "2026-09-01",
+      "title": "A fix for a false positive can install a false negative",
+      "summary": "`confidence: 1.0` is documented as **provably unreachable**. That is a claim about the tree, and it was computed from the index with nothing in between."
     },
     {
-      "version": "1.108.298",
-      "date": "2026-08-25",
-      "title": "A campaign that saw nothing",
-      "summary": "`tools/refresh.py` re-runs discovery before stamping `parser_generation` and asked only whether the corpus had GROWN:"
+      "version": "1.108.314",
+      "date": "2026-09-01",
+      "title": "A rate written for a future date is wrong for every day before it",
+      "summary": "`tools` is serialised ahead of system and messages, so every byte of the published tool list sits in the cached prefix -- **4,184 B across six tools**, measured. Changing any of it invalidates that prefix and every turn behind it, for every session on every install. `benchmarks/tier_switch/` priced that at 174"
     },
     {
-      "version": "1.108.297",
-      "date": "2026-08-25",
-      "title": "The counter that never moved",
-      "summary": "`PARSER_GENERATION` 1 -> 2. Ten commits touched `parser/` since it was pinned to 1 on 2026-08-05; four of them change what gets extracted \u2014 `.246` (class field initializers stop donating members), `.254` (Python package-relative import edges), `.267` (Kotlin/Bash constants), `#428` (Rust/Go/Java/PHP constants)."
+      "version": "1.108.313",
+      "date": "2026-08-31",
+      "title": "An install created before a default can never learn there is a choice",
+      "summary": "`tool_surface` is written into a config exactly once, by `_fresh_config_content` on a genuinely first-ever install, and is deliberately kept out of `generate_template` so `upgrade_config` can never back-inject it. That freeze is correct: it is what stops a package update silently collapsing a user's tool"
     }
   ]
 }

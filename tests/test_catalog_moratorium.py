@@ -308,9 +308,8 @@ class TestGuidanceMatchesTheSurface:
         from jcodemunch_mcp.server import _CANONICAL_TOOL_NAMES
 
         known = set(_CANONICAL_TOOL_NAMES)
-        callable_now = {"order", "menu", "route"} | {
-            "jcodemunch_guide", "announce_model", "set_tool_tier",
-        }
+        callable_now = {"order", "menu", "route", "jcodemunch_guide",
+                        "announce_model"}
         leaked = (referenced & known) - callable_now
         assert not leaked, (
             "the counter policy names actions the client will not offer the "
