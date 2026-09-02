@@ -1,6 +1,9 @@
 # Session-logger artifact (not part of the project)
 LAST_SESSION.md
 
+# RedCode local session state
+.redcode/
+
 # Python
 __pycache__/
 *.py[cod]
