@@ -85,6 +85,15 @@ _DEFAULT_TOKENS_PER_CALL = 700  # cold-start per-call estimate before session da
 _LATENCY_RING_DEFAULT = 512  # per-tool latency ring size
 
 
+def _isolate(obj):
+    """Copy mutable result containers while reusing immutable leaves."""
+    if type(obj) is dict:
+        return {key: _isolate(value) for key, value in obj.items()}
+    if type(obj) is list:
+        return [_isolate(value) for value in obj]
+    return obj
+
+
 def _percentile_at(sorted_vals: "list[float]", pct: float) -> float:
     """Nearest-rank-style pick: the value at ``int(pct * n)``, clamped."""
     if not sorted_vals:
@@ -327,7 +336,7 @@ class _State:
             if full_key in self._result_cache:
                 self._result_cache.move_to_end(full_key)
                 self._cache_hits[tool_name] = self._cache_hits.get(tool_name, 0) + 1
-                return self._result_cache[full_key]
+                return _isolate(self._result_cache[full_key])
             self._cache_misses[tool_name] = self._cache_misses.get(tool_name, 0) + 1
             return None
 
@@ -335,7 +344,7 @@ class _State:
         """Store result in LRU cache. Evicts oldest entry when full. Thread-safe."""
         with self._lock:
             full_key = (tool_name, repo, specific_key)
-            self._result_cache[full_key] = result
+            self._result_cache[full_key] = _isolate(result)
             self._result_cache.move_to_end(full_key)
             if len(self._result_cache) > _RESULT_CACHE_MAXSIZE:
                 self._result_cache.popitem(last=False)

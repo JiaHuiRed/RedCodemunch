@@ -191,6 +191,26 @@ class TestIncrementalIndexFolder:
         assert idx_after_add is not None
         assert idx_after_add.languages == {"cpp": 2}
 
+    def test_incremental_full_discovery_reports_full_deletion(self, tmp_path):
+        """An emptied existing tree is reported as deletion, not a fresh-index error."""
+        src = tmp_path / "src"
+        src.mkdir()
+        store = tmp_path / "store"
+        _write_py(src, "main.py", "def main():\n    return 0\n")
+
+        full = index_folder(str(src), use_ai_summaries=False, storage_path=str(store))
+        assert full["success"] is True
+
+        (src / "main.py").unlink()
+        inc = index_folder(
+            str(src), use_ai_summaries=False, storage_path=str(store), incremental=True
+        )
+
+        assert inc["success"] is True
+        assert inc["deleted"] == 1
+        assert inc["full_deletion"] is True
+        assert any("full_deletion" in warning for warning in inc["warnings"])
+
     def test_incremental_no_symbol_file_not_repeatedly_new(self, tmp_path):
         """No-symbol files should not be repeatedly reported as new across incremental runs."""
         src = tmp_path / "src"

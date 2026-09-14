@@ -33,8 +33,9 @@ class Symbol:
 
 
 
-# Single source of truth for all symbol kinds emitted by parsers.
-VALID_KINDS: frozenset[str] = frozenset({
+# Single source of truth for all symbol kinds emitted by parsers and published
+# by the search_symbols schema. Append new kinds to preserve schema order.
+KIND_ORDER: tuple[str, ...] = (
     "function",   # Standalone functions, procedures, subroutines
     "class",      # Classes, structs, modules-as-containers
     "method",     # Methods belonging to a class/module
@@ -42,7 +43,10 @@ VALID_KINDS: frozenset[str] = frozenset({
     "type",       # Type aliases, interfaces, enums, traits, protocols
     "template",   # C++ templates
     "import",     # Import directives (C++ #include, etc.)
-})
+    "field",      # Struct/dataclass/record fields
+)
+
+VALID_KINDS: frozenset[str] = frozenset(KIND_ORDER)
 
 
 def make_symbol_id(file_path: str, qualified_name: str, kind: str = "") -> str:

@@ -485,6 +485,11 @@ def _row_summary(sym: dict) -> str:
     return summary
 
 
+def _heap_tiebreak(symbol_id: str) -> bytes:
+    """Return an inverted ID key so smaller IDs win equal-score ties."""
+    return bytes(255 - byte for byte in symbol_id.encode("utf-8", "surrogatepass"))
+
+
 def search_symbols(
     repo: str,
     query: str,
@@ -853,7 +858,7 @@ def search_symbols(
         candidates = [index.symbols[i] for i in sorted(candidate_indices)]
     else:
         candidates = index.symbols
-    heap: list[tuple[float, int, dict]] = []  # (score, candidates_scored, entry)
+    heap: list[tuple[float, bytes, dict]] = []  # (score, inverted ID, entry)
     candidates_scored = 0
     max_bm25_score = 0.0
 
@@ -912,13 +917,14 @@ def search_symbols(
             entry["score_breakdown"] = _bm25_breakdown(sym, query_terms, idf, avgdl, raw_query=query)
 
         # Bounded heap: O(N log K) instead of O(N log N)
+        tiebreak = _heap_tiebreak(entry.get("id", ""))
         if len(heap) < effective_limit:
-            heapq.heappush(heap, (heap_score, candidates_scored, entry))
-        elif heap_score > heap[0][0]:
-            heapq.heapreplace(heap, (heap_score, candidates_scored, entry))
+            heapq.heappush(heap, (heap_score, tiebreak, entry))
+        elif (heap_score, tiebreak) > (heap[0][0], heap[0][1]):
+            heapq.heapreplace(heap, (heap_score, tiebreak, entry))
 
-    # Extract results sorted by score descending
-    _sorted_heap = sorted(heap, key=lambda x: x[0], reverse=True)
+    # Extract results sorted by score descending, ties by symbol ID ascending.
+    _sorted_heap = sorted(heap, key=lambda x: (-x[0], x[2].get("id", "")))
     scored_results = [entry for _, _, entry in _sorted_heap]
     # Real ranking scores (top-first) for confidence/ledger — kept separate from
     # the response entries so _meta.confidence grades on real gap/strength instead

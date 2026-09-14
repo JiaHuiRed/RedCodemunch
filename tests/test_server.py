@@ -78,7 +78,8 @@ async def test_search_symbols_tool_schema():
 
     # kind should have enum
     assert "enum" in props["kind"]
-    assert set(props["kind"]["enum"]) == {"function", "class", "method", "constant", "type", "template", "import"}
+    from jcodemunch_mcp.parser.symbols import KIND_ORDER
+    assert props["kind"]["enum"] == list(KIND_ORDER)
     assert "enum" in props["language"]
     assert "cpp" in props["language"]["enum"]
     assert "razor" in props["language"]["enum"]

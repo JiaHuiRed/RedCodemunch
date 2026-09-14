@@ -153,7 +153,7 @@ Want to skip initial indexing for popular frameworks? Pre-built **starter packs*
 - **Trust the answers.** Calibrated confidence scores, freshness flags, coverage contracts on absence claims, compiler-verified references via SCIP import, and automatic secret redaction before anything reaches the LLM.
 - **Keep the index fresh automatically.** Watch modes, agent hooks, and a VS Code extension close the staleness gap.
 
-That's the highlight reel. The complete tour of 90+ tools, the MUNCH compact wire format, evidence receipts, offloadable-work annotation, and the session-economics instrumentation is in **[CAPABILITIES.md](CAPABILITIES.md)**, with internals in [UNDER_THE_HOOD.md](UNDER_THE_HOOD.md).
+That's the highlight reel. The complete tour of the fork's 52 tools, the MUNCH compact wire format, evidence receipts, offloadable-work annotation, and the session-economics instrumentation is in **[CAPABILITIES.md](CAPABILITIES.md)**, with internals in [UNDER_THE_HOOD.md](UNDER_THE_HOOD.md).
 
 <!-- WHATSNEW:START -->
 #### What's new

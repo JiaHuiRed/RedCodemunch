@@ -1,20 +1,23 @@
 """Filesystem watcher — monitors folders and triggers incremental re-indexing."""
 
 import asyncio
+from bisect import bisect_left
 import json
 import logging
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import aclosing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, IO, Optional
 
 from .hook_event import default_manifest_path, read_manifest
-from .tools.index_folder import index_folder
+from .tools.index_folder import _build_skip_dirs_regex, index_folder
 from .tools.invalidate_cache import invalidate_cache
 from .reindex_state import (
     WatcherChange,
@@ -57,6 +60,137 @@ def _watch_poll_delay_ms() -> int:
         if val > 0:
             return val
     return DEFAULT_WATCH_POLL_DELAY_MS
+
+
+def _watch_directories(folder_path: str) -> dict[str, tuple[int, int]]:
+    """Enumerate real directories, never the symlink dependency graph.
+
+    Like discovery, directory symlinks are NEVER followed (even when
+    follow_symlinks enables symlinked *files*). Inode identity detects a
+    directory replaced at the same path, which needs a new native watch.
+    """
+    skip_dirs = _build_skip_dirs_regex(repo=folder_path)
+    directories = {}
+    for current, dirs, _ in os.walk(folder_path, followlinks=False):
+        if os.path.islink(current):
+            dirs[:] = []
+            continue
+        try:
+            stat_result = os.stat(current, follow_symlinks=False)
+        except OSError:
+            dirs[:] = []
+            continue
+        directories[current] = (stat_result.st_dev, stat_result.st_ino)
+        dirs[:] = [
+            name for name in dirs
+            if not skip_dirs.match(name)
+        ]
+    return directories
+
+
+def _index_key_prefix(folder_path: str, source_root: Optional[str]) -> str:
+    """Prefix a watched-folder path with its index-root-relative directory."""
+    if not source_root:
+        return ""
+    try:
+        prefix = Path(folder_path).resolve().relative_to(Path(source_root).resolve()).as_posix()
+    except (OSError, ValueError):
+        return ""
+    return "" if prefix == "." else prefix
+
+
+def _force_polling_default() -> bool:
+    """Match watchfiles' default polling decision without requiring its private API."""
+    try:
+        from watchfiles.main import _default_force_polling
+    except ImportError:
+        env_value = os.getenv("WATCHFILES_FORCE_POLLING")
+        if env_value:
+            return env_value.lower() not in {"false", "disable", "disabled"}
+        import platform
+
+        uname = platform.uname()
+        return (
+            uname.system.lower() == "linux"
+            and "microsoft-standard" in uname.release.lower()
+        )
+    return bool(_default_force_polling(None))
+
+
+async def _safe_awatch(folder_path: str, debounce_ms: int):
+    """Watch real directories without expanding symlink dependency graphs.
+
+    Linux and polling traverse links before filtering, so they receive an
+    explicit real-directory watch set. Native macOS/Windows recursion avoids
+    installing a separate watcher for every directory.
+
+    A post-arm census closes registration gaps before reconciling the index.
+    The periodic census recovers missed directory topology events; ordinary
+    file edits keep the incremental fast path.
+    """
+    from watchfiles import awatch, Change
+
+    force_polling = _force_polling_default()
+    recursive = sys.platform != "linux" and not force_polling
+    directories = None if recursive else await asyncio.to_thread(_watch_directories, folder_path)
+    while recursive or directories:
+        root_identity = os.stat(folder_path) if recursive else None
+        rescan = True
+        checked_at = time.monotonic()
+        stream = awatch(
+            *([folder_path] if directories is None else directories),
+            debounce=debounce_ms,
+            recursive=recursive,
+            force_polling=force_polling,
+            step=200,
+            poll_delay_ms=_watch_poll_delay_ms(),
+            rust_timeout=1000,
+            yield_on_timeout=True,
+        )
+        try:
+            async with aclosing(stream):
+                async for changes in stream:
+                    if root_identity is not None:
+                        current_root = os.stat(folder_path)
+                        if not stat.S_ISDIR(current_root.st_mode):
+                            raise FileNotFoundError(
+                                f"Watched directory disappeared: {folder_path}"
+                            )
+                        if not os.path.samestat(root_identity, current_root):
+                            break
+                    if directories is not None:
+                        topology_changed = any(
+                            change in (Change.added, Change.deleted)
+                            and (path in directories or os.path.isdir(path))
+                            for change, path in changes
+                        )
+                        # Census after registration catches edits in a new
+                        # directory whose watcher was not armed yet.
+                        if rescan or topology_changed or time.monotonic() - checked_at >= 60.0:
+                            current = await asyncio.to_thread(_watch_directories, folder_path)
+                            checked_at = time.monotonic()
+                            if current != directories:
+                                directories = current
+                                break
+                            del current
+                    if rescan:
+                        rescan = False
+                        yield {(Change.modified, folder_path)}
+                    if changes:
+                        yield changes
+                else:
+                    return
+        except FileNotFoundError:
+            # A child can vanish after enumeration but before native registration.
+            # Retry only when a fresh census can repair the watch set.
+            if recursive:
+                raise
+            current = await asyncio.to_thread(_watch_directories, folder_path)
+            if folder_path not in current or current == directories:
+                raise
+            directories = current
+            rescan = True
+    raise FileNotFoundError(f"Watched directory disappeared: {folder_path}")
 
 
 def _is_wsl() -> bool:
@@ -338,14 +472,18 @@ async def _watch_single(
     # Memory hash cache: rel_path -> content hash (for WatcherChange old_hash passthrough)
     _hash_cache: dict[str, str] = {}
     _hash_cache_built = False
+    _hash_cache_prefix = ""
 
     def _build_hash_cache() -> None:
         """Build the memory hash cache from the on-disk index."""
-        nonlocal _hash_cache_built
+        nonlocal _hash_cache_built, _hash_cache_prefix
         _hash_cache.clear()
         idx = store.load_index(_repo_owner, _repo_store_name)
         if idx and idx.file_hashes:
             _hash_cache.update(idx.file_hashes)
+        _hash_cache_prefix = _index_key_prefix(
+            folder_path, remap(getattr(idx, "source_root", "") or "", _pairs)
+        )
         _hash_cache_built = True
 
     # Do an initial incremental index to ensure the index is current.
@@ -389,7 +527,7 @@ async def _watch_single(
         )
 
     try:
-        from watchfiles import awatch, Change
+        from watchfiles import Change
     except ImportError as exc:
         raise ImportError(_watchfiles_missing_msg()) from exc
 
@@ -400,23 +538,11 @@ async def _watch_single(
         quiet=quiet, log_file_handle=log_file_handle,
     )
 
-    async for changes in awatch(
-        folder_path,
-        debounce=debounce_ms,
-        recursive=True,
-        step=200,
-        # Only consulted when watchfiles polls (e.g. under WSL); a higher delay
-        # there is the difference between idle and pegged CPU (#356).
-        poll_delay_ms=_watch_poll_delay_ms(),
-    ):
+    async for changes in _safe_awatch(folder_path, debounce_ms):
         relevant = [
             (change_type, path)
             for change_type, path in changes
             if change_type in (Change.added, Change.modified, Change.deleted)
-            and not any(
-                part.startswith(".")
-                for part in Path(path).relative_to(folder_path).parts
-            )
         ]
 
         if not relevant:
@@ -445,11 +571,26 @@ async def _watch_single(
             # Map watchfiles Change enum to WatcherChange objects with old_hash from memory cache
             _change_map = {Change.added: "added", Change.modified: "modified", Change.deleted: "deleted"}
             watcher_changes: list[WatcherChange] = []
+            needs_discovery = False
+            sorted_cached: list[str] | None = None
             for ct, p in relevant:
                 change_type_str = _change_map[ct]
+                cached_rel = Path(p).relative_to(folder_path).as_posix()
+                if _hash_cache_prefix:
+                    cached_rel = f"{_hash_cache_prefix}/{cached_rel}"
+                if not needs_discovery and (p == folder_path or os.path.isdir(p)):
+                    needs_discovery = True
                 if ct == Change.deleted:
-                    # For deletions, old_hash comes from our memory cache
-                    old_hash = _hash_cache.get(Path(p).relative_to(folder_path).as_posix(), "")
+                    # A moved-out directory no longer satisfies isdir(). Its indexed
+                    # descendants still need removal; known file deletes stay O(1).
+                    if not needs_discovery and cached_rel not in _hash_cache:
+                        if sorted_cached is None:
+                            sorted_cached = sorted(_hash_cache)
+                        prefix = cached_rel + "/"
+                        at = bisect_left(sorted_cached, prefix)
+                        if at < len(sorted_cached) and sorted_cached[at].startswith(prefix):
+                            needs_discovery = True
+                    old_hash = _hash_cache.get(cached_rel, "")
                 elif ct == Change.modified:
                     # Use memory cache as the source of truth for old_hash.
                     # Do NOT fall back to reading the file: by the time watchfiles
@@ -459,7 +600,6 @@ async def _watch_single(
                     # Sentinel "__cache_miss__" keeps use_memory_hash_cache=True (fast
                     # path active, no full-index disk load) while guaranteeing the file
                     # is re-parsed rather than skipped.
-                    cached_rel = Path(p).relative_to(folder_path).as_posix()
                     old_hash = _hash_cache.get(cached_rel, "") or "__cache_miss__"
                 else:
                     # For additions, no old hash
@@ -476,7 +616,8 @@ async def _watch_single(
                 extra_ignore_patterns=extra_ignore_patterns,
                 follow_symlinks=follow_symlinks,
                 incremental=True,
-                changed_paths=watcher_changes,
+                # Trees may move in or out without individual file events.
+                changed_paths=None if needs_discovery else watcher_changes,
             )
             if result.get("success"):
                 duration = result.get("duration_seconds", "?")

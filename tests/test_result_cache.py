@@ -39,31 +39,44 @@ class TestResultCacheBasics:
         payload = {"symbol": "foo", "confirmed": [], "_meta": {"timing_ms": 42.0}}
         result_cache_put("get_blast_radius", "owner/repo", ("sym", 1, 0, False, False), payload)
         got = result_cache_get("get_blast_radius", "owner/repo", ("sym", 1, 0, False, False))
-        assert got is payload
+        assert got == payload
+        assert got is not payload
 
     def test_different_tools_dont_collide(self):
         a = {"tool": "a"}
         b = {"tool": "b"}
         result_cache_put("tool_a", "r/r", ("k",), a)
         result_cache_put("tool_b", "r/r", ("k",), b)
-        assert result_cache_get("tool_a", "r/r", ("k",)) is a
-        assert result_cache_get("tool_b", "r/r", ("k",)) is b
+        assert result_cache_get("tool_a", "r/r", ("k",)) == a
+        assert result_cache_get("tool_b", "r/r", ("k",)) == b
 
     def test_different_repos_dont_collide(self):
         a = {"repo": "r1"}
         b = {"repo": "r2"}
         result_cache_put("get_blast_radius", "owner/r1", ("sym",), a)
         result_cache_put("get_blast_radius", "owner/r2", ("sym",), b)
-        assert result_cache_get("get_blast_radius", "owner/r1", ("sym",)) is a
-        assert result_cache_get("get_blast_radius", "owner/r2", ("sym",)) is b
+        assert result_cache_get("get_blast_radius", "owner/r1", ("sym",)) == a
+        assert result_cache_get("get_blast_radius", "owner/r2", ("sym",)) == b
 
     def test_different_specific_keys_dont_collide(self):
         a = {"depth": 1}
         b = {"depth": 2}
         result_cache_put("get_blast_radius", "o/r", ("sym", 1, 0, False, False), a)
         result_cache_put("get_blast_radius", "o/r", ("sym", 2, 0, False, False), b)
-        assert result_cache_get("get_blast_radius", "o/r", ("sym", 1, 0, False, False)) is a
-        assert result_cache_get("get_blast_radius", "o/r", ("sym", 2, 0, False, False)) is b
+        assert result_cache_get("get_blast_radius", "o/r", ("sym", 1, 0, False, False)) == a
+        assert result_cache_get("get_blast_radius", "o/r", ("sym", 2, 0, False, False)) == b
+
+    def test_nested_mutations_do_not_reach_cache(self):
+        payload = {"_meta": {"verdict": {"score": 1}}, "results": [{"id": "a"}]}
+        result_cache_put("tool", "o/r", ("k",), payload)
+
+        payload["_meta"]["verdict"]["score"] = 0
+        payload["results"][0]["id"] = "changed"
+
+        assert result_cache_get("tool", "o/r", ("k",)) == {
+            "_meta": {"verdict": {"score": 1}},
+            "results": [{"id": "a"}],
+        }
 
 
 # ---------------------------------------------------------------------------

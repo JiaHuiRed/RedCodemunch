@@ -32,6 +32,7 @@ from collections import defaultdict
 from typing import Optional
 
 from ..storage import IndexStore
+from ._git_history import churn_is_measurable, history_coverage
 from ._utils import resolve_repo
 from .get_dependency_graph import _build_adjacency
 
@@ -110,14 +111,28 @@ def _temporal_edges(source_root: str, source_files: frozenset, days: int = 90) -
     """
     try:
         r = subprocess.run(
-            ["git", "log", f"--since={days} days ago", "--name-only", "--format=COMMIT_SEP"],
+            [
+                "git", "log", f"--since={days} days ago", "--relative",
+                "--name-only", "--format=format:COMMIT_SEP",
+            ],
             cwd=source_root, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=60, stdin=subprocess.DEVNULL,
         )
-        if r.returncode != 0 or not r.stdout.strip():
+        if r.returncode != 0:
+            logger.warning(
+                "tectonic temporal signal unavailable: git log exited %s in %s: %s",
+                r.returncode,
+                source_root,
+                (r.stderr or "").strip()[:500],
+            )
+            return {}
+        if not r.stdout.strip():
             return {}
     except Exception:
-        logger.debug("git co-churn extraction failed", exc_info=True)
+        logger.warning(
+            "tectonic temporal signal unavailable: git co-churn extraction failed",
+            exc_info=True,
+        )
         return {}
 
     # Parse commits: split on COMMIT_SEP, extract file sets per commit
@@ -426,6 +441,7 @@ def get_tectonic_map(
 
     # --- Build the three signals ---
     signals_used = []
+    signals_withheld: dict[str, dict] = {}
 
     # 1. Structural (always available if imports exist)
     fwd = _build_adjacency(index.imports, source_files, alias_map, psr4_map)
@@ -448,9 +464,14 @@ def get_tectonic_map(
                 timeout=5, stdin=subprocess.DEVNULL,
             )
             if r.returncode == 0:
-                temporal = _temporal_edges(index.source_root, source_files, days)
-                if temporal:
-                    signals_used.append("temporal")
+                if churn_is_measurable(index.source_root, days):
+                    temporal = _temporal_edges(index.source_root, source_files, days)
+                    if temporal:
+                        signals_used.append("temporal")
+                else:
+                    signals_withheld["temporal"] = history_coverage(
+                        index.source_root, days
+                    )
         except Exception:
             logger.debug("git availability check failed for tectonic", exc_info=True)
 
@@ -478,6 +499,7 @@ def get_tectonic_map(
             "plates": [],
             "isolated_files": sorted(source_files),
             "signals_used": signals_used,
+            **({"signals_withheld": signals_withheld} if signals_withheld else {}),
             "drifter_summary": [],
             "_meta": {
                 "timing_ms": round((time.perf_counter() - t0) * 1000, 1),
@@ -550,6 +572,7 @@ def get_tectonic_map(
         "plates": plates,
         "isolated_files": isolated,
         "signals_used": signals_used,
+        **({"signals_withheld": signals_withheld} if signals_withheld else {}),
         "drifter_summary": drifter_summary[:30],  # cap for readability
         "_meta": {
             "timing_ms": round(elapsed, 1),
