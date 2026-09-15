@@ -30,6 +30,7 @@ from .tools import _arg_contract
 # for sessions that only use query tools and never trigger indexing.
 from .parser.symbols import KIND_ORDER, VALID_KINDS
 from .summarizer import get_provider_name
+from .index_jobs import IndexJobRegistry
 from .reindex_state import await_freshness_if_strict
 from .storage import result_cache_invalidate as _result_cache_invalidate
 from .storage import write_pulse as _write_pulse
@@ -43,6 +44,7 @@ except ImportError:
 
 # Global watcher manager instance (set in _run_server_with_watcher)
 _watcher_manager: Optional["WatcherManager"] = None
+_index_jobs = IndexJobRegistry()
 
 
 # Canonical list of all registered tool names (unfiltered).
@@ -50,7 +52,7 @@ _watcher_manager: Optional["WatcherManager"] = None
 # `claude-md --generate` to detect CLAUDE.md / hook-script drift.
 _CANONICAL_TOOL_NAMES: tuple[str, ...] = (
     # Indexing
-    "index_repo", "index_folder", "index_file",
+    "index_repo", "index_folder", "get_index_job", "index_file",
     "index_dependency",
     # Discovery
     "list_repos", "resolve_repo", "suggest_queries",
@@ -95,7 +97,7 @@ _CANONICAL_TOOL_NAMES: tuple[str, ...] = (
 # meta-test fails listing the gap. Keeps a new tool from drifting across the
 # registration surfaces (the recurring "added the tool in 4 of 5 places" trap).
 _SNIPPET_TOOL_CATEGORIES: list[tuple[str, list[str]]] = [
-    ("Indexing", ["index_repo", "index_folder", "index_file",
+    ("Indexing", ["index_repo", "index_folder", "get_index_job", "index_file",
                   "index_dependency"]),
     ("Discovery", ["list_repos", "resolve_repo", "suggest_queries",
                    "get_repo_outline", "get_file_tree", "get_file_outline"]),
@@ -132,7 +134,7 @@ _SNIPPET_TOOL_CATEGORIES: list[tuple[str, list[str]]] = [
 # --------------------------------------------------------------------------- #
 _TOOL_TIER_CORE: frozenset[str] = frozenset({
     # Indexing
-    "index_repo", "index_folder", "index_file",
+    "index_repo", "index_folder", "get_index_job", "index_file",
     # Discovery
     "list_repos", "resolve_repo", "get_repo_outline",
     "get_file_tree", "get_file_outline",
@@ -1084,6 +1086,7 @@ _EXCLUDED_FROM_STRICT = frozenset({
     "get_session_snapshot",
     "index_repo",
     "index_folder",
+    "get_index_job",
     "index_file",
     })
 
@@ -1535,6 +1538,11 @@ def _build_tools_list(
                         "type": "integer",
                         "minimum": 1,
                         "description": "Per-file byte cap for this run, overriding config and the 512000-byte default. Files over the cap are skipped entirely and their symbols never enter the index; the response names them in `warnings`. Omit to use config / JCODEMUNCH_MAX_FILE_SIZE."
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "Return immediately with a job_id and index in this server process. Poll get_index_job for progress, result, or failure.",
+                        "default": False
                     }
                 },
                 "required": ["url"]
@@ -1585,9 +1593,28 @@ def _build_tools_list(
                         "type": "integer",
                         "minimum": 1,
                         "description": "Per-file byte cap for this run, overriding config and the 512000-byte default. Files over the cap are skipped entirely and their symbols never enter the index; the response names them in `warnings`. Per-call only — for a repo with a permanently oversize file, set `max_file_size` in its .jcodemunch.jsonc instead. Omit to use config / JCODEMUNCH_MAX_FILE_SIZE."
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "Return immediately with a job_id and index in this server process. Poll get_index_job for progress, result, or failure.",
+                        "default": False
                     }
                 },
                 "required": ["path"]
+            }
+        ),
+        Tool(
+            name="get_index_job",
+            description="Poll an index job started with background=true. Returns its progress while running, then its result or error.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "Opaque job id returned by index_folder or index_repo."
+                    }
+                },
+                "required": ["job_id"]
             }
         ),
         Tool(
@@ -4461,7 +4488,7 @@ async def _call_tool_impl(name: str, arguments: dict) -> list[TextContent] | Cal
 
         # Progress notifications for long-running tools
         _progress_cb = None
-        if name in ("index_repo", "index_folder", "index_file"):
+        if name in ("index_repo", "index_folder", "index_file") and not arguments.get("background", False):
             try:
                 from .progress import (
                     make_progress_notify, ProgressReporter, HeartbeatReporter,
@@ -4489,35 +4516,65 @@ async def _call_tool_impl(name: str, arguments: dict) -> list[TextContent] | Cal
 
         if name == "index_repo":
             from .tools.index_repo import index_repo
-            result = await index_repo(
-                url=arguments["url"],
-                use_ai_summaries=arguments.get("use_ai_summaries", _default_use_ai_summaries()),
-                storage_path=storage_path,
-                incremental=arguments.get("incremental", True),
-                extra_ignore_patterns=arguments.get("extra_ignore_patterns"),
-                progress_cb=_progress_cb,
-                max_size=arguments.get("max_size"),
-            )
-            _result_cache_invalidate()
+
+            async def _index_repo_job(progress_cb):
+                return await index_repo(
+                    url=arguments["url"],
+                    use_ai_summaries=arguments.get("use_ai_summaries", _default_use_ai_summaries()),
+                    storage_path=storage_path,
+                    incremental=arguments.get("incremental", True),
+                    extra_ignore_patterns=arguments.get("extra_ignore_patterns"),
+                    progress_cb=progress_cb,
+                    max_size=arguments.get("max_size"),
+                )
+
+            if arguments.get("background", False):
+                result = _index_jobs.start("index_repo", arguments["url"], _index_repo_job, _result_cache_invalidate)
+            else:
+                result = await _index_repo_job(_progress_cb)
+                _result_cache_invalidate()
         elif name == "index_folder":
             from .tools.index_folder import index_folder
             _ai = arguments.get("use_ai_summaries", _default_use_ai_summaries())
-            result = await asyncio.to_thread(
-                functools.partial(
-                    index_folder,
-                    path=arguments["path"],
-                    use_ai_summaries=_ai,
-                    storage_path=storage_path,
-                    extra_ignore_patterns=arguments.get("extra_ignore_patterns"),
-                    follow_symlinks=arguments.get("follow_symlinks", False),
-                    incremental=arguments.get("incremental", True),
-                    paths=arguments.get("paths"),
-                    identity_mode=arguments.get("identity_mode", "config"),
-                    progress_cb=_progress_cb,
-                    max_size=arguments.get("max_size"),
+
+            async def _index_folder_job(progress_cb):
+                return await asyncio.to_thread(
+                    functools.partial(
+                        index_folder,
+                        path=arguments["path"],
+                        use_ai_summaries=_ai,
+                        storage_path=storage_path,
+                        extra_ignore_patterns=arguments.get("extra_ignore_patterns"),
+                        follow_symlinks=arguments.get("follow_symlinks", False),
+                        incremental=arguments.get("incremental", True),
+                        paths=arguments.get("paths"),
+                        identity_mode=arguments.get("identity_mode", "config"),
+                        progress_cb=progress_cb,
+                        max_size=arguments.get("max_size"),
+                    )
                 )
-            )
-            _result_cache_invalidate()
+            if arguments.get("background", False):
+                deferred_watch = _deferred_watch
+                _deferred_watch = None
+
+                def _on_background_index_folder_success():
+                    _result_cache_invalidate()
+                    if deferred_watch is not None:
+                        asyncio.create_task(_auto_watch_after_tool(deferred_watch))
+
+                result = _index_jobs.start(
+                    "index_folder",
+                    arguments["path"],
+                    _index_folder_job,
+                    _on_background_index_folder_success,
+                )
+            else:
+                result = await _index_folder_job(_progress_cb)
+                _result_cache_invalidate()
+        elif name == "get_index_job":
+            result = _index_jobs.get(arguments["job_id"])
+            if result is None:
+                return _fail(json.dumps({"error": f"Unknown index job: {arguments['job_id']}"}, separators=(",", ":")))
         elif name == "index_file":
             from .tools.index_file import index_file
             _ai = arguments.get("use_ai_summaries", _default_use_ai_summaries())

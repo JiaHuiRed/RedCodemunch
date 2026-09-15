@@ -1,5 +1,6 @@
 """End-to-end server tests."""
 
+import asyncio
 import pytest
 import json
 import threading
@@ -21,11 +22,11 @@ async def test_server_lists_all_tools():
     try:
         tools = await list_tools()
 
-        assert len(tools) == 52
+        assert len(tools) == 53
 
         names = {t.name for t in tools}
         expected = {
-            "index_repo", "index_folder", "index_file", "index_dependency",
+            "index_repo", "index_folder", "get_index_job", "index_file", "index_dependency",
             "list_repos", "resolve_repo",
             "get_file_tree", "get_file_outline", "get_file_content", "get_symbol_source",
             "search_symbols", "search_text", "search_ast", "get_repo_outline",
@@ -60,6 +61,17 @@ async def test_index_repo_tool_schema():
     assert "url" in index_repo.inputSchema["properties"]
     assert "use_ai_summaries" in index_repo.inputSchema["properties"]
     assert "url" in index_repo.inputSchema["required"]
+    assert "background" in index_repo.inputSchema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_get_index_job_tool_schema():
+    """Background index jobs must be pollable from every MCP client."""
+    tools = await list_tools()
+    get_index_job = next(t for t in tools if t.name == "get_index_job")
+
+    assert "job_id" in get_index_job.inputSchema["properties"]
+    assert get_index_job.inputSchema["required"] == ["job_id"]
 
 
 @pytest.mark.asyncio
@@ -228,6 +240,26 @@ async def test_index_folder_dispatched_via_to_thread():
     assert thread_used[0] is not threading.main_thread(), (
         "index_folder ran on the main thread — asyncio.to_thread dispatch is broken"
     )
+
+
+@pytest.mark.asyncio
+async def test_background_index_folder_returns_a_pollable_job():
+    """A slow index must release the MCP request while retaining a result handle."""
+    with patch("jcodemunch_mcp.tools.index_folder.index_folder", return_value={"success": True, "repo": "local/test"}):
+        submitted = await call_tool("index_folder", {"path": "/tmp/project", "background": True})
+        body = json.loads(submitted[0].text)
+        assert body["status"] in {"queued", "running"}
+        assert body["job_id"]
+
+        for _ in range(20):
+            polled = await call_tool("get_index_job", {"job_id": body["job_id"]})
+            state = json.loads(polled[0].text)
+            if state["status"] == "completed":
+                break
+            await asyncio.sleep(0)
+
+    assert state["status"] == "completed"
+    assert state["result"] == {"success": True, "repo": "local/test"}
 
 
 @pytest.mark.asyncio
@@ -706,8 +738,8 @@ async def test_disabled_tools_filtered_from_schema(monkeypatch):
 
         assert "index_repo" not in tool_names
         assert "get_file_tree" in tool_names  # Not disabled
-        # 52 tools - 1 disabled = 51 (announce_model is undisableable).
-        assert len(tools) == 51
+        # 53 tools - 1 disabled = 52 (announce_model is undisableable).
+        assert len(tools) == 52
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -725,7 +757,7 @@ async def test_disabled_tools_empty_all_tools_present(monkeypatch):
         config_module._GLOBAL_CONFIG["disabled_tools"] = []
 
         tools = await list_tools()
-        assert len(tools) == 52
+        assert len(tools) == 53
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)

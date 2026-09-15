@@ -389,7 +389,7 @@ DEFAULTS = {
     "surface_offer_seen": False,
     "tool_tier_bundles": {
         "core": [
-            "index_repo", "index_folder", "index_file",
+            "index_repo", "index_folder", "get_index_job", "index_file",
             "list_repos", "resolve_repo",
             "get_repo_outline", "get_file_tree", "get_file_outline",
             "search_symbols", "get_symbol_source", "get_file_content",
@@ -399,7 +399,7 @@ DEFAULTS = {
         ],
         "standard": [
             # core ∪ these additional tools
-            "index_repo", "index_folder", "index_file",
+            "index_repo", "index_folder", "get_index_job", "index_file",
             "list_repos", "resolve_repo",
             "get_repo_outline", "get_file_tree", "get_file_outline",
             "search_symbols", "get_symbol_source", "get_file_content",
@@ -2285,7 +2285,7 @@ def generate_template() -> str:
   // in a bundle and in disabled_tools will not be exposed regardless of tier.
   "tool_tier_bundles": {{
     "core": [
-      "index_repo", "index_folder", "index_file",
+       "index_repo", "index_folder", "get_index_job", "index_file",
       "list_repos", "resolve_repo",
       "get_repo_outline", "get_file_tree", "get_file_outline",
       "search_symbols", "get_symbol_source", "get_file_content",
@@ -2294,7 +2294,7 @@ def generate_template() -> str:
       "find_importers", "find_references"
     ],
     "standard": [
-      "index_repo", "index_folder", "index_file",
+       "index_repo", "index_folder", "get_index_job", "index_file",
       "list_repos", "resolve_repo",
       "get_repo_outline", "get_file_tree", "get_file_outline",
       "search_symbols", "get_symbol_source", "get_file_content",

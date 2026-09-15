@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Background indexing with an honest job handle** (`index_folder` / `index_repo`
+  `background=true`, `get_index_job`): long indexes can now return immediately
+  with an opaque job id and retain server-owned progress, result, and failure
+  state for polling. The request-scoped MCP progress notifier is deliberately
+  not reused after the response, and no cancel endpoint is advertised because
+  cancelling an `asyncio.to_thread` wrapper does not stop synchronous parsing.
+  Result caches invalidate only after a successful job; failed jobs preserve
+  their error for diagnosis.
+
 ### Changed - RedCodemunch slimming: 39 of 91 tools removed
 
 Fork trimmed to its real usage surface (measured across three months of session
