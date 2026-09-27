@@ -2,6 +2,71 @@
 
 ## [Unreleased]
 
+### Fixed - a class in a Vue or Svelte `<script>` owns its members (#861)
+
+A class declared in a Vue `<script>` published its name and nothing else: no
+method, no field, no TypeScript parameter property. A class expression
+(`const C = class { m() {} }`) published a `constant` with no class at all.
+The same script in a `.ts` or `.js` file gives `Svc#class` owning `Svc.m`,
+`Svc.x` and (in TypeScript) `Svc.a`, and has since #802 and #803. Svelte had
+the same two defects. So a component's script classes read as empty.
+
+Both channels walk their script by hand, and both stopped at a class: the
+declaration branch returned without entering the body, and a class-valued
+binding was published as a binding. #803 fixed the class expression in the
+generic walk, which neither channel uses. A third hand-written class walk
+would miss the next member form the same way, so the class and everything
+under it now come from `parse_file` over the script, the walk a `.ts` file
+gets. Every class that walk finds is published once per block, so the spellings
+neither hand walk recognised arrive too: `abstract class`, an anonymous
+`export default class {}` (as `default`), `module.exports = class {}` and
+`X.P = class {}`, and a Svelte `$: C = class {}` (parenthesised or not),
+which had published a `constant` beside the class. A class beside a Vue Options-API object is published now; the
+functions and bindings beside it are still dropped (LEDGER L-36). Ids keep the
+generic qualified names (`Svc#class` is unchanged), lines and bytes address
+the component file, and the class's parent is the component.
+
+⚠ Ids move only where a script has a class: `C#constant` becomes `C#class`,
+and members appear. On 2,020 `.vue` and `.svelte` files from element-plus
+(`f599b62`) and sveltejs/kit (`0107721`) no symbol changed, because none of
+them declares a script class. `PARSER_GENERATION` 8, still unreleased,
+re-parses unchanged files.
+
+⚠ The script is parsed a second time only when the word `class` in its text
+is a class keyword in the tree it already has, and that class is not owned by
+a function declaration or a method (the generic walk gives such a class an
+owner, so it is never a group here). A byte test alone would re-parse every
+script that mentions `classList` or `className`. Nothing after the keyword is
+asked of the text, so `class<T>`, `class /* x */ Foo` and `class Über` are
+classes like any other. Where the tree has an error around the word it cannot
+say no, and the script is parsed again: a `lang="tsx"` script is read there
+with the TypeScript grammar, so JSX in a class body is an error to it and not
+to the TSX parse. Nineteen of the 2,020 corpus scripts have the word and six
+are parsed again, with no symbol changed. Over three interleaved processes of
+15 passes each, the corpus's fastest pass takes 0.595 to 0.600 s against 0.567
+to 0.571 s on main; a 300-function script that mentions `classList` is
+unchanged.
+
+A binding stands aside only for the class it binds: one whose span, in the
+generic walk's own tree, starts at or before the binder. A class nested in the
+initializer starts after it, whatever its name, so `const e = <div onClick={()
+=> { class K {} }} />` and `const K = <A r={() => { class K {} }} />` in a
+`lang="tsx"` script both keep their binding, and a Svelte prop keeps a class
+merely nested in its default. The hand walk reads a `lang="tsx"` script with
+the TypeScript grammar, which can recover JSX by making the nested class the
+binding's value; that mismatch is older than this fix and loses more than
+classes (LEDGER L-39). An unbound class expression (`const [a] = class {}`,
+`new (class {})()`) still publishes no members, as on main (LEDGER L-40).
+
+A class inside a function declaration, arrow function or function expression
+stays unpublished, as before. One inside an object method
+(`setup() { class K {} }`) still publishes a bare `K#class`, as on main
+(LEDGER L-38). A class nested in a class's method body was published twice, as a bare
+`Inner#class` beside the owned one; only the owned one remains. A Svelte
+`export let C = class {...}` stays a `property` with no members, because a
+prop is an input. With `javascript`/`typescript` disabled and `vue`/`svelte`
+enabled, a class publishes its name without members, as before.
+
 ### Fixed - a `search_symbols` cache hit is counted as a hit (#864)
 
 `result_cache_stats()` reported a served `search_symbols` hit as validated and
