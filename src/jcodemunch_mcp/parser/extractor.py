@@ -7279,6 +7279,13 @@ class _EmbeddedScriptClasses:
         ]
 
 
+# What can wrap a Vue default export's options object: `{...} as X`,
+# `{...} satisfies X`, `({...})`. Unwrapped before the options are read (L-43).
+_OPTIONS_EXPORT_WRAPPERS = frozenset({
+    "as_expression", "satisfies_expression", "parenthesized_expression",
+})
+
+
 def _parse_vue_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
     """Extract symbols from Vue Single-File Components (.vue).
 
@@ -7565,15 +7572,53 @@ def _parse_vue_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
         # Find: export_statement > object (the options object)
         if node.type == "export_statement":
             for c in node.children:
-                if c.type in ("object", "call_expression"):
+                # `export default {...} as X` / `satisfies X` / `({...})`: the
+                # options sit INSIDE the wrapper (L-43, review round 1).
+                while c.type in _OPTIONS_EXPORT_WRAPPERS and c.named_children:
+                    c = c.named_children[0]
+                if c.type == "object":
                     _extract_options_object(c)
+                elif c.type == "call_expression":
+                    # `export default defineComponent({...})`: the options are
+                    # the call's object ARGUMENT. The call node itself has no
+                    # `pair` children, so passing it published nothing and a
+                    # `defineComponent` script lost its methods (L-43).
+                    args = c.child_by_field_name("arguments")
+                    for a in args.children if args is not None else ():
+                        if a.type == "object":
+                            _extract_options_object(a)
+                            break
             return
         for child in node.children:
             _walk_options(child)
 
+    def _emit_options_data(node):
+        symbols.append(Symbol(
+            id=make_symbol_id(filename, "data", "function"),
+            name="data",
+            qualified_name=f"{component_name}.data",
+            kind="function",
+            language="vue",
+            file=filename,
+            line=_adjusted_line(node),
+            end_line=_adjusted_end_line(node),
+            signature="data()",
+            docstring=_preceding_comment(node),
+            summary="",
+            parent=comp_sym.id,
+        ))
+
     def _extract_options_object(obj_node):
         """Extract methods/computed/props/data from Options API object."""
         for pair in obj_node.children:
+            if pair.type == "method_definition":
+                # `data() { return {...} }`, the usual spelling, is a METHOD
+                # DEFINITION, not a `pair`; only `data: () => ...` was read
+                # (L-43, review round 1).
+                name_node = pair.child_by_field_name("name")
+                if name_node is not None and _node_text(name_node).strip("\"'") == "data":
+                    _emit_options_data(pair)
+                continue
             if pair.type != "pair":
                 continue
             key_node = pair.child_by_field_name("key")
@@ -7621,31 +7666,23 @@ def _parse_vue_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                 )
                 symbols.append(sym)
 
-            elif key == "data" and val_node.type in ("function", "arrow_function"):
-                sym = Symbol(
-                    id=make_symbol_id(filename, "data", "function"),
-                    name="data",
-                    qualified_name=f"{component_name}.data",
-                    kind="function",
-                    language="vue",
-                    file=filename,
-                    line=_adjusted_line(pair),
-                    end_line=_adjusted_end_line(pair),
-                    signature="data()",
-                    docstring=_preceding_comment(pair),
-                    summary="",
-                    parent=comp_sym.id,
-                )
-                symbols.append(sym)
+            elif key == "data" and val_node.type in _VARIABLE_FUNCTION_TYPES | {"function"}:
+                # `function_expression` is how the bundled grammar spells
+                # `function () {}`; `function` is the keyword (the L-38 stale
+                # spelling), kept for an older grammar.
+                _emit_options_data(pair)
 
-    # Dispatch to appropriate extractor
-    if is_setup:
-        _walk_composition(sub_tree.root_node)
-    else:
-        # Options API or plain script — try options first, fallback to composition walk
+    # Dispatch. ⚠⚠ BOTH walks on a plain `<script>`, never one or the other
+    # (L-36). The composition walk used to run only when the options walk found
+    # nothing, so an Options API script lost every function, binding and type
+    # declared beside its options object. The two cannot publish the same node:
+    # the options walk reads only the options object's pairs, and the
+    # composition walk emits only declarations and stops at every method and
+    # function body (`_HAND_WALK_STOP_TYPES`), which is where the options
+    # object keeps its code.
+    if not is_setup:
         _walk_options(sub_tree.root_node)
-        if len(symbols) == 1:  # only component sym found → try composition
-            _walk_composition(sub_tree.root_node)
+    _walk_composition(sub_tree.root_node)
     symbols.extend(script_classes.emit())
 
     return symbols
