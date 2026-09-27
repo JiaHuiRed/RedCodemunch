@@ -488,6 +488,12 @@ INDEX_VERSION = 17
 #   ⚠⚠ **And L-37: a class in an Astro frontmatter or `<script>`, or a Razor
 #   `<script>` or `@code` block, owns its members.** No id moves; only
 #   `parent` changes (`Comp.K.k` was owned by `Comp`, now by `Comp.K`).
+#
+#   ⚠⚠ **And L-39: a Vue or Svelte `lang="tsx"` script is read as TSX.**
+#   NEW: what JSX used to hide (`g#function`, `f#function` beside a
+#   `return <b/>`). GONE: a stray `K#class` that error recovery published
+#   from inside a function, and what follows an old-style `<T>x` cast (not
+#   valid TSX; a `.tsx` file already drops it). Other scripts are unchanged.
 PARSER_GENERATION = 8
 
 
