@@ -27,6 +27,7 @@ from jcodemunch_mcp.tools.check_rename_safe import check_rename_safe
 from jcodemunch_mcp.tools.find_implementations import find_implementations
 from jcodemunch_mcp.tools.get_blast_radius import get_blast_radius
 from jcodemunch_mcp.tools.get_call_hierarchy import get_call_hierarchy
+from jcodemunch_mcp.tools.get_churn_rate import get_churn_rate
 from jcodemunch_mcp.tools.get_context_bundle import get_context_bundle
 from jcodemunch_mcp.tools.get_endpoint_impact import get_endpoint_impact
 from jcodemunch_mcp.tools.get_impact_preview import get_impact_preview
@@ -67,6 +68,9 @@ SITES = {
     "get_endpoint_impact": lambda repo, sid, sp: get_endpoint_impact(
         repo=repo, handler_symbol_id=sid, storage_path=sp
     ),
+    # L-41: it took a file OR a symbol, and an id it could not find was read
+    # as a file path and answered `commits: 0`, `assessment: "stable"`.
+    "get_churn_rate": lambda repo, sid, sp: get_churn_rate(repo=repo, target=sid, storage_path=sp),
 }
 
 
@@ -190,9 +194,9 @@ _NOT_FOUND_RE = re.compile(
 
 
 def _not_found_literals(source: str) -> list[int]:
-    """Lines of an ERROR RESPONSE saying a symbol was not found: the value of
+    """Lines of an ERROR RESPONSE saying a symbol is absent: the value of
     an `"error"` key in a dict display, an f-string read whole (placeholders as
-    `{}`). Every one of the fifteen sites had that shape; a finding's prose or
+    `{}`). Every one of the sixteen sites had that shape; a finding's prose or
     a reason string that mentions a name not found in a FILE is not a tool's
     answer to a symbol argument, and a docstring is never a dict value."""
     lines = []
