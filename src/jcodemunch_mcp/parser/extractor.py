@@ -7279,11 +7279,15 @@ class _EmbeddedScriptClasses:
         ]
 
 
-# What can wrap a Vue default export's options object: `{...} as X`,
-# `{...} satisfies X`, `({...})`. Unwrapped before the options are read (L-43).
-_OPTIONS_EXPORT_WRAPPERS = frozenset({
-    "as_expression", "satisfies_expression", "parenthesized_expression",
-})
+# A Vue default export's options object can sit inside any of
+# `_JS_EXPRESSION_WRAPPERS` -- `{...} as X`, `satisfies X`, `({...})`,
+# `defineComponent({...})!`, `<X>{...}` -- and is read through them (L-43).
+# ⚠⚠ ONE wrapper set, shared with the class-expression binder: this was a
+# second copy of it until the review of the L-43 residue. ⚠ The wrapped
+# expression is not always the first named child: a `type_assertion` puts
+# its `type_arguments` first, and a comment inside a wrapper is a named
+# child too, so the unwrap skips `_OPTIONS_WRAPPER_NOISE`.
+_OPTIONS_WRAPPER_NOISE = frozenset({"type_arguments", "comment"})
 
 
 def _parse_vue_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
@@ -7558,8 +7562,10 @@ def _parse_vue_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
             for c in node.children:
                 # `export default {...} as X` / `satisfies X` / `({...})`: the
                 # options sit INSIDE the wrapper (L-43, review round 1).
-                while c.type in _OPTIONS_EXPORT_WRAPPERS and c.named_children:
-                    c = c.named_children[0]
+                while c is not None and c.type in _JS_EXPRESSION_WRAPPERS:
+                    c = next((n for n in c.named_children if n.type not in _OPTIONS_WRAPPER_NOISE), None)
+                if c is None:
+                    continue
                 if c.type == "object":
                     _extract_options_object(c)
                 elif c.type == "call_expression":
