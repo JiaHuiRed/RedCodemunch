@@ -489,6 +489,13 @@ INDEX_VERSION = 17
 #   `<script>` or `@code` block, owns its members.** No id moves; only
 #   `parent` changes (`Comp.K.k` was owned by `Comp`, now by `Comp.K`).
 #
+#   ⚠⚠ **And L-40: a Vue/Svelte class expression bound to nothing publishes
+#   its members.** NEW: `m#method` (and fields) for
+#   `new (class { m() {} })()`, `register(class {...})`, `[class {...}]`,
+#   owned by the component, as a `.js` file publishes them bare. MOVES: a
+#   same-named symbol already published is numbered beside it (an Options
+#   `methods: { m() {} }` goes `m#method` -> `m#method~1`).
+#
 #   ⚠⚠ **And L-38: a Vue/Svelte hand walk stops at a method or generator
 #   body.** GONE: a bare `K#class` for a class inside an object method,
 #   getter, generator method or `function*` (a `.js` file names it
