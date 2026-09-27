@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Fixed - a function-valued binding in a Vue or Svelte script is a function (LEDGER L-42)
+
+`const f = () => 1` and `const g = function () {}` publish `f#function` and
+`g#function` from a `.js` file. In a Vue or Svelte script they published
+nothing. Both hand walks declined a declarator whose value is a function,
+copying the JS binder, but the binder's decline hands the declarator to
+`_extract_variable_function` and theirs handed it to nobody: `arrow_function`
+stops their recursion and no other branch emits it. A Composition API
+component's event handlers are exactly this shape. Found by the #904 corpus
+id diff.
+
+Both walks now publish the binding as a `function` owned by the component.
+What counts as a function-valued declarator is one predicate now
+(`_js_value_is_a_function`), asked by the JS binder, by
+`_extract_variable_function` and by both walks: a plain identifier bound to
+an arrow, a function expression or a generator function. `const`, `let` and
+`var` all count. A destructured binding and a value binding keep their
+kinds, and a helper bound inside a handler's body is still not published.
+The test compares each of seven frames (Vue plain, `setup`, `ts`, `tsx`;
+Svelte plain, `ts`, `tsx`) with the same script as a `.js`, `.ts` or `.tsx`
+file. `test_a_local_function_binding_is_a_disclosed_gap`, which pinned the
+gap, is inverted and ledgered in `harness/retired.json`. Svelte's
+`export const load = async () => {}` keeps the `constant` kind #752 gave it;
+Vue's `export const f = () => 1`, absent before, is now `f#function`, as in a
+`.js` file. A Vue script with an Options API object still drops these
+bindings, with every other top-level declaration beside the object: that is
+LEDGER L-36, still open. Astro was never affected: its frontmatter goes
+through the generic walk.
+
+One existing id can move. A `function h() {}` beside `var h = () => 1`
+was `h#function`; the binding now shares its name, so the two are numbered
+`h#function~1` and `~2`, as a `.js` file numbers them. A test pins the ids
+against the plain file. The pinned corpora hold no such pair: the corpus id
+diff, `main` against this branch, is additions only (element-plus
+`4366 -> 5273` ids, `+function: 907` in 307 of 1008 files; SvelteKit
+`1108 -> 1112`, `+function: 4`; Astro's Vue files `3 -> 5`). `PARSER_GENERATION` 8, still unreleased,
+re-parses unchanged files.
+
 ### Fixed - a class expression bound to nothing in a Vue or Svelte script publishes its members (LEDGER L-40)
 
 `new (class { m() {} })()`, `register(class {...})`, `[class {...}]`,
