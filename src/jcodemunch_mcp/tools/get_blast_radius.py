@@ -12,6 +12,7 @@ from ..retrieval.verdict import (
     build_verdict,
     index_changed_since_load as _index_changed_since_load,
     index_coverage_meta,
+    symbol_not_found,
 )
 from ._utils import index_status_to_tool_error, resolve_repo, resolve_fqn
 from .package_registry import extract_root_package_from_specifier
@@ -465,7 +466,7 @@ def get_blast_radius(
     # Resolve symbol
     matches = _find_symbol(index, symbol)
     if not matches:
-        return {"error": f"Symbol not found: '{symbol}'. Try search_symbols first."}
+        return symbol_not_found(symbol, index.symbols)
     if len(matches) > 1:
         # Multiple definitions (e.g. overloads in different files) — report all
         ambiguous = [{"name": s["name"], "file": s["file"], "id": s["id"]} for s in matches]

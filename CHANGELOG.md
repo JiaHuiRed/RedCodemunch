@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### Fixed - a symbol id missing only its owner or `~N` suffix names the id it meant (#869)
+
+An id built from a search row's `file`, `name` and `kind` misses two things: a
+member's id carries its owner (`types.ts::ZodObject.pick#method`, not
+`types.ts::pick#method`), and same-named symbols in one file take `~1`, `~2`
+(both twins, so the bare id never exists). Such an id got a bare `Symbol not
+found` from every tool that takes a symbol, with no hint that a real id was one
+qualifier away. Per the issue, a benchmark adapter (#726) lost 44 of 124 usage
+and impact follow-up calls and 8 definition calls that way on zod, all of them
+members; #698
+made it more common by giving every TypeScript abstract-class member an owner.
+
+Sixteen sites wrote their own not-found error, in six wordings: the twelve the
+issue named, plus `get_context_bundle` (`Symbol(s) not found`),
+`check_rename_safe` and `get_symbol_complexity` (`Symbol ... not found in
+index`) and `get_endpoint_impact` (`No symbol ... in index`), which a check
+keyed on the reported spelling could not see; a check keyed on "not found"
+missed the last one too. The
+error now has one author, `retrieval.verdict.symbol_not_found`, and every site
+asks it. When the index holds ids that differ from the request ONLY by the
+owner qualifier or the `~N` suffix (same file, same kind, same bare name), the
+error names them in `near_miss_ids`, at most ten, with `near_miss_total` and
+`near_miss_truncated`. It never picks one: two classes in one file can each
+own a `pick`, and choosing would answer a question about a different symbol.
+Without near misses the error points at `search_symbols`, as five of the sites
+did. The key is not `candidates` because four of these tools already answer
+an ambiguous NAME with `candidates` holding `{name, file, id}` records, and one
+key must not change shape by branch. A test fails any tool whose error
+response says a symbol is absent (not found, not in the index, does not
+exist, unknown, missing, no symbol) without asking the authority. Several
+missing ids are counted as the union of their near misses, never once per id.
+
+Two more ways a near miss went unanswered, found on the way:
+`get_symbol_source` with one id rebuilt its error from the message alone and
+would have dropped the near misses (it carries them now; `did_you_mean` stays
+on the batch form only); and `get_signal_chains` answered a nonexistent id
+with an empty chain list whenever the repo had no gateways, which reads as
+"the symbol is on no chain". It resolves the symbol first now.
+
 ### Fixed - a class in a Vue or Svelte `<script>` owns its members (#861)
 
 A class declared in a Vue `<script>` published its name and nothing else: no

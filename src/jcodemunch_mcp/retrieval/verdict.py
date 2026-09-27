@@ -18,6 +18,7 @@ The result carries two things:
 
 from __future__ import annotations
 
+import re
 from typing import Optional, Sequence
 
 
@@ -580,6 +581,95 @@ def _symbol_name_of(symbol_id: Optional[str]) -> str:
     if "#" in s:
         s = s.split("#", 1)[0]
     return s.lower()
+
+
+#: The most near-miss ids a not-found error names; `near_miss_total` and
+#: `near_miss_truncated` disclose the rest (a list field ships with its cap).
+SYMBOL_CANDIDATES_CAP = 10
+
+_ID_SUFFIX_RE = re.compile(r"~\d+$")
+_QUALIFIER_RE = re.compile(r"\.|::")
+
+
+def _split_symbol_id(symbol_id: Optional[str]) -> Optional[tuple[str, str, str]]:
+    """`(file, bare name, kind)` of a `file::qualified#kind[~N]` id, or None
+    for a bare name. The owner qualifier and the `~N` suffix are exactly what
+    this drops, because they are what a near miss may differ by."""
+    if not symbol_id or "::" not in symbol_id:
+        return None
+    file_path, rest = symbol_id.split("::", 1)
+    rest = _ID_SUFFIX_RE.sub("", rest)
+    qualified, _, kind = rest.rpartition("#") if "#" in rest else (rest, "", "")
+    return file_path, _QUALIFIER_RE.split(qualified)[-1], kind
+
+
+def symbol_id_candidates(
+    requested_id: Optional[str],
+    symbols: Optional[Sequence[dict]],
+    cap: Optional[int] = SYMBOL_CANDIDATES_CAP,
+) -> tuple[list, int]:
+    """Indexed ids that differ from a missing `requested_id` ONLY by the owner
+    qualifier or the `~N` suffix (#869): same file, same kind, same bare name.
+    Returns `(first cap ids in index order, total)`.
+
+    ⚠⚠ A NAMING, never a resolution. Two classes in one file can each own a
+    `pick`, and choosing one would answer a question about a different symbol,
+    so callers name these and still fail the call. A different kind or file is
+    a different symbol, not a near miss (`suggest_symbol_ids` is the looser
+    same-name search, for `did_you_mean`).
+    """
+    wanted = _split_symbol_id(requested_id)
+    if wanted is None or not symbols:
+        return [], 0
+    # A near miss shares the file, so the prefix test skips the parse for
+    # every symbol elsewhere (one linear pass per miss on a large index).
+    prefix = wanted[0] + "::"
+    found = [
+        s["id"]
+        for s in symbols
+        if s.get("id", "").startswith(prefix)
+        and s["id"] != requested_id
+        and _split_symbol_id(s["id"]) == wanted
+    ]
+    return (found if cap is None else found[:cap]), len(found)
+
+
+def symbol_not_found(requested, symbols: Optional[Sequence[dict]]) -> dict:
+    """THE not-found error for a symbol argument, shared by every tool that
+    takes one (#869: sixteen sites wrote their own, and none named the id one
+    qualifier away). `requested` is one id or name, or a list of them.
+
+    With near misses, the error names them in `near_miss_ids` and says it did
+    not pick one. Without, it points at `search_symbols`. A caller adds its own
+    keys beside these; it never rewrites the error text.
+
+    ⚠⚠ NOT `candidates`: four of the tools that call this already answer an
+    AMBIGUOUS name with `candidates` holding `{name, file, id}` dicts, so one
+    key would carry two element shapes depending on the branch (review round 1).
+    """
+    wanted = [requested] if isinstance(requested, str) or requested is None else list(requested)
+    # The UNION of every request's near misses, uncapped, then one cap: two
+    # missing ids can share near misses, and a total summed per request
+    # counted them twice (`near_miss_total: 4` over two ids, review round 2).
+    found: list = []
+    for one in wanted:
+        ids, _ = symbol_id_candidates(one, symbols, cap=None)
+        found += [i for i in ids if i not in found]
+    total = len(found)
+    shown = found[:SYMBOL_CANDIDATES_CAP]
+    named = ", ".join(str(w) for w in wanted)
+    label = "Symbol" if len(wanted) == 1 else "Symbol(s)"
+    if not shown:
+        return {"error": f"{label} not found: {named}. Try search_symbols first."}
+    return {
+        "error": (
+            f"{label} not found: {named}. {total} indexed id(s) differ only by the owner "
+            "qualifier or the ~N suffix; pass one from `near_miss_ids` (none was chosen for you)."
+        ),
+        "near_miss_ids": shown,
+        "near_miss_total": total,
+        "near_miss_truncated": total > len(shown),
+    }
 
 
 def suggest_symbol_ids(
