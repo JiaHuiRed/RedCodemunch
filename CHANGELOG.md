@@ -2,6 +2,67 @@
 
 ## [Unreleased]
 
+### Fixed - a C++ class declared behind an export macro is a class (LEDGER L-45)
+
+`class LEVELDB_EXPORT Status { bool ok() const; };` is how most exported
+C++ libraries declare their API (leveldb, gtest's `GTEST_API_`). The grammar
+cannot know `LEVELDB_EXPORT` is a macro. It read `class LEVELDB_EXPORT` as a
+return type, `Status` as a declarator and the class body as a statement
+block, so the class was indexed as `Status#function` and its members lost
+their owner. In a large header, error recovery then filed unrelated
+declarations under the bogus function. Found in L-07's corpus diff.
+
+Every C, C++ and Arduino parse now blanks each macro token in a
+`class MACRO Name { ... }` head to spaces of the same length and re-parses.
+Every byte offset holds, so names, signatures and content hashes still come
+from the original text (the signature keeps `LEVELDB_EXPORT`). Two shapes
+are refused and the rest accepted, because each rule was wrong alone
+(review, twice):
+- a declarator with a function declarator in it is a real function, so
+  `class X make() {}` is still a function;
+- a macro that takes arguments (`struct ALIGN(16) V {`, `class API(x) D {`)
+  is left as parsed: blanking only its name left a cast that published
+  nothing.
+Asking for a bare identifier declarator instead left the commonest exported
+shape broken, a class with a qualified or templated base
+(`class GTEST_API_ E : public ::std::runtime_error {`), because the misparse
+gives it a different declarator.
+`__declspec(...)`, `[[attr]]` and `alignas(...)` already parsed correctly
+and are never blanked. The re-parse is incremental. The test pins that a
+class, struct, derived class (plain, qualified, `::std::`, namespaced and
+templated bases), `final` class, specialisation, namespaced class or
+two-macro head publishes exactly what the same text without the macro
+publishes, in `.cpp`, `.h` and Arduino.
+
+Measured on two pinned corpora (leveldb 7ee830d, fmt 5da4e9a), `main`
+against this branch:
+- leveldb `.h`: `ids 1089 -> 1163`, `+class: 22`, `+method: 172`,
+  `-function: 142`, `-method: 14`, `reparent method: 59`;
+- fmt `.h`: `ids 6117 -> 6365`, `+class: 72`, `-class: 25`,
+  `+method: 552`, `-method: 190`, `+function: 141`, `-function: 417`,
+  `+type: 45`, `-type: 39`, `reparent method: 110`;
+- fmt `.cc`: `ids 2655 -> 2699`, `+method: 92`, `-function: 44`;
+- leveldb `.cc`: no change.
+Ids move for every class behind a macro (`Status#function` becomes
+`Status#class`) and for its members. In fmt's headers most of the removal
+rows are the same names re-qualified: what error recovery had filed under a
+bogus function takes its real owner. A name-level check over every file
+finds four names that disappear entirely, all artifacts of the misparse
+(`leveldb#function`, `testing.internal.std::runtime_error#function`).
+Measured against each file's own text with `GTEST_API_` deleted:
+`gmock-gtest-all.cc` publishes 22 ids the macro-free text does not, where
+`main` published 109, and misses 21, where `main` missed 152. `gtest.h`
+misses 993 where `main` missed 1,063, but publishes 373 new wrong ids, every
+one `testing.testing.*`: error recovery in that 12,399-line header leaves a
+`namespace testing` open, `main` already nests `testing.testing` from row
+6,158, and the regions this fix recovers are inside it (LEDGER L-48). Parse
+time, median of 5, `main` against this branch in one run:
+`gmock-gtest-all.cc` 0.344 s to 0.368 s, `gtest.h` 1.009 s to 1.093 s,
+`db_impl.cc` 0.037 s to 0.038 s.
+Not fixed here, as on `main` (LEDGER L-47): `enum class API E { A, B };`
+publishes nothing where `enum class E` publishes `E#type`.
+`PARSER_GENERATION` 8, still unreleased, re-parses unchanged files.
+
 ### Fixed - a C++ out-of-class member definition is a member of its class (LEDGER L-07)
 
 `class A { int run(); };` then `int A::run() { ... }` published the
