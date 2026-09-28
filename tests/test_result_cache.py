@@ -39,8 +39,10 @@ class TestResultCacheBasics:
         payload = {"symbol": "foo", "confirmed": [], "_meta": {"timing_ms": 42.0}}
         result_cache_put("get_blast_radius", "owner/repo", ("sym", 1, 0, False, False), payload)
         got = result_cache_get("get_blast_radius", "owner/repo", ("sym", 1, 0, False, False))
+        # ⚠ `==`, not `is`. The cache hands back an isolated copy as of #572 —
+        # identity was the defect written down as a contract, and the reasons
+        # are in tests/test_result_cache_isolation.py.
         assert got == payload
-        assert got is not payload
 
     def test_different_tools_dont_collide(self):
         a = {"tool": "a"}
@@ -65,18 +67,6 @@ class TestResultCacheBasics:
         result_cache_put("get_blast_radius", "o/r", ("sym", 2, 0, False, False), b)
         assert result_cache_get("get_blast_radius", "o/r", ("sym", 1, 0, False, False)) == a
         assert result_cache_get("get_blast_radius", "o/r", ("sym", 2, 0, False, False)) == b
-
-    def test_nested_mutations_do_not_reach_cache(self):
-        payload = {"_meta": {"verdict": {"score": 1}}, "results": [{"id": "a"}]}
-        result_cache_put("tool", "o/r", ("k",), payload)
-
-        payload["_meta"]["verdict"]["score"] = 0
-        payload["results"][0]["id"] = "changed"
-
-        assert result_cache_get("tool", "o/r", ("k",)) == {
-            "_meta": {"verdict": {"score": 1}},
-            "results": [{"id": "a"}],
-        }
 
 
 # ---------------------------------------------------------------------------

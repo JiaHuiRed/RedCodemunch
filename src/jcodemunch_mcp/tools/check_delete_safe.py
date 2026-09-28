@@ -17,8 +17,13 @@ Verdict tiers (most-permissive first):
   - corpus_inadequate      — nothing references it, and this index cannot support
                              that as proof (stale, withheld files, or an import
                              edge that only exists at runtime). #566/#569
+  - name_not_searchable    — nothing references it BY NAME, and no call site
+                             would write that name: a C# operator is invoked as
+                             `a + b`, an indexer as `a[0]`. Absence of the token
+                             is not evidence of disuse. #714
 
-⚠⚠ **`corpus_inadequate` replaces an absence verdict, never a blocking one.**
+⚠⚠ **Both `corpus_inadequate` and `name_not_searchable` replace an absence
+verdict, never a blocking one.**
 A found importer is positive evidence and a thin corpus cannot unfind it — the
 same asymmetry `_stop_rule._HARD_BLOCKER` already encodes.
 """
@@ -30,9 +35,12 @@ import re
 import time
 from typing import Optional
 
+from ..retrieval.verdict import symbol_not_found
 from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided
 from ..storage.generation import connect_readonly
-from ._corpus_adequacy import assess_corpus
+from ..runtime.confidence import symbol_hit_count
+from . import _name_reachability
+from ._corpus_adequacy import UNPROVEN_CEILING, assess_corpus
 from ._stop_rule import build_stop_rule
 from ._utils import index_status_to_tool_error, resolve_repo
 
@@ -97,24 +105,17 @@ def _detect_entry_point(target: dict) -> Optional[str]:
 
 
 def _runtime_hits(store: IndexStore, owner: str, name: str, symbol_id: str) -> Optional[int]:
-    """Best-effort runtime hit count over the indexed trace window."""
+    """Best-effort runtime hit count over the indexed trace window.
+
+    Delegates to the one reader (#717); a local copy of this query is how
+    `hit_count` outlived the schema that never had it.
+    """
     try:
         db_path = store._sqlite._db_path(owner, name)
-        if not db_path.exists():
-            return None
-        conn = connect_readonly(db_path, isolation_level="")
-        try:
-            cur = conn.execute(
-                "SELECT COALESCE(SUM(hit_count), 0) FROM runtime_calls WHERE symbol_id = ?",
-                (symbol_id,),
-            )
-            row = cur.fetchone()
-            return int(row[0]) if row and row[0] else None
-        finally:
-            conn.close()
     except Exception as exc:  # noqa: BLE001
-        logger.debug("check_delete_safe: runtime hits skipped: %s", exc, exc_info=True)
+        logger.debug("_runtime_hits: db path unavailable: %s", exc, exc_info=True)
         return None
+    return symbol_hit_count(db_path, symbol_id)
 
 
 def _runtime_data_present(store: IndexStore, owner: str, name: str) -> bool:
@@ -196,7 +197,7 @@ def check_delete_safe(
 
     target = _resolve_target(index, symbol)
     if target is None:
-        return {"error": f"Symbol not found: {symbol}"}
+        return symbol_not_found(symbol, index.symbols)
 
     target_id = target["id"]
     target_name = target.get("name", "")
@@ -398,6 +399,45 @@ def check_delete_safe(
     # ⚠ Only the ABSENCE verdicts are overridden. A found importer is positive
     # evidence and an inadequate corpus cannot unfind it, which is the same
     # asymmetry `_HARD_BLOCKER` already encodes.
+    # ── The name cannot reach a call site (#714) ───────────────────────
+    # ⚠⚠ A SECOND cause with the same destructive shape, and it is not fixed
+    # by re-indexing. A C# operator is invoked as `a + b`, an indexer as
+    # `a[0]`, a conversion as `(string)a` -- the declaration's name
+    # (`operator +`, `this[]`, `explicit operator string`) appears at NO call
+    # site by construction, so "no references found" is not evidence about it.
+    # Measured before this branch existed: on a corpus where every one of them
+    # was used, the ordinary method in the same file returned
+    # `internal_uses_blocking` and `operator +` returned `safe_to_delete` at
+    # confidence 1.0, "No callers or refs found."
+    #
+    # ⚠ Same asymmetry as corpus adequacy: only ABSENCE verdicts are replaced.
+    # A found reference is positive evidence, and an unsearchable name cannot
+    # unfind it.
+    unreachable_name = None
+    if (
+        # ⚠ `target`, the RESOLVED symbol -- not the `symbol` argument, which is
+        # whatever the caller passed. Reading the argument would have looked
+        # right: an id (`…::Vec.operator +#method`) is not an identifier either,
+        # so the branch would fire for ids and silently not for plain names.
+        not _name_reachability.name_can_appear_at_a_call_site(
+            target.get("name", ""), target.get("language")
+        )
+        and verdict in ("safe_to_delete", "internal_only", "test_coverage_only")
+    ):
+        verdict = "name_not_searchable"
+        unreachable_name = {
+            "action": "read the call sites by hand, or check runtime evidence",
+            "why": (
+                f"{target.get('name', '')!r} is not a name any call site writes, so a "
+                f"reference search over names cannot establish that nothing uses it"
+            ),
+        }
+        blockers.append({
+            "kind": "name_not_searchable",
+            "blockers": [unreachable_name["why"]],
+            "severity": _SEVERITY_INTERNAL_REF,
+        })
+
     corpus_gap = None
     if not corpus_adequacy.adequate and verdict in (
         "safe_to_delete", "internal_only", "test_coverage_only",
@@ -421,6 +461,13 @@ def check_delete_safe(
         # unproven verdict to 0.85. Nothing was established here, so nothing is
         # floored.
         confidence = min(confidence, corpus_adequacy.ceiling)
+    elif verdict == "name_not_searchable":
+        # ⚠ NOT `corpus_adequacy.ceiling`: the corpus may be perfectly adequate
+        # -- the first draft used it and published confidence 1.0 on a refusal,
+        # because adequacy answers a different question. `UNPROVEN_CEILING` is
+        # the number this project already uses for "an absence nothing could
+        # establish", which is exactly this.
+        confidence = min(confidence, UNPROVEN_CEILING)
     elif verdict == "safe_to_delete":
         confidence = max(confidence, 0.85 if dead_code_conf < 0.9 else 0.95)
     elif verdict == "runtime_observed":
@@ -456,6 +503,11 @@ def check_delete_safe(
 
     actions = {
         "safe_to_delete": safe_action,
+        "name_not_searchable": (
+            "No references found BY NAME, and no call site would write this "
+            "name: it is invoked syntactically. Read the call sites, or check "
+            "runtime evidence, before deleting."
+        ),
         "corpus_inadequate": (
             "No references found, but this index cannot support that as proof. "
             + (corpus_adequacy.warning() or "")

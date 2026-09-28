@@ -361,6 +361,9 @@ class TestTrustedFolders:
                 autospec=True,
                 side_effect=_resolve_only(tmp_path / "broad", _platform_path("/work")),
             ),
+            # Narrow, not blanket: a blanket True makes ``store.has_index`` find an
+            # index at the scratch store, and an empty scan then reconciles
+            # against it instead of refusing (same narrowing as the UNC tests).
             patch(
                 "jcodemunch_mcp.tools.index_folder.Path.exists",
                 autospec=True,
@@ -485,6 +488,9 @@ class TestTrustedFolders:
                 autospec=True,
                 side_effect=_resolve_only(tmp_path / "project", _platform_path("/work/project")),
             ),
+            # Narrow, not blanket: a blanket True makes ``store.has_index`` find an
+            # index at the scratch store, and an empty scan then reconciles
+            # against it instead of refusing (same narrowing as the UNC tests).
             patch(
                 "jcodemunch_mcp.tools.index_folder.Path.exists",
                 autospec=True,
@@ -929,6 +935,9 @@ class TestTrustedFolders:
                 autospec=True,
                 side_effect=_resolve_only(tmp_path / "work", _platform_path("/work")),
             ),
+            # Narrow, not blanket: a blanket True makes ``store.has_index`` find an
+            # index at the scratch store, and an empty scan then reconciles
+            # against it instead of refusing (same narrowing as the UNC tests).
             patch(
                 "jcodemunch_mcp.tools.index_folder.Path.exists",
                 autospec=True,
@@ -1309,6 +1318,9 @@ class TestWindowsDriveRootPathSafety:
                 autospec=True,
                 side_effect=_resolve_only(tmp_path / "repo", drive_root_repo),
             ),
+            # Narrow, not blanket: a blanket True makes ``store.has_index`` find an
+            # index at the scratch store, and an empty scan then reconciles
+            # against it instead of refusing (same narrowing as the UNC tests).
             patch(
                 "jcodemunch_mcp.tools.index_folder.Path.exists",
                 autospec=True,

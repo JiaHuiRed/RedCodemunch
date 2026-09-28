@@ -1,7 +1,7 @@
 {
  "summary": {
   "cases": 40,
-  "catalog_actions": 52,
+  "catalog_actions": 53,
   "sample": {
    "source": "rknighton/jcm-route-benchmark-corpus v0.1.0 (MIT-0), data/route_candidates_v0.1.csv sha256 25d09f6ae9e8e668d1a3b9a30755cf8dbd7d063ce08868529cc152fdfe84b86e",
    "seed": 421,
@@ -84,7 +84,7 @@
     "jcodemunch_guide": 2,
     "check_delete_safe": 1,
     "get_context_bundle": 1,
-    "get_related_symbols": 1,
+    "get_symbol_complexity": 1,
     "get_changed_symbols": 1,
     "get_file_outline": 1,
     "get_call_hierarchy": 1,
@@ -184,7 +184,7 @@
    ],
    "rank": 1,
    "leak_name": 0.0,
-   "leak_desc": 0.0
+   "leak_desc": 0.04
   },
   {
    "case_id": "726164af-1ca5-5a49-b502-195c2f520062",
@@ -269,8 +269,8 @@
    ],
    "emitted_task": "Determine whether the context-assembly scale parameter is driven by file count or symbol count, comparing 10 files with 1,000 symbols versus 100 files with 1,000 symbols",
    "route_actions": [
-    "get_related_symbols",
     "get_symbol_complexity",
+    "get_related_symbols",
     "get_changed_symbols"
    ],
    "rank": null,

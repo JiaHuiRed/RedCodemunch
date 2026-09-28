@@ -1,0 +1,153 @@
+{
+  "schema": "jcm-harness-retired/v1",
+  "note": "A test file listed in docs/harness/ARCHAEOLOGY.md, or one test function in it (path = file::test_name), may be deleted only with an entry here: path, lesson, replacement (file::test_name that now carries the lesson), commit, date. tests/test_retirement_ledger.py enforces it. Empty on 2026-09-03: the archaeology found nothing to retire.",
+  "retired": [
+    {
+      "path": "tests/test_inbound_triage_apply.py::test_malformed_result_file_escalates_and_applies_nothing",
+      "lesson": "Escalating is a write. The test asserted called == [] on a malformed triage result, so the fixed escalation (inbound:unknown + needs-human, dequeue) was planned and discarded and the item re-triaged every 15 minutes (#670). The rule it meant to encode, that the MODEL'S classification never reaches gh, is kept; the escalation carries nothing the model said and is written to the issue the workflow named.",
+      "replacement": "tests/test_inbound_triage_apply.py::test_malformed_result_escalates_ON_THE_ISSUE_THE_WORKFLOW_NAMED",
+      "commit": "5a38f16a",
+      "date": "2026-09-13"
+    },
+    {
+      "path": "tests/test_julia_short_functions.py::test_a_macro_is_a_known_separate_gap",
+      "lesson": "A gap test is written to FAIL when its defect is fixed, and this one did: `macro_definition` is in the grammar and matched, and the extractor read the name with `_direct_name` (first DIRECT identifier child) while a macro's name sits at `signature > call_expression > identifier` (#748). The lesson it carried -- that a name helper looking one level too shallow drops the form in silence, with no ghost and no unmatched node type to find -- is carried by the replacement named below, which asserts a macro and a function are named by the SAME path and is why the fix reuses `_func_name` instead of a fifth bespoke helper. The four argument spellings the gap test's single sample could not cover are `test_a_macro_is_a_symbol` in the same file, and the branch is pinned by `test_the_macro_branch_stopped_asking_for_a_direct_child`.",
+      "replacement": "tests/test_julia_name_depth.py::test_a_macro_and_a_function_are_named_by_the_same_path",
+      "commit": "12ee7fc4",
+      "date": "2026-09-18"
+    },
+    {
+      "path": "tests/test_julia_short_functions.py::test_a_parametric_or_subtyped_type_head_is_a_known_gap",
+      "lesson": "The same lifecycle, one node type over: `_struct_name` read `type_head > identifier`, which is only the bare spelling, so seven of nine Julia type shapes yielded nothing while the two that worked were the least common in real code (#749). The lesson -- that a fixture holding only the shapes that work reports a healthy language, so it was not wrong but narrow -- is carried by the replacement named below, which parametrizes all nine shapes. The gap test's OTHER half, that a deeper walk must not FABRICATE a symbol, is carried by `test_the_supertype_is_not_indexed_as_a_declaration`, `test_a_type_parameter_is_not_indexed_as_a_declaration` and -- because neither of those can observe a breadth-first resolver -- `test_a_combined_head_names_the_type_and_not_its_supertype`.",
+      "replacement": "tests/test_julia_name_depth.py::test_a_type_head_is_named_at_any_depth",
+      "commit": "12ee7fc4",
+      "date": "2026-09-18"
+    },
+    {
+      "path": "tests/test_js_bindings.py::test_a_destructuring_pattern_is_a_known_separate_gap",
+      "lesson": "A gap test is written to FAIL when its defect is fixed, and this one did: `_js_declarator_names` required the declarator's `name` field to be an `identifier`, and a destructuring spells that field `object_pattern` or `array_pattern`, so every destructured binding was declined in javascript, typescript and tsx (#751). The lesson it carried -- that a disclosed gap is better than a silent absence, because `const { useState } = React` and `export const { GET, POST } = handlers` are ordinary module surface and a file whose exports are all destructured indexed with NONE of them -- is carried by the replacement named below. Its two samples (`const { a, b }` and `let [c, d]`) could express neither the nesting nor the anti-fabrication half: a pattern nests, and a walk collecting every `identifier` under it publishes `a` for `const { a: renamed }` and `const { a: { b } }`, where `a` names a property of the right-hand object and is bound to nothing. That half is `test_a_nested_pattern_binds_its_leaves_and_not_its_path`, whose `unbound` column fails 15 rows against the planted naive walk, and `test_a_parameter_pattern_binds_no_module_symbol`, which is what fails if the walk is ever reached from a parameter position -- the same node types, in the one place they are locals.",
+      "replacement": "tests/test_js_destructured_bindings.py::test_an_object_pattern_binds_every_name",
+      "commit": "99ef0583",
+      "date": "2026-09-18"
+    },
+    {
+      "path": "tests/test_svelte.py::test_svelte4_export_let_is_prop_constant",
+      "lesson": "The name was the defect: it asserted that a Svelte 4 prop carries kind `constant`, and a prop is the binding the PARENT assigns -- the most mutable in the file (#752). \u26a0\u26a0 Its SECOND assertion was not the defect and caught this PR's first draft: `export const MAX` really is a constant, because Svelte does not let a parent set an `export const`, so it is not a prop at all and the first fix made it one. Practice 9 applies per ASSERTION, not per test -- half a test can be the defect's witness while the other half is a real fact nothing else records. The replacement keeps both halves and says which is which.",
+      "replacement": "tests/test_svelte.py::test_svelte4_export_let_is_a_prop_and_export_const_is_not",
+      "commit": "99ef0583",
+      "date": "2026-09-18"
+    },
+    {
+      "path": "tests/test_svelte.py::test_svelte5_runes_become_constants",
+      "lesson": "`become_constants` was the rule and the rule was wrong: the Svelte extractor emitted every matched rune through a helper hardcoding `kind=\"constant\"`, so `let count = $state(0)` -- reactive, reassigned, the whole point of the rune -- was published immutable (#752). The lesson that survives is that the KEYWORD decides and the rune does not: `$state` is reached by `let` and `$derived` by either, so a rune-keyed kind table would have been a fourth transcription of #741's rule instead of a use of it. The replacement asserts the same three rune spellings under `let`, plus a `const $derived` that the old test could not express because it had no case where the two answers differ.",
+      "replacement": "tests/test_svelte.py::test_svelte5_runes_carry_the_keyword_kind",
+      "commit": "99ef0583",
+      "date": "2026-09-18"
+    },
+    {
+      "path": "tests/test_v1_108_80.py::test_plain_class_fields_not_extracted",
+      "lesson": "It asserted `_fields(src) == []` for a plain class holding `MAX: int = 5` and `name: str = 'z'`, because #355 indexed annotated names for dataclass, attrs and direct `BaseModel` classes only and left every other class's state absent on purpose. jjg reversed that on 2026-09-19 (#784): class-body state is a symbol in every class, as it already was for Java (#735), PHP (#743), Kotlin, Swift and C++ (#755). The lesson that survives is the second half of its docstring, that a field must not be conflated with a constant, and the replacement asserts it: `MAX` is state and its kind is `constant`, never `field`. The gate it guarded was also keyed on a spelling: a model inheriting `BaseModel` indirectly got no fields at all.",
+      "replacement": "tests/test_v1_108_80.py::test_a_plain_classs_state_is_indexed_and_a_constant_is_not_a_field",
+      "commit": "8b1fc94a",
+      "date": "2026-09-19"
+    },
+    {
+      "path": "tests/test_v1_108_80.py::test_classvar_is_not_a_field",
+      "lesson": "#355 meant the name literally: a `ClassVar` is not a DATACLASS field, so it was skipped. #784 indexes class state in every class by owner ruling (2026-09-19), and a `ClassVar` is class state. The old test kept PASSING after that change, for the wrong reason: its one ClassVar was spelled `REGISTRY`, which is a `constant` now, so `_fields(src) == ['x']` graded the case of a name and said nothing about `ClassVar`. A reviewer's all-`field` mutation is what showed it. The lesson: a test that survives a reversal of the thing it names has stopped testing it. The replacement carries both spellings and asserts the whole kind map.",
+      "replacement": "tests/test_v1_108_80.py::test_a_classvar_is_class_state_under_its_names_own_kind",
+      "commit": "181b43c8",
+      "date": "2026-09-19"
+    },
+    {
+      "path": "tests/test_php_members.py::test_a_class_constant_keeps_the_bare_name_java_and_kotlin_give_it",
+      "lesson": "It asserted that a PHP class constant keeps a BARE qualified name, and its docstring said why: `_constant_symbol` hardcodes `qualified_name = name` and `_walk_tree` qualified at the call site under `if language == \"rust\"`, so Java and Kotlin were bare too, and qualifying PHP alone would have made the answer depend on which language you asked. That reasoning was right and the conclusion it reached -- record the asymmetry and leave it whole -- made the test the defect's witness: #780 and #783 report exactly the cell it pinned, a member with parent=None being invisible to every parent-keyed reader (#760's file summary counts by parent). The lesson that survives is the one the docstring already held: a per-language repair at a shared call site is a guard written against a spelling, and the fix is to ask the question the site is actually asking (`parent_symbol is not None`). The replacement asserts the positive form, and `tests/test_class_constant_owner.py` asserts it over `_CLASS_SCOPED_CONSTANT_LANGUAGES` so all three languages move together.",
+      "replacement": "tests/test_php_members.py::test_a_class_constant_is_owned_by_its_class",
+      "commit": "9163dde7",
+      "date": "2026-09-20"
+    },
+    {
+      "path": "tests/test_member_state_is_not_a_constant.py::test_solidity_ownership_is_a_separate_issue_and_still_open",
+      "lesson": "A gap test is written to FAIL when its defect is fixed, and this one did. #788 had two halves: a member you can reassign is not a constant, and a member carries its owner. The kind half shipped in #808 and this pin asserted the other half was still open (`parent is None`). It closed when the five custom parsers stopped rebuilding `f\"{scope}.{name}\"` by hand and asked `_member_of` for the owner id each had already computed. The lesson it carried -- that a cell can be HALF fixed, so a gap register is per cell and closing the issue early would hide the rest -- is kept, and the replacement records which way the cell moved rather than only that it was broken.",
+      "replacement": "tests/test_member_state_is_not_a_constant.py::test_solidity_ownership_arrived_and_this_is_the_witness",
+      "commit": "826aa01e",
+      "date": "2026-09-20"
+    },
+    {
+      "path": "tests/test_rust_fidelity.py::test_fields_variants_and_closures_are_not_symbols",
+      "lesson": "Struct fields, enum variants and let-bound closures were all asserted NOT to be symbols, in one test, because the syn oracle deliberately emitted none of them. #786 reverses that for FIELDS ONLY: a named struct or union field is a member, the audit tracked its absence as ('rust','mutable'), and every other language in that family answers. The test was the OLD decision's witness rather than a guard on the new one (Practice 9), so it was inverted rather than worked around -- and the three names beside it (Alpha, Beta, helper) are deliberately NOT inverted, which is what keeps the change scoped to the thing that moved. The reason the oracle omitted fields was itself wrong twice over: it said a field binds no name another module can reach (a pub field is reached as s.field) and that emitting them would make the extra gate reject correct extraction (true only while the extractor emitted none -- once it does, the OMISSION is what fails the gate).",
+      "replacement": "tests/test_rust_fidelity.py::test_variants_and_closures_are_not_symbols_but_a_field_now_is",
+      "commit": "fb192d8a",
+      "date": "2026-09-22"
+    },
+    {
+      "path": "tests/test_a_go_method_belongs_to_its_receiver.py::test_a_grouped_type_declaration_does_not_hand_one_types_fields_to_another",
+      "lesson": "The test pinned a REFUSAL that existed only because of a gap next door. A grouped Go `type ( A ...; B ... )` yielded one symbol for the whole declaration (#817), so #778's receiver pass had to check the owner's name and skip every spec but the first -- B's fields stayed unindexed, and the assertion `'Theirs' not in found` recorded that as the desired answer. It was the gap's witness, not a guard on the pass (Practice 9). #817 makes `type_spec` the symbol node, so each spec resolves to its own owner and the name check is deleted from the source; keeping the assertion would pin a state nothing produces. What the test was really protecting -- A never growing a member it does not declare -- survives in the replacement, which now asserts BOTH owners instead of one owner and one absence. The wider lesson is the one the guard could not carry: an absence assertion whose cause is a defect elsewhere ages into a claim that the defect is correct.",
+      "replacement": "tests/test_a_go_method_belongs_to_its_receiver.py::test_a_grouped_type_declaration_gives_each_types_fields_to_that_type",
+      "commit": "6d7edc78",
+      "date": "2026-09-22"
+    },
+    {
+      "path": "tests/test_file_summary_member_kinds.py::test_two_classes_of_one_name_still_report_their_members",
+      "lesson": "It pinned a UNION that only existed because of a defect one layer up, and its own docstring named the fix it was waiting for: 'Separating those needs the producer to renumber children's parent'. Until #821 a member of a renumbered twin kept the pre-renumbering parent id, so the summariser compensated by stripping the ordinal off ITS side, and each namesake then reported both halves' members. #821 makes the producer follow the member to the twin whose bytes contain it, so the compensation had to go in the same commit -- a stripped id here against a suffixed parent there matches nothing at all, which is the empty summary the workaround existed to prevent. The replacement is the same test with the same inputs and the honest expectations: each declaration reports the members it declares, the sentences sum to the file's real member count, and Swift's extension no longer claims the class's method. The general lesson is that a consumer-side workaround and the producer fix are ONE change; shipping either alone is worse than shipping neither.",
+      "replacement": "tests/test_file_summary_member_kinds.py::test_two_classes_of_one_name_report_the_members_they_declare",
+      "commit": "24d537d8",
+      "date": "2026-09-22"
+    },
+    {
+      "path": "tests/test_a_class_member_carries_its_owner.py::test_objc_is_the_only_language_here_that_needs_the_ordinal_stripped",
+      "lesson": "A RENAME, not a deletion: the body and the measurement are unchanged. The test was called `..._needs_the_ordinal_stripped` and its docstring read 'Non-vacuity for the helper above', and #821 deleted that helper -- `_without_ordinal`, which had compensated for members carrying a pre-renumbering parent id. A test whose name and stated purpose describe code nobody can open sends the next reader hunting, which is the same cost as a stale ARCHAEOLOGY row. The measurement it makes is still worth making and is now named for what it measures: exactly one row of that table has a container carrying an ordinal, which is what keeps the neighbouring assertion honest. The general lesson is that deleting a helper is not finished until the tests that justified it are renamed too; grep the deleted name before calling the change complete.",
+      "replacement": "tests/test_a_class_member_carries_its_owner.py::test_objc_is_the_only_language_here_whose_container_carries_an_ordinal",
+      "commit": "69b5347f",
+      "date": "2026-09-22"
+    },
+    {
+      "path": "tests/test_member_kind_audit.py::test_every_class_bearing_spec_is_sampled_or_excused",
+      "lesson": "A RENAME with a WIDENED predicate, the body's measurement kept. The gate asked which specs can emit a `class`, and the property the file measures is about MEMBERS: a C struct is a `type`, so C was reachable by the gate's own rule and excluded by it, its members sat outside the table by construction, and `_GAPS` read empty over a language that indexed no members at all (#825). A guard's REACH defined by a kind is a guard over the languages that happen to share that spelling; define it by the property (declares a container) and list what the widening pulls in -- measured: rust, already sampled, and C once #797 made its struct a container.",
+      "replacement": "tests/test_member_kind_audit.py::test_every_member_bearing_spec_is_sampled_or_excused",
+      "commit": "fbd6b5b0",
+      "date": "2026-09-22"
+    },
+    {
+      "path": "tests/test_a_c_struct_member_is_indexed.py::test_an_elaborated_type_reference_is_a_known_gap",
+      "lesson": "A gap test is written to FAIL when its defect is fixed, and this one did: `struct S { struct Other *link; }` published a nested type `S.Other` for a type the file never defines, because tree-sitter spells a definition, a reference and a forward declaration with ONE `struct_specifier` and three spec copies listed the node type without asking for a `body` (#830). The lesson it carried -- that an equality assertion between two languages would have FROZEN a fabrication in both, so the row was withheld and the gap pinned as a failing-when-fixed test instead -- is carried by the replacement named below, which asserts the absence in every reference position for `struct`, `union`, `enum` and C++ `class` in C, C++ and Arduino, and by the `pointer-to-another-struct` row restored to that file's equality table, which now pins the two languages EQUAL on the right answer.",
+      "replacement": "tests/test_a_c_type_reference_is_not_a_declaration.py::test_a_mention_of_a_type_declares_nothing",
+      "commit": "7198be13",
+      "date": "2026-09-23"
+    },
+    {
+      "path": "tests/test_class_state_is_indexed_in_three_spec_languages.py::test_a_dart_body_with_no_container_symbol_contributes_no_member",
+      "lesson": "A gap test is written to FAIL when its defect is fixed, and this one did, on both of its rows. It was the WITNESS for #818's holder gate -- the one shape that exercised it -- and pinned two absences as limits: an `extension type` body (whose declaration was in no list at all, #819, #698's shape one language over) and an `enum` body (whose declaration was a symbol but not a container, #820, so its methods were owned while its data was absent). The lesson it carried -- that a member with no owner is never published, so a body with no container symbol above it contributes nothing rather than bare names -- is carried by the replacement named below, which asserts the property over EVERY Dart container (class, mixin, extension, extension type, enum) instead of pinning two absences that a fix was meant to remove. The gate stays and asks the container list alone (its own body-type list was deleted in review); its remaining job is a holder whose parent is not in that list.",
+      "replacement": "tests/test_a_dart_extension_type_and_enum_own_their_members.py::test_every_dart_member_has_an_owner",
+      "commit": "b6c5061b",
+      "date": "2026-09-23"
+    },
+    {
+      "path": "tests/test_a_c_typedef_binds_every_name.py::test_a_cpp_typedef_list_inside_a_function_is_a_known_gap",
+      "lesson": "A tracked gap, never a tolerated one: it recorded that C++ published a function-local type at file scope with no owner because `_walk_tree`'s C++ branch moved the parent only at a type container, so a function body was not a scope. #833 made a `function_definition` a scope boundary (and with it #798, the same rule seen from inside a member function), so the gap's assertion is false by design now and the C-only local-typedef test beside it is widened to both languages.",
+      "replacement": "tests/test_a_cpp_function_local_type_is_owned_by_the_function.py::test_the_free_function_answers_every_row_and_nothing_else",
+      "commit": "b1ffdbba",
+      "date": "2026-09-23"
+    },
+    {
+      "path": "tests/test_php_members.py::test_an_enum_case_is_a_known_separate_gap",
+      "lesson": "A tracked gap, never a tolerated one: it pinned that PHP's `enum_case` (a node type with a `name` field) was named by no PHP_SPEC map, so every enum case was absent while the enum was indexed. #759 added it to symbol_node_types as `constant`, owned by its enum, so the gap's assertion is false by design.",
+      "replacement": "tests/test_php_enum_cases_are_indexed.py::test_the_reported_case",
+      "commit": "#759",
+      "date": "2026-09-25"
+    },
+    {
+      "path": "tests/test_a_dart_extension_type_and_enum_own_their_members.py::test_enum_variants_are_not_indexed_and_that_is_a_ruling",
+      "lesson": "A deferred question recorded as a ruling reads as settled: it pinned 'enum variants are not indexed' as a family ruling pending #759. #759 ruled the opposite (an enum member is an owned `constant` in every language; jjg, 2026-09-25), so the same assertion now pins a tracked gap, and its name must say so or the next reader defends the gap as intended.",
+      "replacement": "tests/test_a_dart_extension_type_and_enum_own_their_members.py::test_enum_variants_are_a_tracked_gap_ledger_l03",
+      "commit": "#759",
+      "date": "2026-09-25"
+    },
+    {
+      "path": "tests/test_framework_script_bindings.py::test_a_local_function_binding_is_a_disclosed_gap",
+      "lesson": "A test that pins a gap so it is disclosed becomes the defect's witness the moment the gap is fixed (Practice 9): it asserted a Svelte script with `const fn = () => {}` yields the component and nothing else. L-42 makes the binding a `function`, as a `.js` file publishes it, so the assertion is inverted rather than deleted, and keeps the half that was right: the binding is never given a data kind. The frame-by-frame property is in tests/test_a_function_valued_binding_in_a_component_script_is_indexed.py.",
+      "replacement": "tests/test_framework_script_bindings.py::test_a_local_function_binding_is_a_function",
+      "commit": "L-42",
+      "date": "2026-09-27"
+    }
+  ]
+}

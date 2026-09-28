@@ -11,7 +11,12 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided
+from ..storage import result_cache_record_lookup
 from ..parser.imports import resolve_specifier
+from ..retrieval.query_shape import (
+    exact_needles as _exact_needles,
+    is_exact_row,
+)
 
 # ⚠ Re-exported, not redefined -- these moved to `retrieval/scoring.py` to
 # break the search_symbols <-> signal_fusion cycle. Patch THERE, not here:
@@ -89,7 +94,21 @@ def _result_cache_get(key: tuple) -> Optional[dict]:
     dispatcher writes ``evidence_ref`` into ``_meta.verdict`` after the tool
     returns, and with a shared nested dict that write landed in the cached
     entry and was replayed to every later hit (#377 item 3).
+
+    ⚠⚠ Every lookup is counted in the session tracker HERE, hit or miss
+    (#864). This cache never passes through `result_cache_get`, so without it
+    a hit reached `cache_hit_validated` and never `total_hits`: the stats said
+    zero hits beside a revalidated rate of 1.0.
     """
+    result = _result_cache_lookup(key)
+    try:
+        result_cache_record_lookup("search_symbols", hit=result is not None)
+    except Exception:
+        logger.debug("cache lookup telemetry failed", exc_info=True)
+    return result
+
+
+def _result_cache_lookup(key: tuple) -> Optional[dict]:
     with _result_cache_lock:
         if key in _result_cache:
             _result_cache.move_to_end(key)  # LRU refresh
@@ -486,8 +505,86 @@ def _row_summary(sym: dict) -> str:
 
 
 def _heap_tiebreak(symbol_id: str) -> bytes:
-    """Return an inverted ID key so smaller IDs win equal-score ties."""
-    return bytes(255 - byte for byte in symbol_id.encode("utf-8", "surrogatepass"))
+    """Inverted id bytes: smaller id -> larger key, so a min-heap keeps it on a tie."""
+    return bytes(255 - b for b in symbol_id.encode("utf-8", "surrogatepass"))
+
+
+# Owner kinds that make a nested symbol a LOCAL: a helper declared inside a
+# function body. Asked positively, and that direction is the whole correctness
+# of this function -- see the UNKNOWN note below.
+_LOCAL_OWNER_KINDS = ("function", "method")
+
+# Kinds that DECLARE the thing a caller naming a symbol is usually asking for.
+# ⚠⚠ Both halves of the rank are required and they cover different corpora.
+# `constant` is deliberately absent: a `const partial = z.object(...).partial()`
+# in a test file is a real symbol and a poor answer to "where is partial
+# defined" when a method of that name exists.
+_DEFINITION_KINDS = frozenset(
+    {"class", "function", "method", "type", "struct", "interface", "trait", "enum"}
+)
+
+
+def _declaration_rank(entry: dict, index, needles: Optional[tuple[str, str]]) -> int:
+    """How much of a definition is this row, for the purpose of the result cut?
+
+    2 = an exact-name match of a declaring KIND that is not a proven local.
+    1 = any other exact-name match: a constant or field, or a symbol proven to
+        be declared inside a function body.
+    0 = not an exact-name match; today's score ordering, untouched.
+
+    ⚠⚠ **Both conditions are load-bearing and each one alone leaves half the
+    defect live.** Measured on the two reproductions: jcodemunch's `run` is
+    crowded by helpers nested in test functions, all of kind `function`, so KIND
+    separates nothing and the owner probe is what fixes it. zod's `partial` is
+    crowded by `const partial = ...` rows that the TypeScript extractor records
+    with NO owner path at all -- they are module-level constants as far as the
+    index is concerned -- so the owner probe scores them exactly like a real
+    method and only KIND separates them. A first draft shipped with the owner
+    probe alone and left the reported case unchanged.
+
+    ⚠⚠ The cut is a bounded heap keyed on BM25 alone, so before this an exact
+    match could be evicted by a higher-scoring near-miss, and a dozen same-named
+    locals could fill the window and leave the real definition at NO rank
+    (#699). Kind alone does not separate the cases -- a local helper and a
+    module-level function are both `function` -- and neither does a test-path
+    rule, which would demote a genuine method declared in a fixture.
+
+    ⚠⚠ **The owner is probed POSITIVELY for being a function, never negatively
+    for being a type, and UNKNOWN resolves to 2.** The first draft asked whether
+    the owner was a class/struct/trait and demoted everything else, which reads
+    a FAILED LOOKUP as proof of a function body. A Rust `impl` block is the
+    ordinary counter-example: `src/impls.rs::Store.cache#method` has its `struct
+    Store` indexed in `src/types.rs`, so the same-file probe missed and a real
+    method was ranked below a same-named local in a test file -- the defect this
+    exists to fix, in the languages it was not measured against. C++ .cpp/.h,
+    C# partial classes, Swift extensions and Ruby reopened classes are the same
+    shape. UNKNOWN is a third bucket and never False, the rule `has_any()`,
+    `freshness.classify` and `ledger_trust` all encode.
+
+    ⚠ A rank-0 row never triggers a lookup, so the cost is bounded by the number
+    of exact-name matches rather than by the corpus.
+    """
+    if needles is None:
+        return 0
+    if not is_exact_row(entry, *needles):
+        return 0
+
+    if str(entry.get("kind", "")) not in _DEFINITION_KINDS:
+        return 1  # a constant or field carrying the name
+
+    sym_id = str(entry.get("id", ""))
+    file_part, _, rest = sym_id.partition("::")
+    path = rest.split("#", 1)[0]
+    owner_path = path.rsplit(".", 1)[0] if "." in path else ""
+    if not owner_path:
+        return 2  # module-level
+    getter = getattr(index, "get_symbol", None)
+    if getter is None:
+        return 2  # cannot establish an owner; do not demote on an unknown
+    for kind in _LOCAL_OWNER_KINDS:
+        if getter(f"{file_part}::{owner_path}#{kind}") is not None:
+            return 1  # proven local
+    return 2
 
 
 def search_symbols(
@@ -858,9 +955,21 @@ def search_symbols(
         candidates = [index.symbols[i] for i in sorted(candidate_indices)]
     else:
         candidates = index.symbols
-    heap: list[tuple[float, bytes, dict]] = []  # (score, inverted ID, entry)
+    # (score, tiebreak, entry). The tiebreak is the symbol id with its bytes
+    # INVERTED, so among equal scores the min-heap evicts the LARGER id and the
+    # top-K keeps the smallest ids regardless of encounter order. Before
+    # 2026-09-03 the second slot was the encounter counter, i.e. os.walk order,
+    # which is directory order on NTFS and hash order on ext4: the same corpus
+    # returned different tied symbols on Windows and on CI (harness F-13; gin
+    # "context bind" has five candidates at exactly 10.202).
+    heap: list[tuple[tuple[int, float], bytes, dict]] = []
     candidates_scored = 0
     max_bm25_score = 0.0
+    # The exact-name forms for this query, or None for a prose query. Resolved
+    # once; `search_symbols` must not own a second definition of "exact"
+    # (see retrieval.query_shape.exact_needles).
+    _needles = _exact_needles(query)
+    exact_scanned = 0
 
     for sym in candidates:
         if has_filters:
@@ -918,18 +1027,26 @@ def search_symbols(
 
         # Bounded heap: O(N log K) instead of O(N log N)
         tiebreak = _heap_tiebreak(entry.get("id", ""))
+        rank = _declaration_rank(entry, index, _needles)
+        if rank:
+            exact_scanned += 1
+        key = (rank, heap_score)
         if len(heap) < effective_limit:
-            heapq.heappush(heap, (heap_score, tiebreak, entry))
-        elif (heap_score, tiebreak) > (heap[0][0], heap[0][1]):
-            heapq.heapreplace(heap, (heap_score, tiebreak, entry))
+            heapq.heappush(heap, (key, tiebreak, entry))
+        elif (key, tiebreak) > (heap[0][0], heap[0][1]):
+            heapq.heapreplace(heap, (key, tiebreak, entry))
 
-    # Extract results sorted by score descending, ties by symbol ID ascending.
-    _sorted_heap = sorted(heap, key=lambda x: (-x[0], x[2].get("id", "")))
+    # Extract results sorted by rank then score descending, ties by symbol id
+    # ascending. ⚠ The EVICTION and the ORDER must read the same key: a row that
+    # survives the cut under one rule and is then sorted under another ranks
+    # below rows it outranked to get there.
+    _sorted_heap = sorted(heap, key=lambda x: (-x[0][0], -x[0][1], x[2].get("id", "")))
     scored_results = [entry for _, _, entry in _sorted_heap]
     # Real ranking scores (top-first) for confidence/ledger — kept separate from
     # the response entries so _meta.confidence grades on real gap/strength instead
     # of flat-lining at the no-score neutral default (V6).
-    _conf_scores = [hs for hs, _, _ in _sorted_heap]
+    # The heap key is (declaration rank, score); confidence grades the SCORE.
+    _conf_scores = [hs for (_, hs), _, _ in _sorted_heap]
     heap_count = len(scored_results)  # save before budget packing
 
     # §1.2: Materialize full-detail payload BEFORE packing so byte_length reflects
@@ -1171,7 +1288,9 @@ def search_symbols(
     # contract only `absent` proves absence. `low_confidence` is the honest
     # state and cannot be cited as evidence the symbol does not exist.
     from ..retrieval.query_shape import exact_match_report as _exact_match_report
-    _exact = _exact_match_report(query, scored_results)
+    # `exact_scanned` counted during scoring, BEFORE the heap cut, so the report
+    # describes the repository rather than the page (#559's rule, #699's case).
+    _exact = _exact_match_report(query, scored_results, total_exact=exact_scanned)
     if _exact is not None:
         meta["exact_match"] = _exact
         if not _exact["found"] and scored_results:
@@ -1296,6 +1415,11 @@ def _search_symbols_semantic(
     embedded_ids = matrix.id_set if matrix is not None else set()
 
     missing = [s for s in index.symbols if s["id"] not in embedded_ids]
+    # CF-66: a failed top-up batch left its symbols scored lexically only, with
+    # the cause in the log and nothing in the response. Same loop as
+    # embed_repo's, same ledger; disclosed as the body field `semantic_topup`.
+    from ..embeddings.failures import FailureLedger
+    topup_failures = FailureLedger()
     if missing:
         new_emb: dict[str, list[float]] = {}
         for bi in range(0, len(missing), EMBED_BATCH_SIZE):
@@ -1309,6 +1433,7 @@ def _search_symbols_semantic(
                     new_emb[sym["id"]] = vecs[j]
             except Exception as exc:
                 _logger.warning("semantic: embedding batch %d failed: %s", bi // EMBED_BATCH_SIZE, exc)
+                topup_failures.record(exc, items=len(batch))
         if new_emb:
             if emb_store.get_dimension() is None:
                 dim = len(next(iter(new_emb.values())))
@@ -1404,7 +1529,13 @@ def _search_symbols_semantic(
     # disagreements across Django, FastAPI and jcm. The 4,000-vector corpus above
     # is synthetic and maximally homogeneous — it shows the hazard is real in
     # principle, NOT that it fires in practice. Both facts belong together.
-    scored.sort(key=lambda x: (-x[0], x[1]["id"]))
+    # ⚠⚠ The declaration rank leads the key here for the same reason it leads
+    # the lexical heap's (#699): this exit ALSO ranks-and-caps, so without it
+    # `semantic=True` answers the same query differently from the default path
+    # and still drops the definition a caller named. One tool must not have two
+    # cut rules.
+    _needles = _exact_needles(query)
+    scored.sort(key=lambda x: (-_declaration_rank(x[1], index, _needles), -x[0], x[1]["id"]))
     top = scored[:effective_limit]
     # Real ranking scores (top-first) for confidence/ledger (V6).
     _conf_scores = [s for s, _ in top]
@@ -1495,6 +1626,19 @@ def _search_symbols_semantic(
         "results": scored_results,
         "_meta": meta,
     }
+    if topup_failures:
+        # The symbols in a failed batch were scored WITHOUT the semantic
+        # channel; say how many and why, or a hybrid answer that is lexical for
+        # part of the corpus reads like a full one. In the BODY, not `_meta`:
+        # `meta_fields: []` is the shipped default and the dispatcher deletes
+        # `_meta` under it (Standing lesson 08-30), so a disclosure there
+        # reaches only those who already opted in.
+        topup: dict = {
+            "symbols_unscored": topup_failures.items,
+            "batches_failed": topup_failures.batches,
+        }
+        topup_failures.disclose(topup)
+        result["semantic_topup"] = topup
     from ..retrieval.confidence import attach_confidence as _attach_confidence
     from ..retrieval.confidence import extract_ledger_features as _ledger_feats
     from ..retrieval.freshness import FreshnessProbe as _FreshnessProbe
@@ -1799,6 +1943,15 @@ def _search_symbols_fusion(
     # Build result list
     sym_by_id = {sym["id"]: sym for sym in candidates}
     scored_results = []
+    # ⚠⚠ The third cut site (#699). `fuse` orders by fused score alone, so this
+    # exit dropped an exact-name definition for the same reason the lexical heap
+    # did. Stable sort on the declaration rank only, so the fusion ordering is
+    # preserved within each rank -- this promotes, it does not re-rank.
+    _needles = _exact_needles(query)
+    fused = sorted(
+        fused,
+        key=lambda fr: -_declaration_rank(sym_by_id.get(fr.symbol_id) or {}, index, _needles),
+    )
     # Real fused ranking scores (top-first) for confidence/ledger (V6).
     _conf_scores = [fr.score for fr in fused[:effective_limit]]
 

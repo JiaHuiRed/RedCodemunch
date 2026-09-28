@@ -24,6 +24,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from ..retrieval.verdict import symbol_not_found
 from ..storage import IndexStore
 from ..storage.generation import connect_readonly
 from ._utils import resolve_repo
@@ -250,7 +251,7 @@ def get_symbol_provenance(
                 "candidates": [{"name": s["name"], "file": s["file"], "id": s["id"]} for s in by_name],
             }
         else:
-            return {"error": f"Symbol not found: '{symbol}'. Try search_symbols first."}
+            return symbol_not_found(symbol, index.symbols)
 
     sym_name: str = sym.get("name", "")
     sym_file: str = sym.get("file", "")
@@ -452,6 +453,25 @@ def get_symbol_provenance(
     }
     if stack_freq is not None:
         response["stack_frequency"] = stack_freq
+
+    # Compiler-diagnostics snapshot beside the runtime one. None = no data
+    # ingested = no key; a symbol the checker cleared gets a real zero.
+    from ._diagnostics_consume import (  # noqa: PLC0415
+        diagnostics_currency, diagnostics_snapshot, live_git_head, load_symbol_diagnostics,
+    )
+    diag_map = load_symbol_diagnostics(db_path, [sym_id]) if sym_id else None
+    if diag_map is not None:
+        d = diag_map.get(sym_id) or {"errors": 0, "warnings": 0, "infos": 0, "tools": [], "codes": []}
+        snap = diagnostics_snapshot(db_path) or {}
+        response["diagnostics"] = {
+            "errors": d["errors"],
+            "warnings": d["warnings"],
+            "infos": d["infos"],
+            "tools": d["tools"],
+            "codes": d["codes"],
+            "as_of": snap.get("as_of"),
+            "current": diagnostics_currency(snap.get("as_of"), live_git_head(cwd)),
+        }
     return response
 
 

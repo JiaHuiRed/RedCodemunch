@@ -1,13 +1,124 @@
 # jcodemunch-mcp — Project Brief
 
 ## Current State
-- **Version:** 1.108.315 — **A fix for a false positive can install a false negative, and suppression has no symptom.** `find_dead_code`'s `confidence: 1.0` is documented as PROVABLY UNREACHABLE — a claim about the TREE, computed from the INDEX with nothing in between. ⚠⚠ **`encoding/schemas/` is enumerated by `pkgutil.iter_modules(__path__)` at import time**, an edge no static graph can see, so TWELVE live encoders published at 1.0 — and **which three of fifteen escaped depended only on whether a test happened to import the module directly**, i.e. test-authoring habit, published as proof. ⚠⚠ **THE FIRST WORKING DRAFT INSTALLED A FALSE NEGATIVE AND EVERY ASSERTION STAYED GREEN**: matching any `__path__` made `pkgutil.iter_modules(schemas_pkg.__path__)` in a TEST file read as the test directory self-enumerating — **502 files went live**, suppressing every real finding under `tests/`. Only a BARE `__path__`/`__file__`, or a local alias bound to one, names the loader's own package; **the alias IS the motivating case** (`from . import __path__ as pkg_path` one line above the call), so reading only the call argument resolves nothing. ⚠ `_corpus_adequacy.py` reads the disclosures the index already carries and caps at **0.6**, below the 0.8 default, so the default call REFUSES — **`search_text` handled the identical situation correctly on the identical index in the same session**. UNKNOWN caps; NOT APPLICABLE (`no_source_root`, `complete is None`) does not. ⚠⚠ **THE THIRD SURFACE IS THE DESTRUCTIVE ONE**: `check_delete_safe` reaches `safe_to_delete` from a no-refs-at-all fallback **REGARDLESS of the dead-code confidence it just consulted**, then FLOORS it at 0.85 — so capping the report left the delete certified, and the twelve encoders each graded safe. `corpus_inadequate` is classified in `_stop_rule._BOUNDED` and never terminal; only ABSENCE verdicts are replaced. ⚠ `json_passthrough.py` survives as the one likely TRUE positive of the original thirteen — reported, not deleted. [[a-fix-for-a-false-positive-can-install-a-false-negative]] [[a-guard-covered-only-by-positive-tests-can-be-deleted]]
-- **Prior (1.108.314):** **A rate written for a FUTURE date is wrong for every day before it.** `receipt`'s `_MODEL_PRICES_USD_PER_MTOK["sonnet"]` read `3.0` from 2026-06-24 commented "Sonnet 5 / 4.6" — **Sonnet 5 has NEVER been $3**: it launched at $2 introductory with the $3 rise SCHEDULED for 2026-09-01, **cancelled the day before it would have applied**. The entry recorded a FUTURE price as the current one and was wrong all 69 days it stood, and **nothing distinguishes that from a stale value** — both read as a plausible number beside a plausible date, and the date makes it look checked. ⚠⚠ **THE PIN AGREED WITH IT**: `_EXPECTED_RATES` restated `3.0`, and a third assertion was a DERIVED `"$0.09"` in rendered text that no search for the rate's NAME can see — so the suite was green against a rate the vendor never charged for the model named beside it. **Re-read the SOURCE when touching a pinned table, never the other copy.** ⚠ Four copies suite-wide and this fixes ONE; ours is right only in `storage/token_tracker.py`, whose key is `claude_sonnet_4_6` — **a key naming a FAMILY inherits whichever member's price someone last looked at.** jmunch/jdoc/jdata still carry it, and **jmunch also has `claude_opus` at the RETIRED $15 (3x) on the block stamped onto LIVE responses** — a self-flattering error, the one direction a savings metric must not drift; work orders written, not fixable from here. ⚠⚠ Also: the published `counter` surface is BYTE-PINNED (`tests/test_counter_surface_stability.py`; 6 tools, **4,184 B**; name+order, per-tool sha, total, whitelist membership, `tool_profile` independence; non-vacuity 5/5) — it sits in the CACHED PREFIX, so **a reworded description is a full-rate cache write for every user**, and it pins the catalog-can-GROW property arXiv:2608.22708 is built around, which the Counter had by construction and nothing asserted. ⚠ And `CLI Subcommands`+`Env Vars` (16.6% of the budget) split to `CLI-AND-ENV.md`: 69 rows moved, 27 stayed, **the ⚠ marker under-selected AGAIN** (9 of 27 keepers). [[a-ratchet-can-pass-against-the-defect-it-names]] [[a-budget-that-names-one-section-licenses-the-rest]]
-- **Prior (1.108.313):** **An install created before a default can never learn there is a choice.** `tool_surface` is written ONCE by `_fresh_config_content` and kept OUT of `generate_template`, so `upgrade_config` can never back-inject it — correct, because it stops a package update collapsing a served surface, and also why **every seat predating the `counter` default is on `full` PERMANENTLY with no path off it**. The freeze made the change unreachable instead of OFFERED. `surface_offer.py` prices the move on this install (91 tools/26,943 schema tokens vs 6/1,050) across `surface`, `install-status` and a one-time server-start WARNING. ⚠⚠ **A MESSAGE, NEVER A MIGRATION** — it does not import `config`, writes nothing, and only a command the user types moves the key; asserted over the AST, because **a substring scan fires on the docstring that explains the freeze**. ⚠⚠ **Both sides priced by `_build_tools_list(surface_override=)`** — the counter branch deliberately BYPASSES tier filtering and `disabled_tools`, so a hand-rolled count UNDER-reports what the client receives. ⚠ Computed per install, never a shipped literal. ⚠⚠ **Also: THREE readers of one conflation, all fixed.** `__version__` is `importlib.metadata`, frozen at install time and never read from the tree — so the source-drift verdict **false-alarmed forever on editable** (the module IS the tree; proven by touching a file and seeing the verdict not move) **and was BLIND to the copied install, which was the actual 2026-08-29 incident**; `drifted` is now code and `metadata_stale` is the recorded version (which `serverInfo` hands the host). The process registry's `version` is identical across every process on a source install, so `code_stale` answers from `started_at` vs source mtime — **it caught this session's own server on first run**. ⚠ `install_layout.py` is the new authority; a fourth copy was the alternative. ⚠ Practice 9: an OLD test asserted `drifted is True` for the one shape where code cannot lag — rewritten, not fixed back. [[a-ratchet-can-pass-against-the-defect-it-names]] [[grep-a-persisted-field-for-its-readers]]
-- **Older releases (1.108.312 and earlier):** see `CHANGELOG.md` (1.108.303-.310 in `ISSUE-HISTORY.md`). The 1.108.182 entry ("a stall has a name and a ceiling", #375) and the 1.108.177-.181 #377 hardening arc are there in full.
-- **Tests:** 9135 passed, 13 skipped, **0 failed** (1.108.315) **+ `uv run ruff check src/` clean**, measured on the settled tree after the bump and the rotation. ⚠ **9148 TOTAL, +40 over the .314 line's 9108** — 22 from this release's `tests/test_dead_code_corpus_adequacy.py` and 18 from the #565 work that shipped between the two measurements (six new test functions, two of them parametrized). ⚠ **A delta is only readable when both ends name the same tree**; three commits sat between these two. ⚠ `ruff check tests/` reports 292 PRE-EXISTING errors and is NOT this project's gate; `src/` is. ⚠⚠ **THE ROTATION IS TWO EDITS, NOT ONE** — moving a release out of Current State also moves the "Older releases (X and earlier)" boundary, and `test_claude_md_rotation.py` fails naming both numbers; it caught .311's settled run at `1 failed`. ⚠⚠ **READ THE SKIP COUNT, NOT JUST THE EXIT CODE AND THE TOTAL** — a .305 reproduce came back exit 0 with the total reconciling exactly while 105 tests silently did not execute. Forensics and the correct command: **Reproducing CI's environment**. ⚠⚠ **Compare TOTALS, never passed counts, and NEVER a skip count ACROSS machines** — CI ubuntu skips 26 and windows 19 where this box skips 13, all pre-existing; **the before/after delta on the SAME job is the only signal**. ⚠⚠ **A BACKGROUND-TASK BANNER SAYING "exit code 0" IS NOT A GREEN SUITE** — one run reported exit 0 having never started pytest (`--timeout` plugin absent), and .306 had a banner say exit 0 over a log whose own `EXIT=` line said 1. **Redirect the exit code INTO the log (`{ pytest; echo "EXIT=$?"; } > log`) and grep that line**; a bare `&` does not survive the shell either. ⚠⚠ **A CONTRIBUTOR PR IS TRIAL-MERGED ONTO `main` AND RUN LOCALLY BEFORE THE MERGE** — branch-green is not merged-green and the merge base moves every release. ⚠⚠ **A reproduce that ERRORS in `tests/test_sdist_exclusions.py` is NOT environmental noise** — that file is the sdist CREDENTIAL-LEAK guard (v0.2.6), and it errors at setup when the scratch venv must fetch the build backend with DNS blocked. Re-run it explicitly; never wave it through. ⚠ Prior (1.108.314): 9095 passed, 13 skipped, **0 failed** (9108 total). ⚠ Prior (1.108.313): 9091 total. ⚠ Two full runs contend on the same `~/.code-index` process-lock scopes, the documented cause of .261's 47m outlier, so the 3.13 reproduce runs AFTER the local suite, never beside it.
+- **Version:** 1.108.319 — **The numbers a competitor published about us were right, and so was the refusal we had shipped over twice.** An external benchmark (`amritessh/scalpel-fse2027-artifact`, reproducible from its own raw data) named two real defects in us. TypeScript and TSX never indexed an `abstract class` at all — the grammar spells it `abstract_class_declaration` and neither spec listed it, so every abstract class was absent and its methods lost their owner (#698). And `search_symbols` cut its page on score alone, so an exact-name match could be evicted OUTRIGHT — not ranked lower, absent — by same-named locals declared inside function bodies (#699); all three cut sites read one `(declaration rank, score)` key now, and locals are demoted, never filtered. ⚠⚠ **That rank needs BOTH a kind and an owner condition, and the first draft shipped the owner probe alone, passed its own suite, and left the reported case byte-for-byte unchanged** — the fixture could not express the other crowding shape, so re-run the REPORTED corpus through the product before calling a fix done. ⚠⚠ **W-16 is FIXED after two releases shipped over its refusal**: every per-repo cell in `README.md` and `benchmarks/README.md` derives from `benchmarks/jcm_reference.json`, and `tests/test_benchmark_tables_mirror_the_reference.py` gates the cells a reader quotes — `test_provenance.py` gated only the grand total, which is the figure everyone remembers to update. Also in the block, in full in `CHANGELOG.md`: `get_tectonic_map` partitions by Louvain instead of one plate holding two-thirds of the tree (#668) and discloses an untrustworthy co-churn signal (#667); changed paths resolve when the index is rooted below the git top level (#685); an unproducible triage result is escalated, not retried forever (#670); committing a tree no longer invalidates the full-tier stamp taken on it (#675); the inbound jobs that bill a model have their own switch and it is OFF. Forensics: `docs/workflows/FINDINGS.md`.
+- **Prior (1.108.318):** **The process is code that cannot skip a step, and the field is measured from result files.** Three layers: the workflows layer (`/feature` · `/fix-issue` · `/release` · `/review` · `/triage-issue` · `/benchmark-compare` · `/competitive-compare`, with hooks that refuse a commit without the fast tier, a PR without a full-tier stamp on THIS tree, and every irreversible verb), the inbound layer (nine headless jobs, OFF until `INBOUND_ENABLED`, the model never holding a write token) and the competitive tier (the nulls, jCodeMunch and nine adapters over pinned corpora in a sandbox, every FINDINGS number script-written from a result file). Forensics: `docs/workflows/FINDINGS.md`, `docs/inbound/FINDINGS.md`, `docs/competitive/FINDINGS.md`.
+- **Prior (1.108.317):** **CI runs the harness on every change; publishing is a dispatched workflow** (five workflows; every PR-gate job a REQUIRED check on `main` by name; `enforce_admins` and `strict` ON; `release.yml` dispatched with a version, Test PyPI first, trusted publishing). ⚠⚠ The gate caught its own author four times before it merged and the pre-flight was wrong twice about a MAIN commit (C-13, C-14: the PR gate's jobs live on the PR's merge ref; main's witnesses are `main.yml`'s). ⚠ Windows runners are 3x this box on the full tier: `suite.full_seconds_ci_windows`, a platform-scoped Floor, not a loosening. Rules: the CI/CD section, `docs/cicd/`; forensics: `ISSUE-HISTORY.md` (rotated 2026-09-11).
+- **Older releases (1.108.316 and earlier):** see `CHANGELOG.md` (1.108.303-.310, 1.108.314-.315 and 1.108.316 in `ISSUE-HISTORY.md`). The 1.108.182 entry ("a stall has a name and a ceiling", #375) and the 1.108.177-.181 #377 hardening arc are there in full.
+- **Tests:** 10521 passed, 24 skipped, **0 failed** (10545 total, +336 over the .318 line's 10209) (1.108.319, `uv run pytest -n auto`, the full tier on the settled tree after the bump and the rotation) **+ `uv run ruff check src/` clean**. ⚠ Prior (1.108.318): 10185 passed, 24 skipped, **0 failed** (10209 total; the skip count is 24 under the full tier, harness F-05). ⚠ Prior (1.108.317): 9241 passed, 19 skipped, **0 failed** (9260 total; the skip count is 19 under `uv run` and 13 under `PYTHONPATH=src python -m pytest`, harness F-05). ⚠ `ruff check tests/` reports 292 PRE-EXISTING errors and is NOT this project's gate; `src/` is. ⚠⚠ **THE ROTATION IS TWO EDITS, NOT ONE** — moving a release out of Current State also moves the "Older releases (X and earlier)" boundary, and `test_claude_md_rotation.py` fails naming both numbers; it caught .311's settled run at `1 failed`. ⚠⚠ **READ THE SKIP COUNT, NOT JUST THE EXIT CODE AND THE TOTAL** — a .305 reproduce came back exit 0 with the total reconciling exactly while 105 tests silently did not execute. Forensics and the correct command: **Reproducing CI's environment**. ⚠⚠ **Compare TOTALS, never passed counts, and NEVER a skip count ACROSS machines** — CI ubuntu skips 26 and windows 19 where this box skips 13, all pre-existing; **the before/after delta on the SAME job is the only signal**. ⚠⚠ **A BACKGROUND-TASK BANNER SAYING "exit code 0" IS NOT A GREEN SUITE** — one run reported exit 0 having never started pytest (`--timeout` plugin absent), and .306 had a banner say exit 0 over a log whose own `EXIT=` line said 1. **Redirect the exit code INTO the log (`{ pytest; echo "EXIT=$?"; } > log`) and grep that line**; a bare `&` does not survive the shell either. ⚠⚠ **A CONTRIBUTOR PR IS TRIAL-MERGED ONTO `main` AND RUN LOCALLY BEFORE THE MERGE** — branch-green is not merged-green and the merge base moves every release. ⚠⚠ **A reproduce that ERRORS in `tests/test_sdist_exclusions.py` is NOT environmental noise** — that file is the sdist CREDENTIAL-LEAK guard (v0.2.6), and it errors at setup when the scratch venv must fetch the build backend with DNS blocked. Re-run it explicitly; never wave it through. ⚠ Two full runs contend on the same `~/.code-index` process-lock scopes, the documented cause of .261's 47m outlier, so the 3.13 reproduce runs AFTER the local suite, never beside it.
 - **Python:** >=3.10
 - **Tool count:** 91 visible in `full` / 94 in catalog (front door hidden; counts verified 2026-07-30 from `jcodemunch-mcp surface`, which is the only place to get them — do NOT hand-type this; +1 v1.108.111 `get_parity_map`, +1 v1.108.112 `get_decorator_census`, +1 v1.108.113 `get_architecture_metrics`); `tool_surface=counter` exposes a 3-tool front door (`order`/`menu`/`route`) instead
+
+## How work is done here (2026-09-04)
+
+**Use these; do not improvise the process.** Each one runs the harness at
+the right moments, spawns an independent reviewer, and produces the
+Definition-of-Done checklist itself (`.claude/hooks/dod_checklist.py`), so
+a step cannot be skipped by forgetting it.
+`/feature <desc>` · `/fix-issue <n>` · `/release` · `/benchmark-compare [ref]`
+· `/review [pr|ref] [--merge-check]` · `/triage-issue <n>` ·
+`/competitive-compare [tool] [ref]` (the competitive tier against a ref; drafts to `.claude/state/competitive/`, never the ledger).
+Authority, never restated in a command: `docs/standard/STANDARD.md` (what
+good means; the Definition of Done), `docs/harness/ARCHAEOLOGY.md` (why every
+test exists), `docs/cicd/RUNBOOK.md` (what a human does),
+`docs/workflows/DESIGN.md` (what each command does, step by step; §8 is how
+to add one). ⚠ Hooks (`.claude/hooks/`, wired in `.claude/settings.json`)
+refuse a `git commit` that fails the fast tier, a `gh pr create` without a
+full-tier run on THIS tree, and every IRREVERSIBLE verb (publish, tag,
+tag push, force-push, release, dispatch, merge, issue deletion); those
+lines are handed to the human in cmd.exe form. Posting (a PR, a comment,
+a body edit, an alert dismissal) is the session's since W-40 (2026-09-07). ⚠⚠ **`.claude/` is
+TRACKED as of 2026-09-04** except `settings.local.json`, `*.bak` and
+`state/`; the sdist still excludes all of it (the v0.2.6 vector), asserted by
+`tests/test_build.py`, `tests/test_sdist_exclusions.py` and
+`tests/test_workflows_registered.py`. Open findings: `docs/workflows/FINDINGS.md`.
+
+## Inbound: headless work on issues and PRs (2026-09-04)
+
+**`docs/inbound/POLICY.md` is what a headless job may do; `DESIGN.md` is
+each job; `docs/cicd/RUNBOOK.md` section 9 is what a human does.** Nine
+`inbound-*.yml` workflows. ⚠⚠
+**Nothing runs until `INBOUND_ENABLED` reads exactly `true`, no model
+job until `INBOUND_MODEL_ENABLED` does** (off since 2026-09-14);
+absent is OFF; the layer switch is re-read before every write.
+⚠⚠ **The model never holds a token that can write**: model jobs run on
+the read-only `GITHUB_TOKEN` and write a file; a no-model job verifies it
+and writes with the App, to be confined by a ruleset to `inbound/**` and
+`inbound-ledger` (RUNBOOK 9's once-only setup). Nothing headless merges, tags, publishes, closes, or
+touches POLICY 4.4's never-touch list (this file included); every drafted
+reply waits for a human `approved: true`. Open findings:
+`docs/inbound/FINDINGS.md`.
+
+## Competitive: the tier that measures us against the field (2026-09-06)
+
+**`docs/competitive/DESIGN.md` is the loop; `FIELD.md` is who is in the
+set and why; `VERIFICATION.md` is whether the tier can be trusted;
+`docs/cicd/RUNBOOK.md` section 10 is what a human does.** `benchmarks/
+competitive/run.py` runs the nulls, jcodemunch and nine adapters (the ninth, zvec-grep, 2026-09-07) over a
+pinned corpus set in the D2 container, three runs, the corpus and task
+checks refusing before scoring; `/competitive-compare [tool] [ref]` is the
+interactive form. ⚠⚠ **Every number comes from a result file**: a FINDINGS
+row, a summary and a draft are written by scripts (`findings.py`,
+`trend.py`, `compare_ref.py --findings-row`), and a typed number is a
+review finding. ⚠⚠ **A competitor's README figure is never a measurement
+and competitor code runs only in the sandbox**; a release title is the
+only competitor text quoted, as `data`. ⚠ Losses are recorded unsoftened
+(CF-20; CF-51: our P2 read 0 on every recorded corpus because our own
+adapter asked the import-graph tool for a usage question, a harness
+mapping defect and a real loss at once, since a user reaching for the
+same tool gets the same answer; the adapter asks `check_references`
+since 2026-09-06 and the next recorded run carries it; the product half,
+CF-63, shipped 2026-09-10 (#658): seven steering surfaces route the usage
+question to `check_references`, and `tests/test_usage_question_routes_to_usage_tool.py`
+scans `src/` so an eighth inherits the rule). The
+three scheduled jobs are OFF until a human sets `COMPETITIVE_POST_ENABLED`
+and creates the four labels (CF-57); nothing here touches marketing.
+Open findings: `docs/competitive/FINDINGS.md`.
+
+## CI/CD: the harness's judgment on every change (2026-09-04)
+
+**`docs/cicd/DESIGN.md` is the pipeline; `docs/cicd/RUNBOOK.md` is what a
+human does.** `pr-gate.yml` runs `python -m harness fast|full|check <id>` in
+five stages; every job is a REQUIRED check on `main` BY NAME (`fast: *`,
+`full: test (<os>, <py>)` x8, `package: install and handshake (<os>)` x2,
+`bench: *`, `done: *`, `license/cla`; the list is one `gh api` call, RUNBOOK
+§8, and renaming a job is a protection change). `main.yml` re-runs full +
+online bench after a merge and OPENS a `regression` issue per failing Floor;
+`nightly.yml` does the matrix with fresh corpora (`drift`); `security.yml`
+is CodeQL. ⚠⚠ **Read a failed check from its SUMMARY**: one verdict line
+`<id> crit <c> floor <cmp v> observed <o> FAIL`, also as an annotation; a
+pytest or ruff failure lists the ids. ⚠⚠ **No threshold lives in a
+workflow**; `tests/test_workflows_pinned.py` also fails an action not pinned
+to a 40-hex SHA or `continue-on-error` outside a job named `(informational)`.
+⚠⚠ **Publishing is `release.yml`, dispatched with a version, never local,
+never a hand-pushed tag** (the tag path runs the pre-flight and fails it);
+trusted publishing on environments `testpypi`/`pypi`, `dry_run` true until
+the first real publish is approved (RUNBOOK §1, §5). ⚠ `enforce_admins` and
+`strict` are ON; the emergency path is RUNBOOK §6 with a `bypass` issue.
+Findings: `docs/cicd/FINDINGS.md`.
+
+## The Standard and the Harness (2026-09-03)
+
+**`docs/standard/STANDARD.md` is the authority on what "good" means here,
+and `uv run python -m harness` is the one command that says whether a change meets
+it.** Tiers: `fast` (85 offline files + ruff + Floor checks, 90 s ceiling;
+run before committing), `full` (all of `tests/` + coverage + skip ceiling,
+the PR gate), `bench --offline` (replay, route recall, schema capture,
+self-latency; main + Mondays). `check <id>` prints one Floor's verdict. `warm` fetches the tiktoken asset outside the
+pytest session; the fast and full tiers do it themselves, and a cold box
+that skips it fails 26 token-count tests under the no-network fixture (F-14).
+⚠⚠ **A Floor lives ONLY in `harness/thresholds.json`**; a literal restated
+anywhere else fails `tests/test_thresholds_are_the_only_copy.py`. Loosening
+needs a `loosened` block and is announced on every run. ⚠⚠ **Read
+`docs/harness/ARCHAEOLOGY.md` before touching any test** — 491 files, each
+with the reason it exists; **retiring one requires a `harness/retired.json`
+entry naming the lesson and the replacement assertion**, or
+`tests/test_retirement_ledger.py` fails. UNCLEAR items stay byte-identical.
+⚠ **Every Floor is a value the tree clears with margin; conservative by
+design.** ⚠⚠ **Never copy a figure** from the standard, the archaeology or
+here: tool counts, ratios, token weights, latencies and test totals are
+recomputed by each block's Method line and stamped with commit and date.
+⚠ **Required status checks on `main` are the PR gate's job names** (2026-09-04, RUNBOOK §8 is the one `gh api` call that lists them; the 2026-09-03 list of `lint`/`Retrieval-quality gate`/`test (os, py)` is retired). A renamed job silently stops being required; `uv run python scripts/release_preflight.py` reads the live contexts and fails on a missing run. Open findings: `docs/harness/FINDINGS.md`.
 
 ## Key Files
 
@@ -24,7 +135,7 @@ violation causes a defect, or a rationale.
 
 ```
 src/jcodemunch_mcp/
-  server.py            # MCP dispatcher (async); CLI subcommand dispatch, auth/rate-limit middleware. v1.108.292: `_mcp_instructions()`/`_tool_search_query()`/`_initialization_options()` — the MCP `initialize` `instructions` string, surface-aware (front door on `counter`, the six core tools on `full`), 1,000-char budget. ⚠ Built per `run()`, never passed to `Server(...)` at import: the surface comes from env+config and neither is settled then. ⚠⚠ It is THE ONLY prose that survives tool deferral — a host over its schema budget ships 91 bare names and withholds every description. All three transports pass it; `tests/test_mcp_instructions.py` parses the dispatcher's AST and fails if any `server.run()` goes back to a bare `create_initialization_options()`, which sends an empty field and raises nothing. ⚠ Same line also sets `Server(..., version=__version__)`: omit it and the SDK reports ITS OWN version in `serverInfo` (hosts showed `1.26.0` while we shipped 1.108.x). ⚠⚠ `__version__` is `"unknown"` under `PYTHONPATH=src`, so a green test here does NOT prove the wire carries a real number — **and CI cannot close that gap either, because it runs from source too.** ⚠ **Verify the handshake MANUALLY against the PUBLISHED artifact** after any change to it (#536): pin the version and build a fresh venv (`uv venv` + `uv pip install "jcodemunch-mcp==X.Y.Z"`), then do a real stdio handshake. ⚠⚠ **NEVER probe through bare `uvx`** — it served a CACHED build once and showed the SDK's own version with no instructions, i.e. **exactly the pre-fix symptoms from a stale cache rather than a defect.** (2026-08-24, ISSUE-HISTORY.md) v1.108.66: the Counter front door (order/menu/route) — _effective_surface()/_counter_front_door_tools()/_raw_catalog_tools()/_catalog_names() + surface-collapse in _build_tools_list + _handle_order/menu/route + early front-door branch in call_tool
+  server.py            # MCP dispatcher (async); CLI subcommand dispatch, auth/rate-limit middleware. v1.108.292: `_mcp_instructions()`/`_tool_search_query()`/`_initialization_options()` — the MCP `initialize` `instructions` string, surface-aware (front door on `counter`, the six core tools on `full`), 1,000-char budget. ⚠ Built per `run()`, never passed to `Server(...)` at import: the surface comes from env+config and neither is settled then. ⚠⚠ It is THE ONLY prose that survives tool deferral — a host over its schema budget ships 91 bare names and withholds every description. All three transports pass it; `tests/test_mcp_instructions.py` parses the dispatcher's AST and fails if any `server.run()` goes back to a bare `create_initialization_options()`, which sends an empty field and raises nothing. ⚠ Same line also sets `Server(..., version=__version__)`: omit it and the SDK reports ITS OWN version in `serverInfo` (hosts showed `1.26.0` while we shipped 1.108.x). ⚠⚠ `__version__` is `"unknown"` under `PYTHONPATH=src`, so a green test here does NOT prove the wire carries a real number — **and CI cannot close that gap either, because it runs from source too.** ⚠ **The handshake is verified against the PUBLISHED artifact by `release.yml`'s `post-publish` job** on every published release (`scripts/handshake.py`; `handshake.yml` was retired into the pipeline in 54fbbafb and citing it sent a reader hunting for a file that is not there). By hand (#536): pin the version and build a fresh venv (`uv venv` + `uv pip install "jcodemunch-mcp==X.Y.Z"`), then run that script. ⚠⚠ **NEVER probe through bare `uvx`** — it served a CACHED build once and showed the SDK's own version with no instructions, i.e. **exactly the pre-fix symptoms from a stale cache rather than a defect.** (2026-08-24, ISSUE-HISTORY.md) v1.108.66: the Counter front door (order/menu/route) — _effective_surface()/_counter_front_door_tools()/_raw_catalog_tools()/_catalog_names() + surface-collapse in _build_tools_list + _handle_order/menu/route + early front-door branch in call_tool
   surface_offer.py     # The priced, opt-in offer to move an EXISTING install onto today's default surface. `build_offer` (None when clean) / `render_offer_lines`. ⚠⚠ **`tool_surface` is written ONCE by `_fresh_config_content` and kept OUT of `generate_template`, so `upgrade_config` can never back-inject it** -- correct, because it stops a package update collapsing a served surface, and also why every seat predating the `counter` default is on `full` PERMANENTLY with no path off it. The freeze made the change unreachable instead of offered. ⚠⚠ **A MESSAGE, NEVER A MIGRATION**: the module does not import `config`, writes nothing, and `upgrade_config` is untouched -- only a command the user types can move the key. `tests/test_surface_offer.py` asserts that over the AST, because **a substring scan fires on the docstring that explains the freeze** (a ratchet failing against something other than the defect it names). ⚠⚠ **Both sides are priced by `_build_tools_list(surface_override=)`, never a local count** -- the counter branch deliberately BYPASSES tier filtering and `disabled_tools`, so a hand-rolled count applies them and UNDER-reports what the client receives; `_schema_tokens_for_profile`'s defect one axis over. ⚠ **Computed per install, never a shipped literal** -- `disabled_tools` or a narrower `tool_profile` gives a different pair. ⚠ Reuses `SCHEMA_TOKENS_BASIS` rather than reformatting the number for persuasion, and discloses the cache-write the switch costs. ⚠ Omit-when-clean (already on target / non-positive delta / silenced); `surface_offer_seen` is a DISPLAY LATCH only and never changes which tools are served. ⚠ NOT wired into `digest` -- a per-repo briefing is the wrong home for a global install-config row.
   install_layout.py    # THE ONE AUTHORITY for "where does this install's code come from?" -- `is_source_layout` / `tree_root_for` / `newest_source_mtime` / `running_source_changed_at`. ⚠⚠ Extracted 2026-08-31 because the question had grown THREE readers with three answers (the drift verdict, the process registry, the surface receipt's assumptions) -- the second-generator/second-call-site mechanism this project keeps paying for. ⚠⚠ **A LEAF, stdlib only**: `cli/init.py` and `storage/process_registry.py` both import it and `storage` importing `cli` is the wrong direction -- the same cycle `cli/policy.py` exists to break. ⚠⚠ **The `src` component is REQUIRED, not decoration**: `<x>/site-packages/jcodemunch_mcp/__init__.py` is ALSO three levels under `<x>`, so a positional check calls a copied install editable whenever a pyproject sits that far up -- shipped in the first draft of the drift fix and caught by its own test. ⚠ **`newest_source_mtime` is the only honest way to ask whether an ALREADY-RUNNING process serves current code** -- a process holds what it imported at startup, and a version string cannot see that because every process on a source install reports the same frozen metadata number. ⚠ Tri-state throughout; `None` is never `False`. `tests/test_process_code_freshness.py` fails if any other module re-derives the src rule, and runs that scan against the reintroduced copy.
   tier_switch_cost.py  # Is a mid-session tool-list change worth what it costs? `breakeven_requests`/`classify` (widening/pays/does_not_pay/noop). ⚠⚠ **`tools` is serialised AHEAD of system and messages**, so a tier switch invalidates the schema block AND every turn behind it, and the new block must be cache-WRITTEN before it reads cheaply again. Measured (`benchmarks/tier_switch/`): `full`->`standard` drops 6.7% of the payload and needs **174 requests** to repay itself with an empty history, **864** with 100k -- `full`->`core` needs 4. ⚠⚠ **The intuition INVERTS on the case that applies**: uncached, the same switch saves 1,810 tokens every request at no one-time cost and pays back immediately. It is wrong only because the block is CACHED (86% of baseline input, `benchmarks/codex_surface/`), which is how a surface built to save tokens shipped a control that spends them. ⚠⚠ **A WIDENING IS NEVER REFUSED** -- escalating after a capability-gated failure buys a capability, and trading a correct answer for a cheap one is the worse error; only a narrowing claims to save. ⚠ `standard` stays a fine STARTUP `tool_profile` (no switch to pay for) and the refusal names that route. ⚠ Rates are PUBLISHED, not measured here; `history_tokens=0` at the call sites because the server cannot see the client's transcript and history only RAISES the price, so the reported figure is a FLOOR. ⚠⚠ Three defects fell out of building it: the first pricer filtered the raw catalog and was wrong by three tools in every tier (hence `_build_tools_list(profile_override=)` -- **price what `list_tools` publishes, never a second copy of the visibility rules**); the refusal's `reason` was put in `_meta`, which `meta_fields: []` (the DEFAULT) strips, so most users would get a bare verdict; and the map ships TWICE, so a ratchet over `DEFAULTS` alone passed while the config TEMPLATE still routed sonnet/gpt-4o at `standard`
@@ -48,6 +159,7 @@ src/jcodemunch_mcp/
     generation.py      # (v1.108.215, #398 Arc 1) THE READ CONTRACT, both halves. `IndexGeneration`/`describe(index)` — the ONE place `indexed_at`/`git_head`/`_db_path`/`_loaded_mtime_ns` are read off an index; empty string normalises to None once (three surfaces used to disagree). `rewritten_since_load` keeps unknown ≠ changed. `connect_readonly(db_path)` / `readonly_uri` / `wal_sidecar_present` — ⚠⚠ **neither single flag is right**: plain `mode=ro` CREATES `-wal`/`-shm` when absent (moves `_db_mtime_ns`, the .185 `rebuilding` bug), `immutable=1` cannot READ them when present (measured: raises `no such table`, which `has_any()` maps to a confident False). Reads the WAL when its sidecar exists, immutably when it does not. **Every read-only opener in the tree routes through this**; `test_generation_contract.py` fails on a hand-rolled `?mode=ro` URI anywhere else
     sqlite_store.py    # CodeIndex, save/load/incremental_save, WAL-aware LRU cache (_db_mtime_ns); get_source_root(). v1.106.0: save_index + migrate_from_json acquire `indexwrite` process_locks before SQLite writes, body extracted to `_save_index_locked` / `_migrate_from_json_locked`; serialises across MCP processes
     process_locks.py   # v1.106.0: generic multi-process coordination (acquire/release/inspect/held). Atomic O_EXCL + fcntl flock (Unix) + PID liveness + scoped lock files. Scopes: `watcher` (one-watcher-per-repo, shared with watcher.py) + `indexwrite` (save coordination). Metadata: pid/client_id/scope/target/started_at. JCODEMUNCH_CLIENT_ID env var sets friendly client name (defaults to sys.argv[0] basename) ⚠⚠ **(#557) `held.__enter__` records `waited_seconds` and REPORTS it** — DEBUG for any wait, **WARNING past `_SLOW_WAIT_SECONDS` (1.0) with the holder NAMED** (pid/client_id/age). **A CONTENDED LOCK AND SLOW WORK ARE INDISTINGUISHABLE FROM THE CALLER'S TIMER**: `incremental_save` takes this lock before writing, so a reporter measuring `save=9.906s` cannot tell queueing from working and only this function can. ⚠ `watch-all` watches EVERY indexed repo, so a second watcher or an editor-side MCP server is exactly the shape that queues here — naming the holder is the point, because "something else has the lock" sends the reader hunting in the wrong process.
+    token_tracker.py   # Session token ledger + the SHARED tool-result LRU. ⚠⚠ **(#572, @rknighton) `cache_put` stored the caller's dict and `cache_get` returned that same dict**, so the dispatcher's metadata step — a DISPLAY preference — edited the cache. `meta_fields: []` is the SHIPPED DEFAULT, so out of the box the second `find_references`/`get_blast_radius` call came back `KeyError: '_meta'`. ⚠⚠ **The crash was the loud case**: `suppress_meta` is a per-CALL argument, so on an ORDINARY config one call passing it emptied the shared entry and the next caller — who asked for metadata — was served an empty `_meta`; a partial `meta_fields` does the same by replacement. ⚠⚠ **The window is the MISS path**, because both tools rebuild `_meta` from `dict(cached)` on a hit — which is why a two-call reproduction shows the crash and NEITHER quiet case. ⚠⚠ **Fixed in the CACHE, not at the two call sites**: `search_symbols` keeps its own cache and had already paid for this twice (#377 item 3 for `_meta.verdict`, #404 for the rows) and neither fix reached the shared one — a third per-consumer patch leaves the trap armed for the tool written next. ⚠ `_isolate` clones CONTAINERS ONLY at unbounded depth: leaves are JSON-serialisable immutables by then, and container-only is **4.15 ms vs `copy.deepcopy`'s 16.58 ms on an 800 KB response**; a rule shaped to the containers today's two callers use would be a guard written against a spelling. ⚠ **Identity is NOT the contract** — seven `is` assertions in `tests/test_result_cache.py` are `==` now.
   embeddings/
     ../storage/embedding_matrix.py # (v1.108.223, #399) Process-local cache of the L2-NORMALISED matrix, keyed by a size+mtime stamp over the .db AND its -wal/-shm sidecars. `get_matrix(db_path)` -> `EmbeddingMatrix | None`; `score_all(q)` is ONE `matrix @ q` under numpy and a norm-hoisted Python loop without it. ⚠ **numpy is opportunistic, never a dependency** — `_scores_python` is tested with numpy forced absent. ⚠ **The sidecars are load-bearing in the stamp**: a write lands in the WAL and may not touch the .db until a checkpoint, so a .db-only stamp pins a stale matrix across exactly the write it must see. ⚠ Rows are `array.array('f')` in the fallback, not `list[float]` (~8x the memory, and this is HELD not thrown away). Bounded to 2 repos; `JCODEMUNCH_EMBED_MATRIX_CACHE=0` disables retention only
     ../storage/embedding_store.py  # CRUD over symbol_embeddings. ⚠ **Five read paths, pick deliberately**: `iter_raw()` (.223, read-only, UNDECODED blobs, for embedding_matrix only); `get_all()` (read-WRITE conn, bumps .db mtime), `get_all_readonly()` (.185, `mode=ro&immutable=1`, does not), `get_many(ids)` (.210, targeted + read-only, chunked at 900 for SQLITE_MAX_VARIABLE_NUMBER), `has_any()` (.211, `SELECT 1 ... LIMIT 1`, read-only, TRI-STATE — `None` means could-not-establish and is NEVER `False`). ⚠ `count()` and `get_all()` both use `_connect()`, which runs PRAGMA+CREATE-TABLE on EVERY connection — an existence check is NOT free and moves the mtime. Prefer `get_many` whenever the caller already knows its ids, and `has_any` over `count()` for a pure existence question
@@ -74,10 +186,11 @@ src/jcodemunch_mcp/
     get_untested_symbols.py   # get_untested_symbols: find functions with no test-file reachability (import graph + name matching) ⚠⚠ **`untested_count`/`reached_pct` are measured BEFORE the `max_results` cut (#559)**; the page length is `returned_count`. The count used to be `len(symbols)` POST-slice and `get_repo_health` asks for `max_results=1`, so the published test axis read ~100% reach on every repo with untested code (4,893 of 6,352 published as 100). ⚠ **The response key is `symbols`** -- three consumers invented `untested_symbols`/`untested`/`results` and fell through to `[]` in silence. [[a-mock-can-supply-a-contract-the-producer-lacks]]
     audit_agent_config.py    # audit_agent_config: token waste audit for CLAUDE.md, .cursorrules, etc.; cross-refs against index. Reused by suggest_corrections (_discover_files / _fuzzy_suggest / stale-config findings). Skill-candidate advisory (_check_skill_candidates / _split_sections / _best_subtree): flags always-resident H2 sections whose index-resolved refs concentrate in ONE subtree, gated by `skill_advisor_mode` (default off). ⚠ The signal is CONCENTRATION, not size — it returns [] with no index, and `subtreeShareCap` (0.25) not `concentrationFloor` is the discriminator, because a narrow subtree failing the floor hands selection to its permissive parent. ⚠ Findings state relevance was NOT measured; nothing records which section a turn needed
     suggest_corrections.py   # (v1.108.68) Retrieval-regret synthesis: fuses regret.analyze_regret clusters + audit_agent_config + WeightTuner dry-run into SUGGESTED corrections (routing/vocabulary/index-freshness/stale-config/skill-candidate) with difflib unified-diff CLAUDE.md previews. Read-only charter — never writes a user file; apply_weights touches only tuning.jsonc. Honest no-telemetry hint. ⚠ v1.108.290 passes `inflation` through EVEN WHEN UNMEASURABLE — a caller who cannot see WHY the ratio is absent reads its absence as zero inflation (#500: a number computed and discarded is the same defect as not computing it). ⚠ `_stale_config_corrections` read `f["type"]` while audit findings carry `category`, so stale_config had NEVER emitted; both spellings accepted now. ⚠ skill_candidate keeps `suggested_patch: None` deliberately — a diff showing only the deletion reads as "delete this section"
-    analyze_perf.py          # analyze_perf: per-tool latency telemetry (p50/p95/max/error_rate) + cache hit-rate; reads in-memory session ring or persistent telemetry.db (opt-in via perf_telemetry_enabled); compare_release="X" loads benchmarks/token_baselines/vX.json and adds baseline_diff. ⚠⚠ **`hit_rate` is RAW key-presence and is stamped `hit_rate_basis: "raw_key_presence"`** — a hit is presence in the 256-entry session LRU, i.e. how often the cache ANSWERED, never whether the answer still described the index. arXiv:2608.20280 measured raw 51-60% falling to **1.1-2.2%** once validity was checked; we published the bare number. ⚠ The raw rate is KEPT (it answers a real question) and can no longer be read alone: `hits_validated_fresh`/`hits_validated_stale`/`hits_unvalidated`/`hit_rate_revalidated`/`validated_share` sit beside it. ⚠⚠ **THREE buckets, and `hit_rate_revalidated` is `None` not `0.0` when nothing was validated** — of the three result-cache consumers ONLY `search_symbols` revalidates (via `subject_state`, the #377-item-3 path), so `hits_unvalidated` is non-empty BY CONSTRUCTION and folding it anywhere invents data. Same UNKNOWN-is-not-False rule as `ledger_trust`. ⚠ Invalidation is PROCESS-LOCAL (5 sites, index-mutating tools only), so the PostToolUse `index-file` spawn, the watcher, `refresh` and a second server instance all move the index without the cache hearing it. ⚠⚠ **`_diff_baseline` differenced latency against a baseline that never measured it** — `float(b.get("p50_ms", 0.0))`, while the only SHIPPED baseline carries `tokens_saved` and no latency keys, so the current p95 was published as `p95_delta_ms`. Absent -> `None` + `not_comparable` naming the side; **calls/tokens keep a meaningful zero on the CURRENT side, latency has none**. ⚠ Its test fixture carried keys the real artifact lacks, so the path was invisible; the guard reads every baseline OFF DISK. ⚠⚠ **`slowest_by_p95` answers how slow ONE call is and was the only ranking** — `heaviest_by_total_ms`/`totals` answer where the time WENT (count x latency; the orderings disagree whenever a fast tool is called often). A share over a zero total REFUSES; a **ring-capped tool's share is a LOWER BOUND** and is named, because the 512-call cap bites hardest on the busiest tool. ⚠ The per-tool shape has ONE producer, `token_tracker.latency_bucket` (this module's `_percentile` is deleted, not wrapped); `p95_is_max` is MEASURED, and fires for every n <= 20
+    analyze_perf.py          # analyze_perf: per-tool latency telemetry (p50/p95/max/error_rate) + cache hit-rate; reads in-memory session ring or persistent telemetry.db (opt-in via perf_telemetry_enabled); compare_release="X" loads benchmarks/token_baselines/vX.json and adds baseline_diff. ⚠⚠ **`hit_rate` is RAW key-presence and is stamped `hit_rate_basis: "raw_key_presence"`** — a hit is presence in the 256-entry session LRU or `search_symbols`' own cache (#864), i.e. how often the cache ANSWERED, never whether the answer still described the index. arXiv:2608.20280 measured raw 51-60% falling to **1.1-2.2%** once validity was checked; we published the bare number. ⚠ The raw rate is KEPT (it answers a real question) and can no longer be read alone: `hits_validated_fresh`/`hits_validated_stale`/`hits_unvalidated`/`hit_rate_revalidated`/`validated_share` sit beside it. ⚠⚠ **THREE buckets, and `hit_rate_revalidated` is `None` not `0.0` when nothing was validated** — of the three result-cache consumers ONLY `search_symbols` revalidates (via `subject_state`, the #377-item-3 path), so `hits_unvalidated` is non-empty BY CONSTRUCTION and folding it anywhere invents data. Same UNKNOWN-is-not-False rule as `ledger_trust`. ⚠ Invalidation is PROCESS-LOCAL (5 sites, index-mutating tools only), so the PostToolUse `index-file` spawn, the watcher, `refresh` and a second server instance all move the index without the cache hearing it. ⚠⚠ **`_diff_baseline` differenced latency against a baseline that never measured it** — `float(b.get("p50_ms", 0.0))`, while the only SHIPPED baseline carries `tokens_saved` and no latency keys, so the current p95 was published as `p95_delta_ms`. Absent -> `None` + `not_comparable` naming the side; **calls/tokens keep a meaningful zero on the CURRENT side, latency has none**. ⚠ Its test fixture carried keys the real artifact lacks, so the path was invisible; the guard reads every baseline OFF DISK. ⚠⚠ **`slowest_by_p95` answers how slow ONE call is and was the only ranking** — `heaviest_by_total_ms`/`totals` answer where the time WENT (count x latency; the orderings disagree whenever a fast tool is called often). A share over a zero total REFUSES; a **ring-capped tool's share is a LOWER BOUND** and is named, because the 512-call cap bites hardest on the busiest tool. ⚠ The per-tool shape has ONE producer, `token_tracker.latency_bucket` (this module's `_percentile` is deleted, not wrapped); `p95_is_max` is MEASURED, and fires for every n <= 20
   runtime/
     redact.py            # Single chokepoint redact_trace_record(record, source) — strips emails, IPv4, SQL literals/numerics, JSON value blocks, Python locals reprs, plus all secret patterns from ../redact.py
     http_routes.py       # Phase 6 Starlette route handlers: POST /runtime/otel, POST /runtime/sql, POST /runtime/stack. Off by default — gated by runtime_ingest_enabled config + JCODEMUNCH_HTTP_TOKEN bearer auth. Per-repo asyncio.Lock serialises writes against the same SQLite DB. Body cap (default 5 MB) checked separately for on-wire and decompressed sizes (gzip-bomb guard). Repo selection via X-JCM-Repo header or ?repo= query. Mounted on both SSE and streamable-http transports.
+    diagnostics_ingest.py # (2026-09, `docs/prd-compiler-diagnostics.md`) `ingest_diagnostics_file` — parse → redact(`message`) → innermost-span `resolve_to_symbol_id` → REPLACE per tool. ⚠⚠ **A SNAPSHOT, not a `runtime_*` upsert-and-add**: `DELETE WHERE tool=?` then insert, or a fixed type error stays forever on a symbol that is now clean; unmapped rows under `source='diagnostics:<tool>'` are replaced the same way. ⚠⚠ **No INDEX_VERSION bump** — `_SCHEMA_SQL` for new DBs, `ensure_diagnostics_table()` at ingest for old ones; a bump invalidates every user's index for a table that stays empty until they ingest. ⚠ Consumers render NO DATA as absent, never zero; `current` is tri-state. ⚠ Found `resolve.py`'s suffix walk capped at 8 segments (deep Windows paths never mapped); the path bounds it now.
     confidence.py        # Phase 2 RuntimeConfidenceProbe + attach_runtime_confidence (symbol-keyed) + attach_runtime_confidence_by_file (file-keyed). Stamps `_runtime_confidence` ∈ {confirmed, declared_only, unmapped} on result entries; emits `_meta.runtime_freshness` summary. Read-only connections use ?mode=ro&immutable=1 so they never bump WAL mtime and invalidate the CodeIndex LRU cache. Zero-cost when runtime_calls is empty.
   evidence/
     receipts.py          # (v1.108.183) #377 Phase 2 P1: the `jcodemunch.evidence/v1` envelope + session store. evidence_id() hashes EXACTLY (subject, effective_search, snapshot) — full sha256, never 12 hex; build_envelope/record_receipt (fail-closed on id reuse over differing content: an id that ever named two receipts names NEITHER after); lookup() returns (envelope, reason) with reason naming never_recorded/evicted/collision; PROOF_KINDS holds the jdoc/jdata halves too so parity attaches to ONE enum; coverage_fingerprint() is the OPAQUE Phase-5 (#385) extension point; envelope_json() is deterministic so repeated resource reads are byte-identical; _absence_links maps a Phase-3 `absent:` token to its receipt. Session-scoped, in memory, bounded at 500 + an evicted set
@@ -106,7 +219,7 @@ constraint whose violation causes a defect, or a rationale.
 |------------|---------|
 | `uninstall [target]` | (v1.105.1) Reverse `init` / `install`. Preserves user-authored hook rules and content outside our policy region; removes files only when empty after stripping. `--keep-claude-md`, `--keep-hooks`, etc. scope what's reversed |
 | `refresh [path]` | (v1.108.259, #395) Re-parse an INDEXED repo in bounded, resumable slices — `--max-seconds` / `--max-files` / `--pause-ms` / `--batch-size` / `--status` / `--reset` / `--ai-summaries` / `--json`. For fleets where a full re-index is a scheduled maintenance event. ⚠ Does NOT build a first index; refuses with the command that does. ⚠ Stamps `parser_generation` only after VERIFIED full-corpus coverage |
-| `import-trace [--otel <path> \| --sql-log <path> \| --stack-log <path>] [--repo <id>] [--no-redact]` | (Phases 1 + 4 + 5) Ingest a runtime trace file into the runtime_* tables. `--otel` takes JSON / JSON-Lines / .gz and maps spans by `(code.filepath, code.lineno, code.function)`; `--sql-log` takes pg_stat_statements CSV or generic SQL JSON-Lines and maps queries by referenced tables + dbt/SQLMesh column metadata; `--stack-log` takes plain-text app log or JSON-Lines record set with Python / JVM / Node.js tracebacks and writes severity-tagged frame counts to runtime_stack_events. Redacts PII at the chokepoint by default. Pass exactly one source flag. |
+| `import-trace [--otel <path> \| --sql-log <path> \| --stack-log <path> \| --diagnostics <path> [--format mypy\|pyright\|tsc\|ruff\|generic]] [--repo <id>] [--no-redact]` | (Phases 1 + 4 + 5) Ingest a runtime trace file into the runtime_* tables. `--otel` takes JSON / JSON-Lines / .gz and maps spans by `(code.filepath, code.lineno, code.function)`; `--sql-log` takes pg_stat_statements CSV or generic SQL JSON-Lines and maps queries by referenced tables + dbt/SQLMesh column metadata; `--stack-log` takes plain-text app log or JSON-Lines record set with Python / JVM / Node.js tracebacks and writes severity-tagged frame counts to runtime_stack_events. Redacts PII at the chokepoint by default. Pass exactly one source flag. ⚠⚠ **`--diagnostics` (2026-09) REPLACES every `diagnostics` row for its tool** — the rule and its reasons are at Key Files `runtime/diagnostics_ingest.py`. Never runs a checker; detects the format by CONTENT; an EMPTY file is a clean run only with `--format` naming the tool. |
 | `hook-precompact` | PreCompact hook: register transcript root before compaction (reads JSON stdin; snapshot delivery is `hook-sessionstart`) |
 | `hook-sessionstart` | (v1.108.255, #420) SessionStart hook: re-inject the PreCompact snapshot into MODEL context on `compact`/`resume`/`fork`. Silent on `startup`/`clear`, because an unrelated session's journal presents stale files as current focus. Also the earliest point a custom-profile transcript root can be learned (#421), so registration runs BEFORE the source gate |
 | `receipt` | Token-economy ledger from Claude transcripts — modeled tokens-saved + dollar value at Fable/Opus/Sonnet/Haiku rates; `--explain`, `--export csv\|json`, `--days` (rolling), `--model`. v1.108.134: `--since`/`--until` for calendar windows (local dates; `--until` exclusive) + `--by-day` for a per-day series in the JSON export. v1.108.135: `--rates` dumps the model price table as JSON (scans nothing) so consumers price from the one table instead of a drifting copy |
@@ -169,8 +282,10 @@ touch a tool description:
 
 - **`core_compact` has a HARD ceiling of 4,000 tokens** (v2 §10). The drift ratchet
   in `tests/test_schema_budget.py` offers "or update the baseline"; the sibling
-  ceiling tests forbid it. Trim the description instead. Currently 3,990, so a
-  core-tier tool has roughly ten tokens of slack, not a sentence's worth.
+  ceiling tests forbid it. Trim the description instead. ⚠⚠ **Never transcribe the
+  headroom here — read `core_compact` in `benchmarks/schema_baseline.json`** (F-27).
+  ⚠ The live gate recomputes from `_build_tools_list()`; the frozen sibling fails
+  only AFTER a regeneration, i.e. after the breach shipped.
 - **`tests/test_description_smells.py` gates Purpose and Length.** A new tool with a
   one-line description fails it. Two substantive sentences minimum: what it does and
   returns, plus one boundary or usage cue.
@@ -244,19 +359,7 @@ near its floor, descriptions are untouched ground.
 
 ### Tier-switch pricing (`benchmarks/tier_switch/`)
 
-⚠⚠ **A mid-session tier switch is priced, and one of the three tiers is a
-LOSING destination.** `full` -> `standard` needs **174 requests** to repay the
-cache it invalidates (**864** with 100k of history); `full` -> `core` needs
-**4**. Regenerate with `price_tier_switch.py`; weights are read live from
-`_build_tools_list`, so nothing here is hand-typed. `tier_switch_cost.classify`
-refuses the non-paying narrowing at both switch sites and never refuses a
-widening.
-
-⚠ **This EXTENDS the codex_surface finding below, it does not repeat it.** That
-one says `standard` is not a lever (6.7% of the payload). The addition is that
-as a TRANSITION it is negative, for longer than any session lasts -- and that
-the "fewer tokens is better" intuition is correct uncached and wrong cached,
-which is the whole reason it shipped.
+⚠ Numbers and rule: Key Files `tier_switch_cost.py` + Standing lesson 08-30; prose rotated to `ISSUE-HISTORY.md` 2026-09-12. Regenerate with `price_tier_switch.py`.
 
 ⚠⚠ **The published `counter` surface is BYTE-PINNED** (v1.108.314,
 `tests/test_counter_surface_stability.py`): six tools, **4,184 B**, by name AND
@@ -297,10 +400,13 @@ GITHUB_TOKEN="" gh issue list --state open ; GITHUB_TOKEN="" gh pr list --state 
 
 Each names a date to grep for in `ISSUE-HISTORY.md`.
 
-- **We fix the reported call site and leave the mechanism.** Three times in three
-  days (08-19, #506/#507/#508/#509): a second generator, a second call site, a
-  second derivation. The one-sentence fix each time is *ask the authority instead
-  of reproducing its logic*.
+- **We fix the reported call site and leave the mechanism.** 08-19
+  (#506/#507/#508/#509), three times in three days: a second generator, a second
+  call site, a second derivation. The fix each time is *ask the authority
+  instead of reproducing its logic*. ⚠⚠ 09-02 (#572) is the same shape in a
+  cache — `search_symbols` had fixed return-the-stored-object twice inside its
+  OWN cache and neither fix reached the SHARED one. **Ask whether the fix
+  belongs one layer down, where the tool written next inherits it.**
 - **Write the ratchet before concluding the reported list is the list.** 08-18
   #489 reported three sites; a test over the PROPERTY found five. Same at #447
   (three spellings of one path rule) and #491.
@@ -374,62 +480,53 @@ Each names a date to grep for in `ISSUE-HISTORY.md`.
   the least schema scores the highest. The cut was not merely inconclusive, it
   was incapable — and it will be suggested again by the next cache paper.
 - **Dropping an unmeasurable axis is not the same as omitting an inapplicable
-  one, and the difference has a SIGN.** 08-28: gating `churn_surface` on a
-  shallow clone by omitting it — the convention `runtime_coverage` already uses
-  — took the same tree from **84.0 B to 88.8 B** while full-clone truth was
-  **77.3 C**. **Removing a low-scoring axis RAISES a mean**, so the fix moved
-  the published grade further from reality than the defect had. NOT APPLICABLE
-  may be dropped silently; COULD NOT MEASURE must withhold the composite and
-  the grade. ⚠ Ask which direction a "safe" omission moves the number before
-  shipping it. [[a-one-directional-check-certifies-its-blind-side]]
+  one, and the difference has a SIGN.** 08-28: omitting `churn_surface` on a
+  shallow clone took the same tree from **84.0 B to 88.8 B** where full-clone
+  truth was **77.3 C** — **removing a low-scoring axis RAISES a mean**, so the
+  fix moved the published grade further from reality than the defect had. NOT
+  APPLICABLE may be dropped silently; COULD NOT MEASURE must withhold the
+  composite and the grade. ⚠ Ask which direction a "safe" omission moves the
+  number before shipping it. [[a-one-directional-check-certifies-its-blind-side]]
 - **`.get(key, default)` is not a None guard when the key EXISTS.** 08-28:
   `diff_radar`'s `.get("composite", 0.0)` raised the moment a composite was
   legitimately `None` — the default never fires for a present key. ⚠ And the
   0.0 it would have supplied was worse than the crash: a ~77-point regression
   reported against a side nobody measured. Same shape as
   [[a-module-that-imports-clean-has-been-tested-for-nothing]].
-- **The host's timezone can select a test's INPUT FORMAT.** 08-28: git renders
-  a UTC offset as `Z`, which `datetime.fromisoformat` could not parse before
-  3.11 — so a boundary date was unreadable on 3.10, in CI only. Every runner is
-  UTC; this box is CDT and got `-05:00`, which parses everywhere. ⚠⚠ **No local
-  run on any version could reproduce it, `uv run --python 3.13` included** —
-  the version matrix was not the axis that mattered. Pin format-sensitive
-  parsing with a UNIT test over every spelling; an integration test can only
-  observe the one its host emits. [[a-module-that-imports-clean-has-been-tested-for-nothing]]
+- **The host's timezone can select a test's INPUT FORMAT.** 08-28: git renders a
+  UTC offset as `Z`, which `datetime.fromisoformat` could not parse before 3.11,
+  so a boundary date was unreadable on 3.10 in CI only; this box is CDT and got
+  `-05:00`, which parses everywhere. ⚠⚠ **No local run on any version could
+  reproduce it** — the version matrix was not the axis that mattered. Pin
+  format-sensitive parsing with a UNIT test over every spelling; an integration
+  test can only observe the one its host emits.
+  [[a-module-that-imports-clean-has-been-tested-for-nothing]]
 - **A command that does not CREATE its environment is testing whatever was
-  left there.** 08-28: the release checklist's CI-env reproduce ran
-  `uv run --python 3.13 python -m pytest` with no sync and no `--extra watch`,
-  so it inherited `.venv`. It looked right for months because a previous sync's
-  packages survived; switching interpreters cleared them and **105 tests
-  silently stopped executing while the run reported exit 0 and the totals
-  reconciled exactly**. ⚠ Read the SKIP count, not just the exit code and the
-  total. ⚠⚠ The fix is in a GITIGNORED skill file, so the durable copy and its
-  ratchet live in the repo — `tests/test_ci_env_reproduce_command.py` binds
-  CLAUDE.md's command to `test.yml`'s install line.
-  [[pipes-and-missing-xdist-both-report-exit-zero]]
+  left there.** 08-28: the CI-env reproduce ran with no sync and no
+  `--extra watch`, so it inherited `.venv` and looked right for months; when
+  switching interpreters cleared it, **105 tests silently stopped executing
+  while the run reported exit 0 and the totals reconciled exactly**. ⚠ Read the
+  SKIP count, not just the exit code and the total. ⚠⚠ The fix lives in a
+  GITIGNORED skill file, so the durable copy is
+  `tests/test_ci_env_reproduce_command.py`, which binds CLAUDE.md's command to
+  `pr-gate.yml`'s install line. [[pipes-and-missing-xdist-both-report-exit-zero]]
 - **A denylist catches the instance; an allowlist catches the class.** 08-28:
-  `relnotes.md`, a scratch copy of the release notes, was swept up by
-  `git add -A` and shipped inside the published sdist. The sdist canary tests
-  prove NAMED bad paths are absent and could never have seen it — a scratch
-  file has no name to plant a canary under. ⚠ **Build release notes outside the
-  repository**; a `.gitignore` entry protects only the spelling someone
-  remembered. ⚠ Assert the allowlist in BOTH directions — an entry naming a
-  file that no longer ships makes the list stop describing the artifact.
-  ⚠⚠ **It found a SECOND instance minutes later and it was mine**: `suite.log`,
-  the pytest redirect used for every gate run that day, sitting in the repo
-  root. A release cut while one existed ships it, and a pytest log carries
-  absolute paths and usernames. **Redirect gate runs to the scratchpad, never
-  the repo.**
+  `relnotes.md`, a scratch release-notes copy, was swept up by `git add -A` and
+  shipped in the sdist. The canary tests prove NAMED bad paths absent, and a
+  scratch file has no name to plant a canary under. ⚠ **Build release notes
+  outside the repository**; a `.gitignore` entry protects only the spelling
+  someone remembered. ⚠ Assert the allowlist in BOTH directions. ⚠⚠ **Redirect
+  gate runs to the scratchpad, never the repo** — `suite.log` was the second
+  instance, found minutes later, and a pytest log carries absolute paths and
+  usernames.
 - **A field written by nobody's reader is a defect with no symptom.** 08-28
-  (#561/#562): `detect_framework` persisted `entry_point_patterns` into
-  `context_metadata` at index time, and a tree-wide search found that key
-  written in ONE place and read in NONE. Three tools each reproduced their own
-  "is this a root?" answer and every one was Python, so a Next.js repo detected
-  zero entry points. ⚠⚠ **An unconsumed field also rots unnoticed**: Flask and
-  FastAPI carried `"*.py"` there, which under fnmatch declares the whole tree —
-  the first naive reader would have switched dead-code detection off across an
-  ecosystem. **Grep a persisted field for its readers before trusting it, and
-  before adding one.** [[a-module-that-imports-clean-has-been-tested-for-nothing]]
+  (#561/#562): `detect_framework` persisted `entry_point_patterns` and a
+  tree-wide search found that key written in ONE place and read in NONE, so
+  three tools each reproduced their own Python-only answer and a Next.js repo
+  detected zero entry points. ⚠⚠ **An unconsumed field also rots unnoticed** —
+  Flask and FastAPI carried `"*.py"`, which under fnmatch declares the whole
+  tree. **Grep a persisted field for its readers before trusting it, and before
+  adding one.** [[a-module-that-imports-clean-has-been-tested-for-nothing]]
 - **A count taken after the page is cut describes the page.** 08-28 (#559):
   `untested_count = len(symbols)` ran after the `max_results` slice, so
   `get_repo_health`'s `max_results=1` published ~100% test reach on every repo
@@ -439,15 +536,13 @@ Each names a date to grep for in `ISSUE-HISTORY.md`.
   returning `[]` WITH a `signal_warning` became `dead_code_pct: 0.0` and an axis
   of 100. [[a-one-directional-check-certifies-its-blind-side]]
 - **An optimisation has a SWITCHING cost, and the intuition about it inverts
-  once the thing is cached.** 08-30: `set_tool_tier("standard")` narrowed the
-  tool block by 6.7% and cost a full-rate rewrite of the whole cached prefix --
-  **174 requests to break even, 864 with 100k of history**, against 4 for
-  `core`. ⚠⚠ **Uncached the same switch pays back immediately**, which is why a
-  surface built to save tokens shipped a control that spends them: "fewer
-  tokens is better" is true right up to the point the block is stable. **Ask
-  what a saving costs to START, not only what it saves per unit.** ⚠ A
-  *widening* is never refused — it buys a capability, and only a narrowing
-  claims to save. [[a-one-directional-check-certifies-its-blind-side]]
+  once the thing is cached.** 08-30: narrowing the tool block by 6.7% cost a
+  full-rate rewrite of the whole cached prefix — **174 requests to break even,
+  864 with 100k of history**, against 4 for `core`. ⚠⚠ Uncached the same switch
+  pays back immediately, which is how a surface built to save tokens shipped a
+  control that spends them. **Ask what a saving costs to START, not only what it
+  saves per unit.** ⚠ A *widening* is never refused.
+  [[a-one-directional-check-certifies-its-blind-side]]
 - **A reason placed in `_meta` is deleted on a default install.** 08-30:
   `meta_fields` defaults to `[]` and the dispatcher strips `_meta`, so a
   refusal's explanation would have reached most users as a bare verdict, with
@@ -458,39 +553,29 @@ Each names a date to grep for in `ISSUE-HISTORY.md`.
   [[a-module-that-imports-clean-has-been-tested-for-nothing]]
 - **A constant written for a FUTURE date is wrong for the whole interval before
   it, and looks identical to a stale one.** 09-01: the receipt priced `sonnet`
-  at $3 from 2026-06-24, the increase SCHEDULED for 2026-09-01 — cancelled the
-  day before. Sonnet 5 was never $3; the entry was wrong all 69 days, and its
-  dated comment made it look checked. ⚠⚠ **The pin agreed with it** (two literal
-  `3.0`s plus a DERIVED `"$0.09"` a name-search cannot see), so green meant
-  nothing — **re-read the SOURCE when touching a pinned table, never the other
-  copy.** ⚠ Four copies suite-wide; ours was right only in
-  `token_tracker.py`, whose key is `claude_sonnet_4_6`: **a key naming a FAMILY
+  at $3 from 2026-06-24 for an increase scheduled 2026-09-01 and cancelled the
+  day before — wrong all 69 days, with a dated comment that made it look
+  checked. ⚠⚠ The pin AGREED with it, including a derived `"$0.09"` no
+  name-search can see, so green meant nothing: **re-read the SOURCE when
+  touching a pinned table, never the other copy.** ⚠ **A key naming a FAMILY
   inherits whichever member's price someone last looked at.**
 - **A guard written against a SPELLING is fixed for that spelling only.** 09-01
-  (#566): #550 taught that `from . import receipts` depends on `receipts.py`,
-  then gated the fix on `set(specifier) == {"."}`. `from ..retrieval import
-  embed_drift` is the same dependency with the package named, and it kept
-  resolving to `__init__.py` for the whole life of the "fix" — 21 edges over 12
-  modules on our own `src/`, every one of them published by `find_dead_code` at
-  **confidence 1.0**. ⚠ The reported case and the property are different sizes;
-  #550's own comment argued the property and the code implemented the example.
-  ⚠⚠ **And the same error twice more in the fix**: the code comment's first
-  count (134) and the first repo-level ratchet (`built > 90`) both identified a
-  synthesised edge by its SHAPE — "the last segment appears in `names`" — which
-  also matches the hand-written `from .tools.index_repo import index_repo`. This
-  repo has **113** of those, already resolving, so **the ratchet passed against
-  the reintroduced defect and the number was 6x high**. Compare against the
-  import statements actually WRITTEN in the file. [[a-ratchet-can-pass-against-the-defect-it-names]]
+  (#566): #550 gated its fix on `set(specifier) == {"."}`, so the same
+  dependency with the package NAMED kept resolving to `__init__.py` and
+  `find_dead_code` published live modules as dead at confidence 1.0. ⚠ The
+  reported case and the property are different sizes. ⚠⚠ Identify a synthesised
+  edge by the import statements actually WRITTEN in the file, never by its
+  SHAPE — both the comment's count and the first ratchet did the latter, and the
+  ratchet passed against the reintroduced defect.
+  [[a-ratchet-can-pass-against-the-defect-it-names]]
 - **A fix for a false positive can install a false negative, and only the
-  non-vacuity pass sees it.** 09-01 (#569): the runtime-discovery scanner asked
-  whether `__path__` appeared in the enumeration call.
-  `pkgutil.iter_modules(schemas_pkg.__path__)` in a TEST file is ANOTHER
-  package's search path, so the test directory read as self-enumerating and
-  **502 files went live**, suppressing every real finding under `tests/` — with
-  every assertion in the new test file still green. ⚠ **Suppression has no
-  symptom**: the false positives it was written to remove were gone, which is
-  what success looks like. Ask what the fix makes INVISIBLE, and write that test
-  before the one that proves it works. [[a-set-cannot-count]]
+  non-vacuity pass sees it.** 09-01 (#569): the scanner asked whether `__path__`
+  appeared in the enumeration call, but in a TEST file that is ANOTHER package's
+  search path, so the test directory read as self-enumerating and **502 files
+  went live**, suppressing every real finding under `tests/` with every new
+  assertion still green. ⚠ **Suppression has no symptom** — the false positives
+  it removed were gone, which is what success looks like. Ask what the fix makes
+  INVISIBLE and write that test first. [[a-set-cannot-count]]
 - **Capping a report does not cap the tool that ACTS on it.** 09-01 (#566): the
   same absence claim reached `check_delete_safe` down a different branch — its
   "no refs at all" fallback returns `safe_to_delete` **regardless of** the
@@ -499,6 +584,14 @@ Each names a date to grep for in `ISSUE-HISTORY.md`.
   read it on every path**, not just the one the fix touched. A destructive
   recommendation is the surface that matters, and it was reading a signal it
   also had permission to ignore.
+- **A number that reproduces on one box is reproducible on one box.** 09-03
+  (harness F-13): the token benchmark was deterministic here AND on CI and
+  disagreed by 2.5% between them, for three causes at once — a CRLF checkout,
+  ranking ties broken by `os.walk` order, and a `_meta` counter read from HOME.
+  **Capture a published reference where the gate runs, and diff per-row, never
+  per-total** — the total hid one cause behind another. ⚠ `uv run --python X`
+  REBUILDS `.venv` without the extras; the fast tier has a skip ceiling now.
+  [[pipes-and-missing-xdist-both-report-exit-zero]]
 - **A competitor's fix list is a free defect probe.** 08-22: a rival's
   `fix(gini): measure a file's lines as its own span, not the sum of every node`
   named our defect precisely enough to confirm in one query —
@@ -506,6 +599,34 @@ Each names a date to grep for in `ISSUE-HISTORY.md`.
   byte mass 33.4% overall and up to 2.28x per file. Read their commit TITLES
   against whatever we built the same way; it is minutes, and it finds what our
   own tests were written not to see. See CHANGELOG `[Unreleased]`.
+- **A frozen version string cannot say whether a running process serves current code.** 08-31: `__version__` is install-time metadata, so the drift verdict false-alarmed on every editable install and was blind to the copied one; `started_at` vs source mtime answers it (Key Files `install_layout.py`). Ownership and freshness are different properties. [[grep-a-persisted-field-for-its-readers]]
+- **A gate's exit status is never the left side of a pipe.** 09-04 (inbound
+  item 6): `python gate.py ... | tee out; rc=$?` records tee's status under
+  Actions' default `bash -e`, so every decline the pre-flight computed was
+  ignored. The reviewer named one site; the ratchet
+  (`test_no_pipe_hides_a_gate_exit_status`) found four more. ⚠ Its first draft
+  matched per PHYSICAL line and stayed green with the pipe back — **normalise
+  the text the way the shell does before scanning it.**
+  [[a-trailing-command-hides-pytests-exit-code]]
+- **A default argument bound at import pins the wrong repo.** 09-04 (inbound
+  items 5 and 6): `def f(cwd: Path = ROOT)` captured the module's own
+  checkout at `def`, so a test that patched `ROOT` to a scratch repo still
+  ran git in `C:\MCPs\jcodemunch-mcp`; bit twice in one afternoon and only
+  the end-to-end arm saw it. Default to `None`, resolve at call time.
+  [[a-default-argument-bound-at-import-pins-the-wrong-repo]]
+- **A grammar can spell one concept as two node types, and a spec that names one
+  looks complete.** 09-15 (#698): `abstract_class_declaration` was in neither TS
+  spec, so every abstract class was absent and its methods lost their owner —
+  the Rust `qual_mismatch` rule, which had only ever been encoded as a Rust
+  benchmark. ⚠ Probe the owner POSITIVELY; a failed lookup is UNKNOWN, not proof.
+  [[a-guard-written-against-a-spelling]]
+
+- **A fixture that cannot express the reported shape cannot fail on it.** 09-15
+  (#699): the exact-match cut passed its whole suite while the corpus that
+  reported the defect returned byte-identical output, because the fixture held
+  only one of the two crowding shapes. ⚠⚠ **Re-run the reported corpus through
+  the product before calling a fix done.**
+  [[a-fixture-that-cannot-express-the-reported-shape-cannot-fail-on-it]]
 
 ## Issue + release policy (2026-07-28)
 
@@ -523,7 +644,8 @@ unfinished conversation. ⚠ This corrects a mistake we made deliberately —
 consolidating five jdoc issues into one gate cut the open count from 5 to 1 and
 manufactured a single artifact with the power to block a release.
 **Tracker-tidiness and granularity pull in opposite directions; do not optimize
-the count.**
+the count.** ⚠ This splits a REPORTER's issue. A defect a session finds on the
+way is a row in `docs/workflows/LEDGER.md`, not a new issue (jjg, 2026-09-25).
 
 **2. A release is NEVER blocked on an open issue**, including a verification we
 asked for. Done + tested + green ships on schedule, carrying a plain-language
@@ -705,34 +827,36 @@ thing we test is not the thing they do.
 ## Registry verification reads a NESTED row (2026-08-27)
 
 ⚠⚠ **The MCP registry API nests each row as `{server: {...}, _meta: {...}}`**
-(schema `2025-12-11`). `name`, `version` and `packages[]` sit under `server`;
-`isLatest` and `publishedAt` sit under
-`_meta["io.modelcontextprotocol.registry/official"]`. **A flat `row["name"]`
-read returns ZERO rows on a publish that completely succeeded** — measured
-minutes after `mcp-publisher` confirmed 1.108.301, where the flat parse found
-0 of 45 rows and the nested parse found all 45 with `isLatest: 1.108.301`.
+(schema `2025-12-11`): `name`, `version`, `packages[]` under `server`;
+`isLatest`, `publishedAt` under `_meta["io.modelcontextprotocol.registry/official"]`.
+**A flat `row["name"]` read returns ZERO rows on a publish that completely
+succeeded**, and unlike the paging trap it SURVIVES `&limit=100`. **Never
+re-publish on a zero-row read; fix the parse.** Confirm
+`server.packages[].version` advanced, not only `server.version`.
+`scripts/registry_verify.py` is the parse (`release.yml` runs it; the
+2026-08-27 measurements are in `ISSUE-HISTORY.md`).
 
-⚠⚠ **This is a SECOND false negative on top of the known paging trap, and
-unlike that one it SURVIVES `&limit=100`** — so the documented remedy does not
-help and the symptom is indistinguishable from a failed publish. **Never
-re-publish on a zero-row read; fix the parse.** Also confirm
-`server.packages[].version` advanced, not only `server.version` — an entry can
-move one and not the other.
+⚠⚠ **THE PUBLISH LINE IS HANDED OVER IN cmd.exe FORM. ONE FORM, NO MENU.**
+jjg is NEVER at a Bash prompt (stated flatly 2026-09-02). Literal paths only:
+no `~`, no `%USERPROFILE%`, no `$env:USERPROFILE`. The `!` prefix runs Git
+Bash and that is not the rule: **a mechanism is not a habit.** A line that
+must run through `!` is a tool call to make, not a paste to hand over.
 
-⚠ **The release checklist itself lives at `.claude/skills/release/SKILL.md`,
-which is GITIGNORED** (`.gitignore:58`, the v0.2.6 credential-leak fix, with
-the matching sdist exclusion asserted by `tests/test_sdist_exclusions.py`). So
-corrections there are MACHINE-LOCAL: not in git, not in CI, gone on a fresh
-checkout. That is why this note is here instead. **Do not un-ignore `.claude/`
-to fix that** — it reintroduces the vector that got five releases yanked.
+```
+cd /d C:\MCPs\jcodemunch-mcp && "C:\Users\j\mcp-publisher.exe" login github && "C:\Users\j\mcp-publisher.exe" publish
+```
+
+⚠ The release skill (`.claude/skills/release/SKILL.md`) is TRACKED in this
+repo since 2026-09-04 (DESIGN D1/D2); its publish half is superseded by
+`release.yml` and says so at the top. Until then it was gitignored and every
+correction to it was machine-local, which is why the rules above live here.
 
 ## Reproducing CI's environment (release step 2c)
 
-⚠⚠ **The release checklist lives in `.claude/skills/release/SKILL.md`, which is
-GITIGNORED, so a correction there is machine-local and gone on a fresh
-checkout.** This is the copy that survives, and
-`tests/test_ci_env_reproduce_command.py` binds it to the workflow so the two
-cannot drift apart unnoticed.
+⚠ The full tier (`uv run python -m harness full`) is the command now; this
+block stays because `tests/test_ci_env_reproduce_command.py` binds it to
+`pr-gate.yml`'s install line, and because the lesson below is the one that
+made the tier necessary.
 
 ```bash
 uv sync --locked --group dev --extra watch --python 3.13
@@ -743,7 +867,7 @@ uv run --python 3.13 pytest tests/ -q
 2026-08-28 and NEVER built CI's environment** — no `--extra watch`, no
 dev-group sync. It only looked correct while `.venv` happened to carry the
 extras from an earlier sync, i.e. **the command was inheriting a state it did
-not create**. CI runs `uv sync --locked --group dev --extra watch` first.
+not create**. CI (`pr-gate.yml`, formerly `test.yml`) runs `uv sync --locked --group dev --extra watch` first.
 
 ⚠⚠ **Caught mid-release, and the near-miss is the lesson: it returned EXIT 0
 and the totals reconciled EXACTLY** (8,740 + 18 new tests = 8,758) — the two
@@ -800,86 +924,49 @@ and exits 0. [[pipes-and-missing-xdist-both-report-exit-zero]]
 5. **Rotate, never delete — and the budget is the WHOLE FILE, not one section.**
    `Current State` keeps the 3 newest releases and the `Tests:` line keeps the same
    three; closed dated entries go to `ISSUE-HISTORY.md`, which no session loads.
-   `tests/test_claude_md_size.py` is the gate.
-   ⚠⚠ **The prose version of this rule was followed and the file broke anyway.**
-   On 2026-08-21 CLAUDE.md hit 200,543 chars and the harness refused to load it,
-   while `Current State` — the only section this practice named — was 14% of it.
-   The growth was in dated issue history (82k) and a `Tests:` line carrying
-   per-release counts back to 1.108.268 (16k). **A rule that names one section
-   licenses every other section to grow.**
-   ⚠ When an entry rotates out, ask what LESSON it earned and put that one line in
-   **Standing lessons** with its date. An entry with no reusable lesson needs no
-   line; an entry whose lesson is already there needs no second one.
-   ⚠⚠ **MEASURE THE SECTIONS BEFORE CHOOSING WHAT TO ROTATE — the answer has
-   twice been a section nobody suspected.** On 2026-08-28 at 139,184/140,000 I
-   proposed rotating **Standing lessons** and was wrong: it was 6.4% of the
-   file, where **Key Files was 40.1% (55,643 chars)** and the issue/release
-   policy 15.4%. Rotating what I proposed would have recovered almost nothing.
-   Split by heading and sort by size first; it is one script and it settles it.
-   ⚠ **Key Files at 40% is the NEXT rotation target and the hardest**, because
-   it is also the most load-bearing — the per-file ⚠⚠ warnings are what stop a
-   defect recurring. Rotate its dated INCIDENT prose, never its rules.
-   ⚠⚠ **SPLIT 2026-08-29, and the axis is the reusable part: WHAT IS DERIVABLE
-   LEAVES, WHAT IS NOT STAYS.** Key Files was 61,593 chars (44.4%) and the file
-   was at 139,531/140,000 with 469 characters of room. The descriptive half --
-   what each module IS -- moved to `KEY-FILES.md`, which no session loads,
-   because **jcodemunch answers it live** (`get_file_outline`, `get_repo_outline`).
-   Nothing answers "this cache is evicted on every write, so it is not a cache",
-   so every invariant stayed. **76 entries moved, 44 stayed, 120,344 chars (86.0%).**
-   ⚠⚠ **The `⚠` marker is a PROXY for load-bearing and it over-cut by 15.**
-   `producers.py`, `receipts.py`, `runtime/confidence.py` and twelve others carry
-   rationale with no marker on it -- a prohibition, a constraint whose violation
-   causes a defect, a "because". They are named in `RATIONALE_ENTRIES` in
-   `tests/test_key_files_split.py`, and **adding a name there to buy budget is
-   the thing the split exists to stop.**
+   `tests/test_claude_md_size.py` is the gate and the `claude-md-budget` skill is
+   the procedure. The measurements behind every rule here are in `ISSUE-HISTORY.md`
+   § "Practice 5 forensics (rotated 2026-09-26)".
+   ⚠⚠ **A rule that names one section licenses every other section to grow.** On
+   2026-08-21 the harness refused a 200,543-char file while `Current State`, the
+   only section this practice then named, was 14% of it.
+   ⚠ When an entry rotates out, put the LESSON it earned in **Standing lessons**
+   with its date. No lesson, or one already there, needs no line.
+   ⚠⚠ **MEASURE THE SECTIONS BEFORE CHOOSING WHAT TO ROTATE.** Split by heading
+   and sort by size; the answer has twice been a section nobody suspected, and the
+   ranking moves between passes. **Standing lessons is not a split candidate**:
+   nothing derives a standing lesson, which is why it stays in the loaded file.
+   ⚠⚠ **SPLIT ON DERIVABILITY: WHAT IS DERIVABLE LEAVES, WHAT IS NOT STAYS.** Key
+   Files' descriptive half went to `KEY-FILES.md` (2026-08-29) and the CLI and Env
+   tables to `CLI-AND-ENV.md` (2026-08-31), because jcodemunch, `--help` and
+   `jcodemunch-mcp config` answer them live. Every prohibition, defect-causing
+   constraint and rationale stayed.
+   ⚠⚠ **The `⚠` marker is a PROXY for load-bearing and it mis-selected both
+   times** (over-cut by 15, then found 9 of 27 keepers). Keepers with no marker are
+   named in `RATIONALE_ENTRIES` (`tests/test_key_files_split.py`) and in
+   `CLI_RATIONALE`/`ENV_RATIONALE` (`tests/test_cli_env_split.py`); **adding a name
+   there to buy budget is the thing the split exists to stop.** ⚠ The CLI/Env
+   ratchet's "in neither" direction is one-sided by design (it asserts only that a
+   DOCUMENTED row still resolves in `src/`), and `CONFIGURATION.md`'s prose overlap
+   predates the split and is NOT resolved by it.
    ⚠⚠ **`@path` imports DO NOT WORK for this** -- they are expanded at launch, so
-   a split into imports recovers exactly nothing. Verified against the docs
-   before choosing, and it is the obvious wrong answer. Nested `CLAUDE.md` and
-   `.claude/rules/` both load ON READ, and **this project routes exploration
-   through MCP tools and `sed`/`cat`, neither of which triggers it** -- so the
-   mechanism that looks purpose-built would have loaded nothing here.
-   ⚠⚠ **SPLIT AGAIN 2026-08-31, same axis, and the marker under-selected AGAIN.**
-   `CLI Subcommands` (8,367) + `Env Vars` (13,097) were 16.6% of the budget and
-   went to `CLI-AND-ENV.md`: **69 rows moved, 27 stayed, 129,052 -> 121,580 chars
-   on the SETTLED tree** (headroom 10,948 -> 18,420; the rows are -8,718 and
-   documenting the split cost 1,160 back). `--help` and `jcodemunch-mcp config` derive the
-   moved half live. **The ⚠ marker found 9 of the 27 keepers; the other 18 were
-   read by hand** and carry a prohibition (`JCODEMUNCH_RUNTIME_REDACT`: never on
-   production traces), a belief-correcting constraint (`JCODEMUNCH_PERF_TELEMETRY`:
-   the ring is ALWAYS tracked) or a rationale with no marker on it. They are named
-   in `CLI_RATIONALE`/`ENV_RATIONALE` in `tests/test_cli_env_split.py`; **adding a
-   name there to buy budget is the thing the split exists to stop.** ⚠ Its "in
-   neither" direction is DELIBERATELY one-sided — 37 `JCODEMUNCH_*` names and 12
-   `add_parser` names are legitimately in neither table, so it asserts only that a
-   DOCUMENTED row still resolves in `src/`. ⚠ `CONFIGURATION.md` already documents
-   18 of these variables in prose; that overlap predates the split and is NOT
-   resolved by it.
-   ⚠ The ratchet asserts each entry lives in EXACTLY ONE file. Its first run
-   caught its own defect: keying entries by BASENAME collapsed `runtime/redact.py`
-   with `redact.py` and `runtime/confidence.py` with `retrieval/confidence.py`,
-   reporting a duplication that did not exist. **A name is not an identity**, the
-   Rust-fidelity lesson, reproduced inside the guard written to prevent drift.
-   ⚠⚠ **THE SPLIT TARGET MUST BE TRACKED, AND `docs/` IS NOT** -- `.gitignore:83`
-   is `docs/*`. The first version of this wrote `docs/KEY-FILES.md`, which would
-   have made 76 entries MACHINE-LOCAL: not in git, not in CI, gone on a fresh
-   checkout, exactly the gitignored-skill trap this file already warns about.
-   **It surfaced only because `git status` did not list the new file.** Check
-   `git check-ignore` on any path a rotation writes to; creating the file proves
-   nothing. It lives at the repo root beside the other shipped docs, and
-   `ALLOWED_ROOT_FILES` names it in both directions.
-   ⚠⚠ **MEASURED 2026-08-28: Key Files has almost NO rotatable narrative left.**
-   A scan of its 119 entries found FOUR provenance clauses (1,713 chars), three
-   of them rules; Standing lessons and Current State each duplicate NOTHING from
-   it. **It is 42% of the file because it is 119 modules of non-redundant
-   invariants, not because it is padded** — so documenting one release under
-   Practice 1 cost more than a full rotation pass recovered. **The next lever is
-   a SPLIT and it is jjg's call.** Do not raise `BUDGET` (the gate says its 10k
-   buffer is the last one) and do not buy room by deleting ⚠⚠ rules.
-   ⚠ The 2026-08-28 pass took the issue/release policy from 21,448 to 12,391 by
-   keeping every rule, every operational command and every prohibition, and
-   moving only the forensics — verified by asserting all nine policy numbers,
-   six commands and seven prohibitions still resolve. **Write that check as a
-   script; a rotation reviewed by eye is how a command goes missing.**
+   a split into imports recovers nothing. Nested `CLAUDE.md` and `.claude/rules/`
+   load ON READ, and this project reads through MCP tools and `sed`/`cat`, which
+   trigger neither.
+   ⚠ **A name is not an identity**: the split ratchet first keyed entries by
+   BASENAME and reported `runtime/redact.py` and `redact.py` as one entry.
+   ⚠⚠ **THE SPLIT TARGET MUST BE TRACKED, AND `docs/` IS NOT** (`.gitignore`'s
+   `docs/*`). Check `git check-ignore` on any path a rotation writes to; creating
+   the file proves nothing. `ALLOWED_ROOT_FILES` names the root split files in both
+   directions.
+   ⚠⚠ Key Files is non-redundant invariants, not padding (2026-08-28 scan). Do
+   not raise `BUDGET` (the gate says its 10k buffer is the last one) and do not buy
+   room by deleting ⚠⚠ rules; rotate dated INCIDENT prose, never rules. ⚠ A
+   rotation pass does not keep pace on its own: documenting one release under
+   Practice 1 has cost more than a full pass recovered.
+   ⚠ **Write the rotation's check as a script** that asserts every rule, command
+   and prohibition still resolves; a rotation reviewed by eye is how a command goes
+   missing.
 6. **A CI step that produces a PUBLIC verdict is product surface — test its text.**
    `tests/test_health_radar_action.py` opened by asserting that the Action's shell
    and YAML steps "can only be exercised by running the Action in a real CI

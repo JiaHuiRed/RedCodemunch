@@ -290,7 +290,7 @@ _INSTRUCTION_TOOLS_FULL: tuple = (
     ("search_symbols", "a symbol by name; search_text for strings and config."),
     ("get_file_outline", "before opening any file."),
     ("get_symbol_source", "one id, or an array to batch."),
-    ("find_references", "every use of a name, before a rename or delete."),
+    ("find_references", "who imports a name; check_references for where it is used."),
 )
 
 _INSTRUCTION_TOOLS_COUNTER: tuple = (
@@ -1881,6 +1881,12 @@ def _build_tools_list(
                     "kind": {
                         "type": "string",
                         "description": "Optional filter by symbol kind",
+                        # ⚠⚠ DERIVED, never a literal (@devtomnl, #571). This list
+                        # was a second copy of `KIND_ORDER` and had drifted from it:
+                        # `field` was emitted by the parser, accepted by nothing, and
+                        # the divergence was invisible because each side looked
+                        # internally consistent. `tests/test_kind_enum_is_derived.py`
+                        # fails if a literal returns here.
                         "enum": list(KIND_ORDER)
                     },
                     "file_pattern": {
@@ -2043,7 +2049,7 @@ def _build_tools_list(
         ),
         Tool(
             name="find_references",
-            description="Find all files that import or reference an identifier via the import graph. Answers 'where is this imported / re-exported?'. SCOPE: import sites + dbt `{{ ref() }}` edges + (when `include_call_chain=true`) symbols whose bodies textually mention the identifier. Does NOT exhaustively enumerate every call site across the codebase — for that, combine with search_text or use get_call_hierarchy on the resolved symbol_id. Use `identifiers` for batch queries.",
+            description="Find the files that import or re-export an identifier, via the import graph. Answers 'who imports this?'. SCOPE: import sites + dbt `{{ ref() }}` edges + (when `include_call_chain=true`) symbols whose bodies mention it. NOT the tool for 'where is this used': call sites are invisible to the import graph (a single-file library reports 0), so ask check_references or search_text. Use `identifiers` for batch queries.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -2062,7 +2068,7 @@ def _build_tools_list(
         ),
         Tool(
             name="check_references",
-            description="Check if an identifier is referenced anywhere: imports + file content. Combines find_references and search_text into one call. Returns is_referenced (bool) for quick dead-code detection. Accepts multiple identifiers in one call via identifiers param. Content matches are capped at max_content_results (default 20), and a match inside a comment or string still counts as referenced.",
+            description="Where is an identifier used: import sites plus every file whose content mentions it, in one call (find_references + search_text). Answers 'where is X used / referenced' and returns is_referenced (bool) for quick dead-code detection. Accepts multiple identifiers in one call via identifiers param. Content matches are capped at max_content_results (default 20), and a match inside a comment or string still counts as referenced.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -2156,7 +2162,6 @@ def _build_tools_list(
             }
         ),
         Tool(
-
             name="get_session_context",
             description="Get the current session context — files accessed, searches performed, and edits registered during this MCP session. Use to avoid re-reading the same files. Truncated to max_files (default 50) and max_queries (default 20), and covers this server process only.",
             inputSchema={
@@ -3110,14 +3115,25 @@ def _build_tools_list(
         Tool(
             name="get_ranked_context",
             description=(
-                "Assemble the best-fit context for a query within a token budget. "
-                "Ranks all symbols by relevance (BM25) and/or centrality (PageRank), "
-                "loads source for the top candidates, and packs greedily until token_budget is exhausted. "
-                "Exact symbol names in the query (qualified, CamelCase, snake_case) are pinned ahead "
-                "of the ranking; include identifiers verbatim. "
-                "Use when you want 'the best N tokens of context for this task' without specifying exact symbols."
-            
-                " Truncates at token_budget."
+                # ⚠ Trimmed 2026-09-02 to recover core_compact headroom (103
+                # tokens -> 77, ceiling 4,000 standing at 3,998).
+                # ⚠⚠ Chosen because it is NOT one of the six byte-pinned
+                # counter-surface tools. The three fattest core descriptions --
+                # jcodemunch_guide, announce_model, set_tool_tier -- are all in
+                # that set, so trimming any of them moves the counter prefix
+                # too, and that surface is the default for new installs. One
+                # prefix moving is the cost; two was avoidable.
+                # What went: "Truncates at token_budget", which restated "packs
+                # greedily until token_budget is exhausted" in the same
+                # paragraph; the algorithm names, which no caller chooses on
+                # (`sort_by`'s own description carries them); and the casing
+                # list, which the pinning rule implies.
+                "Assemble the best-fit context for a query within a token budget: ranks "
+                "symbols by relevance and/or centrality, loads source for the top "
+                "candidates, and packs greedily until the budget is exhausted. Exact "
+                "symbol names in the query are pinned ahead of the ranking, so include "
+                "identifiers verbatim. Use when you want the best N tokens of context "
+                "for a task without naming exact symbols."
             ),
             inputSchema={
                 "type": "object",
@@ -3348,7 +3364,6 @@ def _build_tools_list(
         ),
         # --- Runtime tier-switch tools (always force-included below) ---------
         Tool(
-
             name="announce_model",
             description=(
                 "Agent self-reports its active model identifier. Server resolves to a "
@@ -5202,7 +5217,6 @@ async def _call_tool_impl(name: str, arguments: dict) -> list[TextContent] | Cal
                     storage_path=storage_path,
                 )
             )
-
         elif name == "announce_model":
             model = arguments.get("model", "")
             if not isinstance(model, str) or not model:
@@ -5262,10 +5276,18 @@ async def _call_tool_impl(name: str, arguments: dict) -> list[TextContent] | Cal
                         ne = result.get("negative_evidence")
                         if ne and isinstance(ne, dict):
                             import time as _t
+                            # #711: the STATE travels with the finding. The
+                            # legacy `negative_evidence` dict alone cannot say
+                            # whether this scan may prove absence -- a degraded
+                            # one carries `no_implementation_found` too -- and
+                            # `_meta` is stripped further down (`meta_fields`
+                            # defaults to `[]`), so it is read HERE or nowhere.
+                            _vs = ((result.get("_meta") or {}).get("verdict") or {})
                             journal.record_negative_evidence({
                                 "query": query,
                                 "repo": arguments.get("repo", ""),
                                 "verdict": ne.get("verdict", ""),
+                                "verdict_state": _vs.get("state", ""),
                                 "scanned_symbols": ne.get("scanned_symbols", 0),
                                 "timestamp": _t.time(),
                             })
@@ -5278,10 +5300,18 @@ async def _call_tool_impl(name: str, arguments: dict) -> list[TextContent] | Cal
                         ne = result.get("negative_evidence")
                         if ne and isinstance(ne, dict):
                             import time as _t
+                            # #711: the STATE travels with the finding. The
+                            # legacy `negative_evidence` dict alone cannot say
+                            # whether this scan may prove absence -- a degraded
+                            # one carries `no_implementation_found` too -- and
+                            # `_meta` is stripped further down (`meta_fields`
+                            # defaults to `[]`), so it is read HERE or nowhere.
+                            _vs = ((result.get("_meta") or {}).get("verdict") or {})
                             journal.record_negative_evidence({
                                 "query": query,
                                 "repo": arguments.get("repo", ""),
                                 "verdict": ne.get("verdict", ""),
+                                "verdict_state": _vs.get("state", ""),
                                 "scanned_symbols": ne.get("scanned_symbols", 0),
                                 "timestamp": _t.time(),
                             })
@@ -7690,7 +7720,7 @@ def main(argv: Optional[list[str]] = None):
     # --- import-trace (Phases 1 + 4 + 5: OTel + SQL log + stack log ingest) ---
     import_trace_parser = subparsers.add_parser(
         "import-trace",
-        help="Ingest a runtime trace file (OTel / SQL log / stack log) into the runtime_* tables",
+        help="Ingest a runtime trace file (OTel / SQL log / stack log) into the runtime_* tables, or a checker's diagnostics file into the diagnostics snapshot",
     )
     import_trace_parser.add_argument(
         "--otel",
@@ -7709,6 +7739,23 @@ def main(argv: Optional[list[str]] = None):
         dest="stack_log_path",
         metavar="PATH",
         help="Path to a plain-text app log or JSON-Lines record set with Python / JVM / Node.js stack traces",
+    )
+    import_trace_parser.add_argument(
+        "--diagnostics",
+        dest="diagnostics_path",
+        metavar="PATH",
+        help=(
+            "Path to a type checker's or linter's output: mypy --output json, pyright --outputjson, "
+            "tsc --pretty false, ruff --output-format json, or generic JSON-Lines {file,line,severity,message}. "
+            "Mapped to the innermost enclosing symbol; REPLACES the previous snapshot for the same tool."
+        ),
+    )
+    import_trace_parser.add_argument(
+        "--format",
+        dest="diagnostics_format",
+        choices=["mypy", "pyright", "tsc", "ruff", "generic"],
+        default=None,
+        help="With --diagnostics: name the tool instead of auto-detecting from content (required for an empty file).",
     )
     import_trace_parser.add_argument(
         "--repo",
@@ -9171,16 +9218,17 @@ def main(argv: Optional[list[str]] = None):
         otel_path = getattr(args, "otel_path", None)
         sql_log_path = getattr(args, "sql_log_path", None)
         stack_log_path = getattr(args, "stack_log_path", None)
-        provided = [p for p in (otel_path, sql_log_path, stack_log_path) if p]
+        diagnostics_path = getattr(args, "diagnostics_path", None)
+        provided = [p for p in (otel_path, sql_log_path, stack_log_path, diagnostics_path) if p]
         if not provided:
             print(
-                "jcodemunch-mcp: error: import-trace requires one of --otel / --sql-log / --stack-log <path>",
+                "jcodemunch-mcp: error: import-trace requires one of --otel / --sql-log / --stack-log / --diagnostics <path>",
                 file=sys.stderr,
             )
             sys.exit(2)
         if len(provided) > 1:
             print(
-                "jcodemunch-mcp: error: import-trace accepts exactly one of --otel / --sql-log / --stack-log. "
+                "jcodemunch-mcp: error: import-trace accepts exactly one of --otel / --sql-log / --stack-log / --diagnostics. "
                 "Run the command once per source if you have multiple.",
                 file=sys.stderr,
             )
@@ -9191,15 +9239,19 @@ def main(argv: Optional[list[str]] = None):
         elif sql_log_path:
             source = "sql_log"
             trace_path = sql_log_path
-        else:
+        elif stack_log_path:
             source = "stack_log"
             trace_path = stack_log_path
+        else:
+            source = "diagnostics"
+            trace_path = diagnostics_path
         result = _import_runtime_signal(
             source=source,
             path=trace_path,
             repo=args.repo,
             redact_enabled=not args.no_redact,
             storage_path=os.environ.get("CODE_INDEX_PATH"),
+            format=getattr(args, "diagnostics_format", None),
         )
         print(_json.dumps(result, indent=2))
         if not result.get("success", True):

@@ -1,12 +1,12 @@
 {
   "summary": {
     "queries": 40,
-    "catalog_actions": 52,
+    "catalog_actions": 53,
     "menu_recall": {
       "@1": 55.0,
-      "@3": 67.5,
+      "@3": 70.0,
       "@5": 75.0,
-      "@10": 75.0
+      "@10": 77.5
     },
     "route_recall": {
       "@1": 75.0,
@@ -33,8 +33,8 @@
       "@3": 67.5
     },
     "route_path_split": {
-      "rule": 17,
-      "fallback": 23
+      "rule": 18,
+      "fallback": 22
     },
     "route_misses": [
       "I need this function plus everything it imports",
@@ -48,7 +48,6 @@
       "which file contains the message connection refused",
       "find every place we swallow an exception without logging",
       "show me the body of this function",
-      "who calls this",
       "what is the import chain from this file outward",
       "what are the natural modules in this system",
       "how concentrated is this codebase and how deep does it nest",
@@ -57,7 +56,7 @@
     ],
     "leakage": {
       "mean_name_overlap": 0.154,
-      "mean_desc_overlap": 0.346,
+      "mean_desc_overlap": 0.354,
       "queries_containing_target_name_token": 15,
       "high_leak_queries": [
         "which symbols changed between these two commits",
@@ -120,9 +119,9 @@
       "route_rank": 1,
       "route_path": "rule",
       "menu_top3": [
-        "find_references",
         "find_similar_symbols",
-        "find_dead_code"
+        "find_dead_code",
+        "find_implementations"
       ],
       "route_proposed": [
         "search_ast",
@@ -243,7 +242,7 @@
         "get_dead_code_v2"
       ],
       "leak_name": 0.333,
-      "leak_desc": 0.538
+      "leak_desc": 0.462
     },
     {
       "query": "I do not know this repo, what should I look at first",
@@ -317,7 +316,7 @@
       "targets": [
         "get_context_bundle"
       ],
-      "menu_rank": 5,
+      "menu_rank": 6,
       "route_rank": null,
       "route_path": "fallback",
       "menu_top3": [
@@ -384,19 +383,19 @@
         "find_references",
         "get_call_hierarchy"
       ],
-      "menu_rank": null,
+      "menu_rank": 2,
       "route_rank": 1,
       "route_path": "rule",
       "menu_top3": [
         "check_edit_safe",
-        "get_symbol_provenance",
+        "find_references",
         "get_dead_code_v2"
       ],
       "route_proposed": [
         "get_call_hierarchy"
       ],
       "leak_name": 0.0,
-      "leak_desc": 0.333
+      "leak_desc": 0.667
     },
     {
       "query": "which files import this module",
@@ -407,16 +406,14 @@
       ],
       "menu_rank": 1,
       "route_rank": 1,
-      "route_path": "fallback",
+      "route_path": "rule",
       "menu_top3": [
         "find_importers",
         "get_repo_map",
         "get_tectonic_map"
       ],
       "route_proposed": [
-        "find_importers",
-        "get_repo_map",
-        "get_tectonic_map"
+        "find_references"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.6
@@ -441,7 +438,7 @@
         "search_text"
       ],
       "leak_name": 0.0,
-      "leak_desc": 0.333
+      "leak_desc": 0.417
     },
     {
       "query": "what does this class inherit from and what extends it",
@@ -474,12 +471,12 @@
       "menu_top3": [
         "get_symbol_provenance",
         "get_context_bundle",
-        "check_edit_safe"
+        "get_blast_radius"
       ],
       "route_proposed": [
         "get_symbol_provenance",
         "get_context_bundle",
-        "check_edit_safe"
+        "get_blast_radius"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.444
@@ -495,13 +492,13 @@
       "route_path": "fallback",
       "menu_top3": [
         "find_importers",
-        "get_architecture_metrics",
-        "get_file_content"
+        "find_references",
+        "get_architecture_metrics"
       ],
       "route_proposed": [
         "find_importers",
-        "get_architecture_metrics",
-        "get_file_content"
+        "find_references",
+        "get_architecture_metrics"
       ],
       "leak_name": 0.0,
       "leak_desc": 0.444
@@ -694,12 +691,12 @@
       "menu_top3": [
         "find_dead_code",
         "get_dead_code_v2",
-        "check_delete_safe"
+        "check_references"
       ],
       "route_proposed": [
         "find_dead_code",
         "get_dead_code_v2",
-        "check_delete_safe"
+        "check_references"
       ],
       "leak_name": 0.333,
       "leak_desc": 0.333
@@ -780,13 +777,13 @@
       "route_path": "fallback",
       "menu_top3": [
         "index_folder",
-        "get_repo_map",
-        "get_changed_symbols"
+        "find_references",
+        "get_repo_map"
       ],
       "route_proposed": [
         "index_folder",
-        "get_repo_map",
-        "get_changed_symbols"
+        "find_references",
+        "get_repo_map"
       ],
       "leak_name": 0.5,
       "leak_desc": 0.1

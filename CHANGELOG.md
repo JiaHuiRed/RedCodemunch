@@ -50,6 +50,6004 @@ dispatch chain, AST-checked).
   failures pre-existing Windows grammar issues in
   `tree-sitter-language-pack` (C/Arduino/Bash/Ada/Apex/Clojure parsing),
   confirmed by failing identically on clean HEAD before the cut.
+### Fixed - a C++ class declared behind an export macro is a class (LEDGER L-45)
+
+`class LEVELDB_EXPORT Status { bool ok() const; };` is how most exported
+C++ libraries declare their API (leveldb, gtest's `GTEST_API_`). The grammar
+cannot know `LEVELDB_EXPORT` is a macro. It read `class LEVELDB_EXPORT` as a
+return type, `Status` as a declarator and the class body as a statement
+block, so the class was indexed as `Status#function` and its members lost
+their owner. In a large header, error recovery then filed unrelated
+declarations under the bogus function. Found in L-07's corpus diff.
+
+Every C, C++ and Arduino parse now blanks each macro token in a
+`class MACRO Name { ... }` head to spaces of the same length and re-parses.
+Every byte offset holds, so names, signatures and content hashes still come
+from the original text (the signature keeps `LEVELDB_EXPORT`). Two shapes
+are refused and the rest accepted, because each rule was wrong alone
+(review, twice):
+- a declarator with a function declarator in it is a real function, so
+  `class X make() {}` is still a function;
+- a macro that takes arguments (`struct ALIGN(16) V {`, `class API(x) D {`)
+  is left as parsed: blanking only its name left a cast that published
+  nothing.
+Asking for a bare identifier declarator instead left the commonest exported
+shape broken, a class with a qualified or templated base
+(`class GTEST_API_ E : public ::std::runtime_error {`), because the misparse
+gives it a different declarator.
+`__declspec(...)`, `[[attr]]` and `alignas(...)` already parsed correctly
+and are never blanked. The re-parse is incremental. The test pins that a
+class, struct, derived class (plain, qualified, `::std::`, namespaced and
+templated bases), `final` class, specialisation, namespaced class or
+two-macro head publishes exactly what the same text without the macro
+publishes, in `.cpp`, `.h` and Arduino.
+
+Measured on two pinned corpora (leveldb 7ee830d, fmt 5da4e9a), `main`
+against this branch:
+- leveldb `.h`: `ids 1089 -> 1163`, `+class: 22`, `+method: 172`,
+  `-function: 142`, `-method: 14`, `reparent method: 59`;
+- fmt `.h`: `ids 6117 -> 6365`, `+class: 72`, `-class: 25`,
+  `+method: 552`, `-method: 190`, `+function: 141`, `-function: 417`,
+  `+type: 45`, `-type: 39`, `reparent method: 110`;
+- fmt `.cc`: `ids 2655 -> 2699`, `+method: 92`, `-function: 44`;
+- leveldb `.cc`: no change.
+Ids move for every class behind a macro (`Status#function` becomes
+`Status#class`) and for its members. In fmt's headers most of the removal
+rows are the same names re-qualified: what error recovery had filed under a
+bogus function takes its real owner. A name-level check over every file
+finds four names that disappear entirely, all artifacts of the misparse
+(`leveldb#function`, `testing.internal.std::runtime_error#function`).
+Measured against each file's own text with `GTEST_API_` deleted:
+`gmock-gtest-all.cc` publishes 22 ids the macro-free text does not, where
+`main` published 109, and misses 21, where `main` missed 152. `gtest.h`
+misses 993 where `main` missed 1,063, but publishes 373 new wrong ids, every
+one `testing.testing.*`: error recovery in that 12,399-line header leaves a
+`namespace testing` open, `main` already nests `testing.testing` from row
+6,158, and the regions this fix recovers are inside it (LEDGER L-48). Parse
+time, median of 5, `main` against this branch in one run:
+`gmock-gtest-all.cc` 0.344 s to 0.368 s, `gtest.h` 1.009 s to 1.093 s,
+`db_impl.cc` 0.037 s to 0.038 s.
+Not fixed here, as on `main` (LEDGER L-47): `enum class API E { A, B };`
+publishes nothing where `enum class E` publishes `E#type`.
+`PARSER_GENERATION` 8, still unreleased, re-parses unchanged files.
+
+### Fixed - a C++ out-of-class member definition is a member of its class (LEDGER L-07)
+
+`class A { int run(); };` then `int A::run() { ... }` published the
+declaration as `A.run#method` and the body as a bare `run#function` with no
+owner, so the body of every out-of-line method could not be found as
+`A.run`. `_extract_cpp_name` kept only the last segment of the declarator's
+`qualified_identifier`. `ns::A::f` kept `A::f` as its name, and
+`void ns::f() {}` lost its namespace. Found in #844's review.
+
+A definition with a qualified declarator is named by its full scope, joined
+to any enclosing namespace, and follows Pascal's rule since #844:
+- a class or struct of that name in the file owns it as a `method`;
+- a namespace makes it a `function`: an enclosing `namespace` block, or a
+  scope something in the file is qualified under with no owner;
+- otherwise the class is in another file (a `.cpp` beside its `.h`, the
+  common case) and it is a `method` with no `parent`. ⚠ This is a guess the
+  parser cannot verify: `void llvm::foo() {}` in a `.cpp` whose namespace is
+  declared only in a header, with nothing in the file qualified under it,
+  is now `llvm.foo#method` where it was a bare `foo#function`. Free
+  functions are usually defined inside a `namespace` block, which is
+  recognised.
+Template scopes drop their arguments (`B<T>::g` is `B.g`). Constructors,
+destructors and operators keep their names (`A.~A`, `V.operator+`). A scope
+naming an enclosing namespace is that namespace, the way C++ looks it up
+(`testing::internal::M::g` inside `namespace testing` is
+`testing.internal.M.g`). A C++17 `namespace a::b { }` is two scopes, as
+`namespace a { namespace b { } }` always was. What a body declares, a local `struct`, is owned by
+the renamed body. The test runs every shape in C++ and Arduino.
+
+Existing ids move. A body and its in-file declaration share a qualified name
+and kind, so both are numbered `~1` and `~2`, as Pascal's are. A declaration
+that was numbered only because its body shared its bare name loses the
+suffix. Members of a `namespace a::b { }` block move from `a::b.A` to
+`a.b.A`. Measured on two pinned corpora (leveldb 7ee830d, fmt 5da4e9a),
+`main` against this branch; neither uses `namespace a::b`:
+- leveldb `.cc`: `+method: 310`, `-function: 254`, `renamed(~N): 52`;
+- leveldb `.h`: `+method: 41`, `-function: 24`, `renamed(~N): 21`,
+  `reparent method: 14`;
+- fmt `.cc`: `+method: 448`, `-function: 420`, `renamed(~N): 112`;
+- fmt `.h`: `+method: 76`, `-function: 21`, `renamed(~N): 8`,
+  `reparent method: 5`;
+- ids per file are unchanged in count.
+The header reparents are members of an L-45 bogus function whose own id was
+renumbered.
+The draft of this fix made every body after the first a `function` in a
+`.cpp` whose class is in the header, because the first parentless body read
+as evidence of a namespace; the corpus diff found it (`db_impl.cc` has 37
+parentless `DBImpl` method bodies, so 36 flipped), and a test pins it.
+
+Found on the way, not fixed, both as on `main`:
+- LEDGER L-45: an export macro before a class name
+  (`class LEVELDB_EXPORT Status`, `class GTEST_API_ ...`) is misparsed as a
+  function, and its members lose their owner.
+- LEDGER L-46: a class defined with a qualified name, the pimpl
+  `class Widget::Impl { ... };`, is indexed as a bare `Impl`, so its
+  out-of-line bodies (`Widget.Impl.go`) find no owner.
+`PARSER_GENERATION` 8, still unreleased, re-parses unchanged files.
+
+### Fixed - a Vue component with a `<script>` and a `<script setup>` indexes both (LEDGER L-44)
+
+Vue 3 pairs a plain `<script>`, for `name`, `inheritAttrs` or a named
+export, with a `<script setup>` that holds the component's code.
+`_parse_vue_symbols` stopped at the first `script_element`, so the block
+that came second was never read. Usually that is the `<script setup>`, which
+means the component itself. A `<script src="...">` with no body ended the
+parse with nothing published, not even the component. Found while fixing
+L-36.
+
+Every script element is read now, each with its own `lang` and line
+offset, through the same walks; a block with no body is skipped. The test
+asserts that a two-script component publishes, by id, the union of what
+each block publishes as the component's only script, in both orders, over
+plain/`ts` and mixed `lang` pairs, and that every symbol's line points into
+its own block. Svelte already read both of its blocks
+(`<script context="module">` / `<script module>` and `<script>`).
+
+One existing id can move. A name declared in both blocks, such as an
+exported `shared` in `<script>` and `const shared` in `<script setup>`, is
+now published twice and numbered `~1` and `~2`, so the id the first block
+published alone moves. A test pins it. The corpus id diff, `main` against
+this branch, is zero changes: none of the three corpora has a two-script
+component, so only the tests exercise this. `PARSER_GENERATION` 8, still
+unreleased, re-parses unchanged files.
+
+### Fixed - a Vue Options API script keeps the declarations beside its options object (LEDGER L-36, L-43)
+
+`_parse_vue_symbols` ran its composition walk only when the options walk
+found nothing. A `<script>` holding `export default { methods: {...} }`
+therefore lost every function, binding and type declared beside the
+object: `function helper() {}`, `const MAX = 5`, `const f = () => 1`, an
+`interface`. Classes survived because #861 gave them their own emitter.
+Found while fixing #861.
+
+Both walks run on a plain `<script>` now. They cannot publish the same
+node: the options walk reads only the options object's pairs, and the
+composition walk emits only declarations and stops at every method and
+function body, which is where the options object keeps its code. The test
+asserts that an Options script publishes, by id, exactly the union of what
+its declarations publish alone and what its options object publishes
+alone, in both orders, for plain and `lang="ts"` scripts.
+
+Fixing it found a second defect in the options reader (L-43): it read
+one grammar spelling of each shape and dropped the others.
+- `export default defineComponent({...})` handed the CALL to the reader,
+  whose children are never `pair`s, so a `defineComponent` script's
+  `methods`, `computed`, `props` and `data` were never published. The
+  reader takes a call's object argument now, so `Vue.extend({...})` is read
+  the same way.
+- `export default {...} as X`, `satisfies X` and `({...})` hid the object
+  inside a wrapper; the wrapper is unwrapped first. So are the TS non-null
+  assertion `defineComponent({...})!` and the type assertion `<X>{...}`,
+  whose expression is its SECOND named child (`type_arguments` comes
+  first), in any nesting and past a comment inside the wrapper. In a
+  `lang="tsx"` script `<X>{...}` is not valid syntax and still reads as
+  broken JSX: the script loses the options and every declaration after the
+  cast. A `.tsx` file loses those declarations too, though its error
+  recovery keeps the options' methods.
+- `data() { return {...} }`, the usual spelling, is a method definition, not
+  a `pair`, and `data: function () {}` is a `function_expression`, not the
+  `function` keyword the reader asked for. Only `data: () => ...` was
+  published.
+Tests pin each spelling against the plain object.
+
+Existing ids can move. When an options member (`props`, `data`) shares its
+name and kind with a top-level declaration, both are published now and
+numbered `~1` and `~2`. An id that was published alone on `main` moves:
+- the options `props#constant` beside a top-level `const props`;
+- a top-level `function data` or `const data = () => ...` beside an options
+  `data: () => ...`;
+- a top-level `const props` in a `defineComponent` script, which the
+  composition fallback published alone, beside its options `props`.
+Tests pin all four.
+The corpus id diff, `main` against this branch, is additions only:
+element-plus `5273 -> 5292` ids, `+constant: 19`, every one a
+`defineComponent` script's `props` (L-43). The L-36 half moves nothing in
+these corpora, where a `defineComponent` script already fell back to the
+composition walk because the options walk found nothing in it.
+`PARSER_GENERATION` 8, still unreleased, re-parses unchanged files.
+
+Not fixed here: a component with both a `<script>` and a `<script setup>`
+reads only the first, so everything in `<script setup>` is lost (LEDGER
+L-44).
+
+### Fixed - a function-valued binding in a Vue or Svelte script is a function (LEDGER L-42)
+
+`const f = () => 1` and `const g = function () {}` publish `f#function` and
+`g#function` from a `.js` file. In a Vue or Svelte script they published
+nothing. Both hand walks declined a declarator whose value is a function,
+copying the JS binder, but the binder's decline hands the declarator to
+`_extract_variable_function` and theirs handed it to nobody: `arrow_function`
+stops their recursion and no other branch emits it. A Composition API
+component's event handlers are exactly this shape. Found by the #904 corpus
+id diff.
+
+Both walks now publish the binding as a `function` owned by the component.
+What counts as a function-valued declarator is one predicate now
+(`_js_value_is_a_function`), asked by the JS binder, by
+`_extract_variable_function` and by both walks: a plain identifier bound to
+an arrow, a function expression or a generator function. `const`, `let` and
+`var` all count. A destructured binding and a value binding keep their
+kinds, and a helper bound inside a handler's body is still not published.
+The test compares each of seven frames (Vue plain, `setup`, `ts`, `tsx`;
+Svelte plain, `ts`, `tsx`) with the same script as a `.js`, `.ts` or `.tsx`
+file. `test_a_local_function_binding_is_a_disclosed_gap`, which pinned the
+gap, is inverted and ledgered in `harness/retired.json`. Svelte's
+`export const load = async () => {}` keeps the `constant` kind #752 gave it;
+Vue's `export const f = () => 1`, absent before, is now `f#function`, as in a
+`.js` file. A Vue script with an Options API object still drops these
+bindings, with every other top-level declaration beside the object: that is
+LEDGER L-36, still open. Astro was never affected: its frontmatter goes
+through the generic walk.
+
+One existing id can move. A `function h() {}` beside `var h = () => 1`
+was `h#function`; the binding now shares its name, so the two are numbered
+`h#function~1` and `~2`, as a `.js` file numbers them. A test pins the ids
+against the plain file. The pinned corpora hold no such pair: the corpus id
+diff, `main` against this branch, is additions only (element-plus
+`4366 -> 5273` ids, `+function: 907` in 307 of 1008 files; SvelteKit
+`1108 -> 1112`, `+function: 4`; Astro's Vue files `3 -> 5`). `PARSER_GENERATION` 8, still unreleased,
+re-parses unchanged files.
+
+### Fixed - a class expression bound to nothing in a Vue or Svelte script publishes its members (LEDGER L-40)
+
+`new (class { m() {} })()`, `register(class {...})`, `[class {...}]`,
+`{ K: class {...} }` and `const [a] = class {...}` give the class no name the
+generic walk can use, so a `.js` file publishes its members bare
+(`m#method`, no parent). In a Vue or Svelte script the #861 class emitter
+published class roots and their subtrees only, so these members vanished.
+Found by the #861 review.
+
+A parentless method, field or property that sits inside a class body is now
+published too, owned by the component, with anything nested under it. An
+object-literal method is also parentless in a `.js` file, but it is not in a
+class body and is not swept up; a test pins that, and that a bound class
+(`const C = class {...}`) is unchanged. The test covers plain, `lang="ts"`
+and `lang="tsx"` scripts, including JSX inside the class body, which the
+TSX grammar of #902 (L-39) now reads.
+
+One existing id can move. When a new member shares a name with a symbol the
+script already published, the two are numbered: an Options API
+`methods: { m() {} }` beside `register(class { m() {} })` was
+`m#method` and is now `m#method~1`, with the class member `m#method~2`.
+Measured on `main` against this branch. `PARSER_GENERATION` 8, still
+unreleased, re-parses unchanged files.
+
+### Fixed - a class inside a method body in a Vue or Svelte script is not published bare (LEDGER L-38)
+
+The Vue and Svelte walks stop recursing at a function body, so a helper
+declared inside one is not published as a component member. The stop list
+named a function declaration, an arrow and `function`, which in the bundled
+grammars is the keyword, not a function expression (`function_expression`).
+It did not name an object method (`setup() {}`, `*gen() {}`, `get g() {}`,
+`async load() {}`) or a generator function, so a class inside one was
+published as a bare `K#class` owned by the component.
+The same text in a `.js` file names it `setup.K`, owned by the method. #861
+already listed the node types that own a nested class (`_CLASS_GATE_OWNERS`);
+the walks' stop list was a second, shorter copy of it. Found by the #861
+review.
+
+The stop list is now derived from that set, plus the arrow, function
+expression and generator expression under their real node names. A test
+checks that every class a Vue (`<script>`, `<script setup>`) or Svelte script
+publishes is one the `.js` file publishes under the same name, that the
+classes a `.js` file publishes bare are still there, and that the stop set
+names node types the grammar actually produces.
+
+What else moves, measured on `main` against this branch in all three frames:
+a helper function declared inside a method or a function expression is no
+longer published as a component member. That covers `inc#function` for an
+Options-style `setup() { function inc() {} }`, including inside
+`defineComponent({...})`, `h#function` for a store object's
+`add() { function h() {} }`, and `inner#function` inside a `function` or
+`function*` expression. A `.js` file names the first two `setup.inc` and
+`add.h`. For a function expression it publishes `inner` bare, and the walks
+now hide it as they always have inside an arrow. `methods: {}` and top-level
+declarations are unchanged. `PARSER_GENERATION` 8, still unreleased,
+re-parses unchanged files.
+
+### Fixed - a Vue or Svelte `lang="tsx"` script is read as TSX (LEDGER L-39)
+
+The Vue and Svelte walks chose their grammar with `lang if lang != "tsx"
+else "typescript"`, so in a `lang="tsx"` script every JSX expression was a
+syntax error. Error recovery then dropped or re-nested the declarations
+around it: `function g(){return <b/>;} function f(){class K{ k(){} }}`
+published only the component and a stray `K#class`, where the same script
+without JSX publishes `g` and `f`. #861 made its class gate robust to the
+mismatch; the walk that publishes functions was not. Found by the #861
+review.
+
+Both walks now read a TSX script with the TSX grammar. A test compares each
+TSX script with the same script with its JSX replaced by plain expressions,
+in Vue (`<script>` and `<script setup>`) and Svelte, and requires the same
+ids. One thing a `lang="tsx"` script can now lose: an old-style `<number>y`
+cast is not valid TSX, so what follows it is no longer published, which is
+what a `.tsx` file with the same text already gives. Scripts without
+`lang="tsx"` are unchanged. `PARSER_GENERATION` 8, still unreleased, re-parses unchanged
+files.
+
+### Fixed - a class in an Astro or Razor block owns its members (LEDGER L-37)
+
+Astro re-parses its frontmatter as TypeScript and each inline `<script>` as
+JavaScript or TypeScript, and Razor re-parses its `<script>` and `@code`
+blocks the same way. Both then rewrapped every symbol with the component or
+view as its parent. The ids were right (`Comp.K.k`), but `K.k` was owned by
+`Comp`, not by `K`, so a class's members never hung off the class.
+#861 fixed this ownership for Vue and Svelte; the #861 review found Astro
+still had it, and Razor turned out to have the same shape.
+
+Each rewrapped symbol now keeps the parent its own parse gave it, rewrapped
+the same way, and only a symbol with no parent in its block is the
+container's. Razor's `@code` members, whose parsed parent is the unpublished
+shim class, stay with the view. Both parsers call one helper,
+`_keep_block_parents`, and a test compares every rewrapped parent in Astro's
+frontmatter and `<script>` and in Razor's `<script>` with the same block
+parsed on its own. What a user sees: `get_file_outline` nests a class's
+members under the class instead of under the component, and
+`find_implementations` resolves a member's containing class to the real
+class. No id moves (the helper only rewrites `parent`). `PARSER_GENERATION`
+8, still unreleased, re-parses unchanged files.
+
+### Fixed - a watched folder deleted on Windows is reported as deleted, not as a watcher crash (F-26)
+
+When a watched folder was removed, the watcher's contract is to stop with
+`Watched directory disappeared`. On Windows with polling it sometimes stopped
+with `WatchfilesRustInternalError: Access is denied. (os error 5)` instead: the
+poller reached the gone folder before the watcher got a batch to check it,
+and Windows answers a directory that is being deleted with access denied, not
+not-found. Which message was recorded as the crash reason depended on who got
+there first. It showed up as a test that failed three times on Windows (twice
+in a local full run, once on CI), on diffs that never touched the watcher.
+
+Any error raised while a folder is being watched now reads as
+`FileNotFoundError` when the folder can no longer be read as a directory, and
+is raised unchanged when it can, so a real watcher failure is not hidden. A test forces the lost
+race with a fake stream instead of waiting for Windows to lose it.
+
+### Fixed - `get_churn_rate` never answers for a target that is not there (LEDGER L-41)
+
+`get_churn_rate` takes a file path or a symbol id. Anything it could not find
+in the index fell through to the file branch, where `git log -- <target>`
+matched nothing, so the reply was `commits: 0`, `assessment: "stable"` and
+`confidence_level: "high"`: a confident measurement of a file that does not
+exist. A near-miss id such as `src/types.ts::omit#method` (the owner left
+off) and a misspelt path got the same answer. Found by the #869 review.
+
+A symbol-shaped target the index does not hold now gets the same error every
+other symbol tool gives since #869, from `retrieval.verdict.symbol_not_found`,
+with the near-miss ids it meant. A path is refused only when it is not an
+indexed file, not in the tree and has no git history at all. A deleted file
+keeps its history and is still measured, and so is a file in the tree that
+is not indexed. A `::` target is always a symbol question and the disk is not
+consulted, because on Windows `x.py::$DATA` names an NTFS stream that
+`os.path.exists` reports as present; the cost is that a POSIX file literally
+named with `::` cannot be measured by path (#898).
+
+### Fixed - a symbol id missing only its owner or `~N` suffix names the id it meant (#869)
+
+An id built from a search row's `file`, `name` and `kind` misses two things: a
+member's id carries its owner (`types.ts::ZodObject.pick#method`, not
+`types.ts::pick#method`), and same-named symbols in one file take `~1`, `~2`
+(both twins, so the bare id never exists). Such an id got a bare `Symbol not
+found` from every tool that takes a symbol, with no hint that a real id was one
+qualifier away. Per the issue, a benchmark adapter (#726) lost 44 of 124 usage
+and impact follow-up calls and 8 definition calls that way on zod, all of them
+members; #698
+made it more common by giving every TypeScript abstract-class member an owner.
+
+Sixteen sites wrote their own not-found error, in six wordings: the twelve the
+issue named, plus `get_context_bundle` (`Symbol(s) not found`),
+`check_rename_safe` and `get_symbol_complexity` (`Symbol ... not found in
+index`) and `get_endpoint_impact` (`No symbol ... in index`), which a check
+keyed on the reported spelling could not see; a check keyed on "not found"
+missed the last one too. The
+error now has one author, `retrieval.verdict.symbol_not_found`, and every site
+asks it. When the index holds ids that differ from the request ONLY by the
+owner qualifier or the `~N` suffix (same file, same kind, same bare name), the
+error names them in `near_miss_ids`, at most ten, with `near_miss_total` and
+`near_miss_truncated`. It never picks one: two classes in one file can each
+own a `pick`, and choosing would answer a question about a different symbol.
+Without near misses the error points at `search_symbols`, as five of the sites
+did. The key is not `candidates` because four of these tools already answer
+an ambiguous NAME with `candidates` holding `{name, file, id}` records, and one
+key must not change shape by branch. A test fails any tool whose error
+response says a symbol is absent (not found, not in the index, does not
+exist, unknown, missing, no symbol) without asking the authority. Several
+missing ids are counted as the union of their near misses, never once per id.
+
+Two more ways a near miss went unanswered, found on the way:
+`get_symbol_source` with one id rebuilt its error from the message alone and
+would have dropped the near misses (it carries them now; `did_you_mean` stays
+on the batch form only); and `get_signal_chains` answered a nonexistent id
+with an empty chain list whenever the repo had no gateways, which reads as
+"the symbol is on no chain". It resolves the symbol first now.
+
+### Fixed - a class in a Vue or Svelte `<script>` owns its members (#861)
+
+A class declared in a Vue `<script>` published its name and nothing else: no
+method, no field, no TypeScript parameter property. A class expression
+(`const C = class { m() {} }`) published a `constant` with no class at all.
+The same script in a `.ts` or `.js` file gives `Svc#class` owning `Svc.m`,
+`Svc.x` and (in TypeScript) `Svc.a`, and has since #802 and #803. Svelte had
+the same two defects. So a component's script classes read as empty.
+
+Both channels walk their script by hand, and both stopped at a class: the
+declaration branch returned without entering the body, and a class-valued
+binding was published as a binding. #803 fixed the class expression in the
+generic walk, which neither channel uses. A third hand-written class walk
+would miss the next member form the same way, so the class and everything
+under it now come from `parse_file` over the script, the walk a `.ts` file
+gets. Every class that walk finds is published once per block, so the spellings
+neither hand walk recognised arrive too: `abstract class`, an anonymous
+`export default class {}` (as `default`), `module.exports = class {}` and
+`X.P = class {}`, and a Svelte `$: C = class {}` (parenthesised or not),
+which had published a `constant` beside the class. A class beside a Vue Options-API object is published now; the
+functions and bindings beside it are still dropped (LEDGER L-36). Ids keep the
+generic qualified names (`Svc#class` is unchanged), lines and bytes address
+the component file, and the class's parent is the component.
+
+⚠ Ids move only where a script has a class: `C#constant` becomes `C#class`,
+and members appear. On 2,020 `.vue` and `.svelte` files from element-plus
+(`f599b62`) and sveltejs/kit (`0107721`) no symbol changed, because none of
+them declares a script class. `PARSER_GENERATION` 8, still unreleased,
+re-parses unchanged files.
+
+⚠ The script is parsed a second time only when the word `class` in its text
+is a class keyword in the tree it already has, and that class is not owned by
+a function declaration or a method (the generic walk gives such a class an
+owner, so it is never a group here). A byte test alone would re-parse every
+script that mentions `classList` or `className`. Nothing after the keyword is
+asked of the text, so `class<T>`, `class /* x */ Foo` and `class Über` are
+classes like any other. Where the tree has an error around the word it cannot
+say no, and the script is parsed again: a `lang="tsx"` script is read there
+with the TypeScript grammar, so JSX in a class body is an error to it and not
+to the TSX parse. Nineteen of the 2,020 corpus scripts have the word and six
+are parsed again, with no symbol changed. Over three interleaved processes of
+15 passes each, the corpus's fastest pass takes 0.595 to 0.600 s against 0.567
+to 0.571 s on main; a 300-function script that mentions `classList` is
+unchanged.
+
+A binding stands aside only for the class it binds: one whose span, in the
+generic walk's own tree, starts at or before the binder. A class nested in the
+initializer starts after it, whatever its name, so `const e = <div onClick={()
+=> { class K {} }} />` and `const K = <A r={() => { class K {} }} />` in a
+`lang="tsx"` script both keep their binding, and a Svelte prop keeps a class
+merely nested in its default. The hand walk reads a `lang="tsx"` script with
+the TypeScript grammar, which can recover JSX by making the nested class the
+binding's value; that mismatch is older than this fix and loses more than
+classes (LEDGER L-39). An unbound class expression (`const [a] = class {}`,
+`new (class {})()`) still publishes no members, as on main (LEDGER L-40).
+
+A class inside a function declaration, arrow function or function expression
+stays unpublished, as before. One inside an object method
+(`setup() { class K {} }`) still publishes a bare `K#class`, as on main
+(LEDGER L-38). A class nested in a class's method body was published twice, as a bare
+`Inner#class` beside the owned one; only the owned one remains. A Svelte
+`export let C = class {...}` stays a `property` with no members, because a
+prop is an input. With `javascript`/`typescript` disabled and `vue`/`svelte`
+enabled, a class publishes its name without members, as before.
+
+### Fixed - a `search_symbols` cache hit is counted as a hit (#864)
+
+`result_cache_stats()` reported a served `search_symbols` hit as validated and
+never as a hit. After two identical calls it said `total_hits: 0` and
+`by_tool: {}` beside `hits_validated_fresh: 1` and a revalidated rate of 1.0,
+a rate over zero hits. `search_symbols` keeps its own cache and never passes
+through `result_cache_get`, which is where the shared LRU counts lookups, yet
+it reports every hit it revalidates to `cache_hit_validated`, whose contract
+is that the hit was already counted. So `analyze_perf` under-reported raw hits
+for the busiest consumer. And because `hits_unvalidated` is hits minus
+validated, clamped at zero, its validations were subtracted from other tools'
+unvalidated hits, and the clamp hid it.
+
+The tracker now takes a lookup from a private cache
+(`result_cache_record_lookup`), and `search_symbols` reports every lookup
+there, hit or miss, from the one function that reads its cache. Validated
+hits can no longer exceed hits, per tool or in total. A ratchet fails any
+module that reports a validated hit without recording the lookup, so the next
+tool with a private cache cannot repeat this. The #801 test that summed both
+counters to prove a hit happened reads `total_hits` alone now.
+
+⚠ Every number built on these counters moves, and not only upward. A
+`search_symbols` MISS is counted now too, so `total_misses` and the `hit_rate`
+denominator grow with it, and a session that mostly misses in `search_symbols`
+reports a LOWER aggregate `hit_rate` than before for the same work. The
+counters feed `analyze_perf`'s cache block and `get_session_stats`' cache
+block, which is also written to `~/.code-index/session_stats.json`; compare
+either across this version only with that in mind. `cached_entries` still
+counts the shared cache's entries alone, while the hit and miss counts now
+cover `search_symbols`' own cache as well.
+
+### Fixed - a linked worktree's index resolves to itself instead of failing as ambiguous (#882)
+
+In git mode a linked worktree is keyed by its own path, `local/<name>-<hash>`
+(#372), which is also the key the local-identity probe looks up. So when a
+worktree was re-indexed, both probes in `resolve_index_identity` found the
+same index and read it as two. Config mode raised `IdentityModeAmbiguous`, and
+explicit git mode raised `IdentityModeConflict` with a message calling the git
+index a local one. The first index of a new worktree succeeded and every
+re-index after it failed, the watcher's included, so the index stopped
+following the worktree. Reported with a diagnosis by @aniruddh10124 in #882.
+
+When both probes name the same owner and name, that index is the git index,
+because it records a `git_root`, and the resolver now returns it in config and
+git mode. Two different indexes matching one path still raise
+`IdentityModeAmbiguous`, and asking for local identity on a worktree that holds
+a git index still refuses, now naming it correctly as git.
+
+### Fixed - a Kotlin accessor on its own line owns what its body declares (#858)
+
+`val g: Any` with `get() = object { val gg = 1; fun h() = 2 }` on the next
+line published `gg` as a `property` and `h` as a `function`, both with no
+owner. A local function in such a getter's body (`get() { fun loc() = ...;
+return loc() }`) was a fabricated top-level `function`, and so were the
+members of an object literal in a `when` branch or in a setter. In a class
+the same members were filed under the class: `C.gg`, and an object literal's
+`fun` became a method of the class. With the accessor on the property's line
+every one of them was owned by the property. Reported by @jgravelle from the
+#807 review.
+
+tree-sitter-kotlin spills an accessor written on its own line into a sibling
+of the property declaration. #807 reads that sibling for the property's kind;
+ownership was a separate walk and never saw it, so the body was walked with
+the enclosing owner.
+
+The walk now adopts a spilled getter or setter as the property's own child
+(the same test #807 uses to find it, shared rather than repeated), with any
+comments and annotations between them. A `by` delegate on its own line spills
+the same way (`val vm: VM` / `by lazy { object { ... } }`) and is adopted
+under #807's gate, which allows no initializer and no `;` before it. In a
+class body the grammar also ends the class at an own-line delegate, so the
+members after it are still filed at file scope, as on main (LEDGER L-33).
+Only a Kotlin file or class body does this bookkeeping. It costs a Kotlin file
+with no spilled accessor about 5% of `parse_file` (a synthetic 3,000-class file:
+466.5 to 478.2 ms on main, 491.4 to 495.3 ms here), one where every class has an
+own-line getter about 20% (345.7 to 359.9 ms, 421.3 to 430.9 ms), and a Python
+file about 2% from the per-node language test (`server.py`: 245.8 and 249.0 ms,
+249.8 to 252.0 ms). The split form answers exactly what
+the one-line form answers: owner, qualified name, kind and span. On four
+Kotlin projects (1,098 files) the one id that moves is the defect on real
+code, okio's `FakeFileSystem.now#method`, a method of the object literal
+`clock` returns, which becomes `FakeFileSystem.clock.now#function`.
+
+⚠ Spans widen: a property with an own-line accessor now covers it, as the
+one-line form's always has. On the same corpus that is 203 symbols (128
+properties, 69 variables, 6 constants), none narrowed and no start moved. `PARSER_GENERATION` 8, still unreleased,
+re-parses unchanged files. The constant channel owns nothing in either form
+(`val MAX: Any get() = object { val gg = 1 }`), which is LEDGER L-32.
+
+### Fixed - an F# non-`rec` `let ... and ...` chain binds every name (#856)
+
+`let a = 1 / and b = 2` indexed `a` and not `b`. In a type body it was
+worse: `let mutable a = 1 / and b = 2` lost `b` and every member written
+after it, so `type T` showed `T.a` and no `M`. In a named module the spill
+also ended the module, so every later member was filed at file scope. The
+chain is valid F# (`let rec?` makes `rec` optional), and `let rec` has bound
+both since #824. Reported by
+@jgravelle from the #824 review.
+
+The grammar cannot parse it. tree-sitter-fsharp 0.3.12, the version #848
+pinned and still the newest release, spills a module-level chain into an
+`infix_expression` whose head is an identifier spelled `and`. In a body it
+error-recovers the `and` into an `ERROR` that swallows the members after it.
+No extractor change could read a tree that does not hold the names.
+
+The F# walk now re-parses with each spilled `and` spelled `let`. Both words
+are three bytes, so every offset holds, and the tree is read against the
+original bytes. Two consecutive `let`s bind the names a non-`rec` chain binds;
+only scope differs, and extraction does not read scope. An `and` is rewritten
+only where it spilled (an identifier spelled `and`, or an `and` directly under
+an `ERROR`), and only when the last declaration the original tree closes
+before it is a `let` at the `and`'s column (F#'s offside rule). That anchor
+is read from the tree, never from text lines: three review rounds each found
+a line spelling (a `let` inside a comment, `[<Attr>] type A` on one line, a
+`type` line closing a comment) that a line scan misread into constants. A
+declaration keyword the grammar stranded in an `ERROR` counts where it
+starts. The re-parse is kept only if it adds no error. A `let rec` chain, a `type`
+chain and `with get ... and set` parse clean and are untouched. Each binding
+records its own bytes, because here the grammar gives each its own node. At
+module level a chain whose `and` lines are split by `#if`/`#else` binds both
+branches as `~1`/`~2` twins; in a type body the branches stay absent, as
+separate `let`s under `#if` there always have (LEDGER L-31).
+
+⚠ The column check exists because the first draft had none. A `type` chain
+split by `#if` spills the same way, and on FsToolkit.ErrorHandling six types
+became `constant`s. With the check, #848's four-project corpus of 378 files
+shows no id appearing, moving or leaving. Such a `type` chain still loses the
+types after the `#if`, as on main (LEDGER L-27).
+
+⚠ New ids where the shape occurs, and in a named module ids MOVE: every member
+after the chain returns to the module, so `c#constant` becomes `M.c#constant`.
+`PARSER_GENERATION` 8, still unreleased, re-parses unchanged files.
+
+### Fixed - a C-family prototype list binds every name it declares (#852)
+
+`int f(int), g(int);` gave `function f` and no `g`, in C, C++ and Arduino
+alike. Both names are declared. Reported by @jgravelle, measured while fixing
+#835.
+
+A declaration yields one symbol, named by one declarator. #823 fixed the same
+shape for `typedef int A, B;` with an extra-names step gated on the typedef
+node, so a declaration with several function declarators still yielded one.
+It was #817's mechanism in its fourth C-family spelling, after Go, a typedef
+list and a JS/TS `let` list.
+
+The step now covers a declaration too, in all three C-family specs at once.
+Each declarator that is itself a bare prototype binds a function, with the
+declaration's bytes, #823's recorded choice for a typedef list. `int f(int),
+x;` stays `f` alone, as a lone `int x;` emits nothing, and a C++ overload pair
+(`int f(int), f(double);`) is two ordinal twins (C keeps one per name, #835).
+A declaration the grammar could not parse keeps its old answer.
+
+⚠ In C++ a constructor call is spelled exactly like a prototype list:
+`JsonString a(s1), b(s2);` parses as `T f(U), g(V);`. On real code that shape
+is common and a real prototype list is not, so in C++, Arduino and any `.h`
+a later declarator with a parameter that is a type name with no declared
+parameter name and nothing an expression cannot hold (`(s1)`, `(Foo)`,
+`(inputs[j])`, and with a default value or a bare `...`, `(y = 3)`, `(y...)`)
+binds nothing extra, whether or not a `*` or `&` wraps the declarator
+(`char *p(buf), *q(buf2);`). `int f(int), h(Foo);` therefore gives
+`f` alone there, recorded as LEDGER L-25 with the other shapes it costs. A
+pointer, a reference, an empty `[]`, a qualifier or a `struct`/`enum` type
+cannot come from an expression at any depth, nor can `auto` or `decltype`,
+so `h(Foo (*)(int))` binds. A
+`.c` file, which has no constructor call, binds every prototype; a `.h` keeps
+the rule, since it may be C++ that the C grammar parsed better. Over 1,124 C, C++ and Arduino files from
+eight projects no id appears, moves or leaves; before that rule, 4 ids
+appeared, every one a constructor call.
+
+⚠ New ids only, where the shape occurs: `g#function` beside `f#function`, and
+an overload pair renumbers its ordinals. `PARSER_GENERATION` 8, still
+unreleased, re-parses unchanged files.
+
+### Fixed - a C++ local function-pointer or lambda variable is not a file-scope function (#850)
+
+`void vf() { int (*fp)(int); }` gave `function fp`, at file scope with no
+owner, in C++ and Arduino, and on Arduino `void lf() { auto l = [](int a)
+{ return a; }; }` gave `function l` the same way. Neither is a function.
+Reported by @jgravelle from the #833 review's probes.
+
+The prototype gate asked whether a function declarator appeared anywhere
+under a declaration's first declarator. Two things answered yes when they
+should not. The walk went into lambdas. The Arduino grammar spells every
+lambda's parameter list as a function declarator, so any Arduino declaration
+initialised with a lambda was a function, at any scope (`auto gl = [](int a)
+{...};`); in C++ the same happened when the lambda held a function pointer or
+a prototype (`auto g = [](int (*cb)(int)) {...};`). And at block scope the
+rule took a local function-pointer variable for a prototype; #833 publishes
+a block-scope prototype at file scope, because a real one declares a
+namespace-scope function, so the variable went there too. Arrays of function
+pointers and function references took the same path.
+
+The gate now never reads inside a lambda. At block scope a declarator whose
+name is certainly bound by a pointer, reference or array is a variable and
+emits nothing, as a local `int x` does. A declaration whose first
+declarator is certainly a variable and whose later one is a bare prototype
+is that prototype anywhere outside a class body (file, namespace, `extern "C"`,
+template and block scope), in C, C++ and Arduino alike:
+`int x, y(int);` is `y`, and `void (*ga)(int), gb(int);` is `gb`. A shape only error recovery produces keeps the old answer. A
+file-scope `int (*gfp)(int);` stays a `function`, #755's recorded choice
+over an absence.
+
+⚠ Over 702 C, C++ and Arduino files from six projects, 2 files differ and
+4 wrong `function` rows are gone, every one a local variable except a
+function-pointer `typedef` in a class body the grammar misread as a function
+body; no id appears or moves there. The multi-declarator shapes above did
+not occur in that corpus. Where they do, a C++ or Arduino declaration's id
+renames to the prototype (`ga` to `gb`), and a declaration that emitted
+nothing in any of the three languages (`int x, y(int);`) gains one. A name that
+shared its set with a removed row renumbers its ordinals. `PARSER_GENERATION`
+8, still unreleased, re-parses unchanged files.
+
+### Fixed - F# is parsed by a grammar that can read it (#848)
+
+In an F# type, every member written after a `static member val ... with
+get, set` line was absent: `type A` gave `A.Total` and lost `Make` and `Size`
+below it. Reported by @jgravelle from the #812 review's probe.
+
+The grammar bundled in tree-sitter-language-pack took `val` as the member
+name and spilled the rest of the type body to file level, where no walker
+can own it. That was one symptom of a wider fault. On four real F# projects
+(Giraffe, Argu, FsToolkit.ErrorHandling, FSharp.Data, 378 files), the pack's
+grammar failed to parse 176 files; its error recovery hoisted `let`s out of
+function bodies, flattened nested modules and dropped whole declarations.
+The pack's newest release has a working grammar, but it is the 1.x line
+that downloads grammars at runtime, which our `<1.0.0` pin refuses. F# is
+now parsed by the standalone `tree-sitter-fsharp` wheel, pinned at 0.3.12.
+It compiles its grammar in, so parsing stays local, and it fails on 16 of
+the 378 files. `parser/grammar_pack.py` is still the one loader, and the
+capability certificate reports the wheel's version beside the pack's.
+
+The extractor reads the new grammar's shapes. A function with a return-type
+annotation (`let g (y: int) : int = y`) is a value binding there, and it was
+named by its whole pattern as a `constant`; it is function `g` again. A
+bodiless `type X` (a unit of measure, `[<Measure>] type kg`) is indexed. A
+type's access modifier is no longer part of its name: `type internal X` was
+named `internal X` under both grammars, and is `X` now.
+
+⚠⚠ **This moves F# ids, on purpose.** Over the same corpus with the same
+extractor, 153 of 449 files differ, and symbols go from 7,617 to 7,926. Of
+the names the old grammar gave that the new one does not, 274 are the same
+symbol re-scoped under the module it is declared in, and 186 are `let`s
+inside a body, which are never indexed on a clean parse. The other 7 sit in
+three files the new grammar also cannot parse. Ordinals renumber wherever a
+name's set changed. `PARSER_GENERATION` 8, still unreleased, re-parses every
+F# file on upgrade. Moving the wheel's pin is a parser-generation event, so
+it is an exact pin. The wheel's grammar needs a tree-sitter runtime of 0.25 or
+later, and `tree-sitter` now declares that floor; an older runtime would have
+indexed F# as empty with only a grammar-failure warning.
+
+The new grammar also parses a multi-line `new() as this = ... then ...`
+constructor, which the old one spilled with every member after it. And when
+the pack is absent, each grammar that fails to load is now recorded by name,
+so the index warnings list them; before, that import error escaped
+unrecorded. F# still parses without the pack, and that warning now says so.
+
+### Fixed - F# abstract members, interface implementations and secondary constructors are indexed (#845, F# half)
+
+An F# interface type, `type IShape = abstract Area : float`, indexed as an
+empty type, and in its other spelling, `type I = interface ... end`, as
+nothing at all, not even its name. A class's `abstract` slots, the members of
+an `interface ... with` block, a `new()` constructor, a `struct ... end` body
+and a `delegate of` type were absent too. Reported by @jgravelle while
+probing #812.
+
+#812's member walk read the member forms it named, and these three sit under
+other nodes: an abstract slot is `abstract + member_signature`, an interface
+implementation is an `interface_implementation` beside the members, and a
+constructor is `additional_constr_defn`. The parser's list of type forms
+also lacked `interface_type_defn` and `delegate_type_defn`, and a
+`struct ... end` or `interface ... end` body holds its members directly,
+outside the node the walk looked in. One reader, `_member_defn`, now serves
+the type body, a `... end` body and an `interface ... with` block alike.
+
+An abstract member with an argument list is a `method` and one without is a
+`property`, #812's rule for concrete members, unless it has an accessor:
+`abstract Item : int -> string with get` is an indexer, a `property`, like its
+`default ... with get(i)`. An interface implementation's
+members are owned by the enclosing type. A constructor is a `method` named
+after its type (`C.C`), as C#, Java and PowerShell constructors index.
+
+⚠ The old walk emitted nothing from any of these forms, so no id moves by
+scope. Ids move by **ordinals**: a concrete member that now shares its
+qualified name and kind with an abstract slot or an interface member
+renumbers `~1..~N` in document order. `abstract Name` with
+`default this.Name` makes `C.Name#property` into `~1` and `~2`, and a class's
+own `Dispose()` beside `IDisposable.Dispose` does the same. One span moves
+without its id: a type joined by `and` to a delegate or an `interface ... end`
+type now spans its own definition rather than the whole `type ... and ...`
+statement, #837's rule for a chain. `PARSER_GENERATION` 8, still unreleased,
+re-parses unchanged F# files on upgrade.
+
+### Fixed - a Pascal interface's members are indexed (#845, Pascal half)
+
+`IFoo = interface procedure Bar; property Q: Integer read GetQ; end;` gave
+`type IFoo` and nothing in it, so an interface's methods and properties could
+not be found. Reported by @jgravelle while probing #812.
+
+#812 gave the parser a body walk for the containers it names (`declClass`,
+`declRecord`, and `declHelper` since #844). The grammar spells an interface
+body `declIntf`, so it was never entered. A grammar node the parser never
+names reads as the language having no such thing.
+
+An interface's `procedure`/`function` is now a `method` and its `property` a
+`property`, owned by the interface, including a generic interface
+(`IGen<T>`) and a `dispinterface`. The interface keeps its kind, `type`.
+
+⚠ Ids move for the two reasons #844 named. **Scope:** the walk did not enter
+an interface body but walked it with the ENCLOSING owner, so whatever it
+emitted from inside now moves into the interface. Nested in a type, that is
+the interface's members, which were that type's own (`TOuter.Foo#method` is
+now `TOuter.IInner.Foo#method`). Anything emitted with no owner moves too,
+such as a `const` or a type declared in an interface, which the grammar
+accepts and Delphi does not (`K#constant` is `IFoo.K#constant`).
+**Ordinals:** a name whose set of twins changed renumbers `~1..~N`, so a
+`~N` can name a different symbol and a twin left alone loses its suffix;
+`procedure IFoo.Bar` in an implementation section (also grammar-only)
+becomes `~2` beside the declaration. A top-level interface holding only
+routines and properties, which is every valid one, moves nothing. The
+F# half of #845 is a separate parser and a separate change.
+
+### Fixed - a Pascal method's body is indexed as a method of its class, and a generic class is indexed at all (#844, #846)
+
+A Delphi unit declares `function RunIt: Integer;` inside `TAudit = class` and
+implements it after `implementation` as `function TAudit.RunIt: Integer;
+begin ... end;`. The declaration was indexed and the body was not, so
+`get_symbol_source` on the method returned one line of signature and none of
+the code. Reported by @jgravelle while measuring #812.
+
+The implementation header names the method with a dotted chain
+(`genericDot`), and `_parse_pascal_symbols` asked for a direct `identifier`
+child, which only a free routine has. Every constructor, destructor,
+procedure, function, class function and class operator body was skipped.
+
+⚠ Review found the same direct-`identifier` check in the parser's other
+readers:
+- A generic type wraps its name in `genericTpl`, so `TBox<T> = class` was
+  absent entirely, along with every member (#846).
+- A generic method declared in a class (`function F<T>: T;`) was absent in
+  the same way.
+- A `class helper for` or `record helper for` type was indexed, but its body
+  was never walked, so its members were missing.
+
+Every reader of a Pascal declared name now goes through one helper, which
+reads a bare name, a generic name without its type parameters, or a dotted
+chain. The type parameters move to the signature (`type TBox<T>`), the way
+C# names `Action<T>`.
+
+The body is now a `method` owned by the type the chain names. That includes a
+nested class (`TOuter.TInner.Deep`), a generic owner (`TBox<T>.Get` is
+`TBox.Get`, owned by `TBox`) and a helper. The declaration and the body share
+a qualified name and kind, the way Objective-C's `@interface` and
+`@implementation` already do, so the shared duplicate-id rule orders them.
+
+New: every body, a generic type and its members, a generic method, a free
+generic function and a helper's members.
+
+⚠ Ids move, for two reasons:
+- **Scope.** The walk skipped a generic type or a helper, then walked its
+  body with the ENCLOSING owner, so whatever it indexed there sat one scope
+  too high and now carries its owner: `C#constant` is `TBox.C#constant`,
+  `TIn#class` is `TBox.TIn#class` (its members follow), `TO.P` is
+  `TO.TI.P`, and the same in a helper (`TH.C`, `TH.TX.A`).
+- **Ordinals.** Symbols that share a qualified name and kind are numbered
+  `~1`, `~2`, ... in document order, and a file with a single one carries no
+  suffix. This fix adds such symbols (a body beside its declaration, `TProc<T>`
+  beside `TProc`, `Max<T>` beside `Max`) and moves others out of a shared
+  name, so any name whose set changed is renumbered. `TAudit.RunIt#method`
+  becomes `~1` with the body `~2`; `TProc#type` becomes `~1`; a twin left
+  alone loses its suffix; and a `~N` id can name a DIFFERENT symbol than
+  before (`TA = class; TA<T> = class; TA = class`: `TA#class~2` was the full
+  `TA` and is `TA<T>`). Only a type's signature tells arity twins apart, and
+  their members differ only by `parent`.
+
+`PARSER_GENERATION` 8, still unreleased, re-parses unchanged Pascal files on
+upgrade.
+
+### Fixed - a Nim routine is indexed when its name is exported or an operator (#843, #847)
+
+`proc runIt*(a: Audit): int` wasn't indexed at all, in any of the seven
+routine kinds. The export marker puts the name under `exported_symbol`, and
+`_parse_nim_symbols` asked each routine for a direct `identifier` child. So on
+a real Nim package the indexed functions were the private ones, and the public
+API was missing. Reported by @jgravelle while measuring #812.
+
+The probe found a second wrapper on the same field. An operator's name is
+`accent_quoted` (``proc `$`(a: V): string``), so a plain operator was skipped
+too, and an exported operator nests one wrapper inside the other. An operator
+is now named without its backticks (`$`, `+`), which is what a caller
+searches for.
+
+⚠ Review found the same rule spelled differently in the other two readers of
+a Nim name, which the first draft had called correct:
+- #812's object-field reader unwrapped the marker but dropped an exported
+  backticked field (`` `type`*: string ``), and kept the backticks on a plain
+  one (`` Node.`from` ``).
+- The type section read the declaration's text, so a generic type published
+  as `G*[T]`, and its fields as `G*[T].a`. A type with a pragma carried the
+  pragma the same way: `Inh {.inheritable.}`, and `Inh {.inheritable.}.v`
+  for its field (#847).
+
+All three now read the `name` field through one helper, `_declared_name`.
+Three kinds of id move as a result: `G*[T]` is `G`, `Inh {.inheritable.}` is
+`Inh`, and a backticked name loses its backticks. A search for `Inh` by exact
+name found nothing before.
+`PARSER_GENERATION` 8, already unreleased, re-parses unchanged Nim files on
+upgrade.
+
+### Fixed - a PHP enum case is a symbol of its enum (#759)
+
+`enum Suit { case Hearts; case Spades; }` indexed `Suit` and nothing inside
+it. The grammar spells a case `enum_case`, and no `PHP_SPEC` map named that
+node type. #698's shape: a construct the grammar names and the spec doesn't.
+An enum's cases are usually the only thing it holds. Found while fixing #744.
+
+A case is now a `constant` owned by its enum (`Suit.Hearts`), pure or backed.
+That's the kind the same enum's `const` already had, and the kind Python's
+and AL's enum members have. An index built before this release has no cases
+for unchanged PHP files until they are re-parsed. `PARSER_GENERATION` 8,
+already unreleased, re-parses them on upgrade.
+
+⚠ #759 was also where the family decided whether enum members are indexed at
+all: the Dart and Zig tests deferred to it. The ruling is yes, in every
+language, as an owned `constant`. `tests/test_enum_members_register.py`
+measures where that holds. 30 of the 37 enum-bearing languages still
+publish only the enum, including TypeScript, Java, C#, Rust, Kotlin and
+Swift. They're one tracked row, `docs/workflows/LEDGER.md` L-03, not 30 new
+issues, and the register fails whenever a language moves.
+The Dart variant pin was renamed from "not indexed, and that is a ruling" to a
+tracked gap that fails when Dart's variants arrive.
+
+### Fixed - the route criterion has one authority, and every normative copy names it (#715)
+
+`STANDARD.md` stated the route bar twice, and the two statements disagreed.
+Section 4's Floor line carried the 2026-09-03 correction (FINDINGS F-02): the
+gate is route@1 on the held-out CONTROL subset of `holdout.json`, floor and
+target in `harness/thresholds.json` under `route.control_at1`, and "route@1
+>= 60%" was never a gate. The Definition of Regression, item 7, still read
+"Route@1 on the human corpus falls below 60%". That's a different corpus and
+a different number, so a reviewer reading one section blocked a result the
+other section passed. F-02's fix reached the paragraph that was reported and
+not the second site: Standing lesson 08-19, inside the document that states
+it. Found by an external critique of 1.108.319.
+
+The same retired bar reached contributors. `CONTRIBUTING.md` gave the
+moratorium's exit condition as 60% on the visible `queries.json` and a name
+leakage ceiling of 0.15, and said both were enforced by
+`tests/test_catalog_moratorium.py`. The test gates neither: it reads the
+control subset against `route.control_at1` and holds leakage at its own
+`EXIT_MAX_NAME_LEAKAGE`. Both sites now name those two authorities and
+restate no number. Section 4's "Current:" line keeps its 71.2% measurement
+and no longer calls 60% a bar.
+
+⚠⚠ `tests/test_route_criterion_has_one_authority.py` checks the property over
+every tracked Markdown file, not the two reported lines. A sentence that gives
+route@1 a bar with a percentage must name `route.control_at1`, or quote only
+that entry's floor or target with the control subset named as route@1's
+corpus. A right number on the wrong corpus fails too, and so does a leakage
+ceiling other than the test's. Naming the id doesn't license the number
+beside it: review round 2 found `docs/harness/DESIGN.md` still listing
+`route.control_at1>=55` as the floor, and it now reads `>=40` with the
+target beside it. The unit is the sentence, and a `Label:` line
+starts a new one. Review round 1 found the first draft scanned paragraphs:
+section 4's Current, Floor and Target lines are one paragraph, so the Floor
+line's id exempted the retired bar put back on the Current line. Dated records
+keep their numbers, each with its reason in the test: CHANGELOG,
+ISSUE-HISTORY, the harness ledgers and surveys, and FINDINGS. ROADMAP is
+scanned except its moratorium section, which keeps the 2026-08 conditions
+beside the note that names the gate.
+
+### Fixed - `get_changed_symbols` keeps blast radius's verdict, so an empty blast is no longer "no impact" (#718)
+
+`get_changed_symbols(include_blast_radius=True)` answered every changed
+symbol with a bare `"blast_radius": []` when the import graph found nothing.
+That's the shape a consumer reads as "no downstream impact". Standalone
+`get_blast_radius` has refused that zero since #415, when the graph can't
+reach the symbol (a Go package import lands on no file). The embedded path
+ran the same importer walk directly and never asked. It was a second call
+site that copied the authority's walk without its verdict. Reported by
+@Torolosko, measured on a real commit delta.
+
+The verdict now has one home, `get_blast_radius.blast_verdict`, and both
+tools call it. Standalone `get_blast_radius` gives byte-identical answers.
+- An entry whose blast is empty carries a short `blast_verdict` (`state`,
+  `absence_refused`, `reason`).
+- The full verdict appears once per file in `blast_verdicts`, since it
+  describes that file's importer walk rather than any one symbol. The
+  coverage block they share appears once, in `blast_coverage`.
+- A symbol the graph can prove nothing imports still gets `state: absent`.
+- A non-empty blast is positive evidence and carries no verdict.
+
+⚠⚠ The embedded path has two cases the standalone one can't hit, because
+its importer graph is the index's and `since_sha` defaults to the indexed
+commit:
+- A file added in the diff isn't in the graph at all. Its symbols refuse
+  absence with `reason: file_not_in_index`.
+- Review round 1 found the second. The graph predates `until_sha`, so an
+  importer added in the same diff is invisible to it while the response
+  lists that file in `changed_files`. The first draft answered that case
+  with `absent`. An empty blast now reads `absent` only when the graph is
+  `until_sha`'s, or `since_sha`'s with no other file changed, since only
+  another file can add an importer. Every other empty blast refuses with
+  `reason: graph_not_at_until_sha` and says to re-index at the target
+  commit.
+
+⚠ Asking for a blast radius from an index with no import graph used to drop
+the field silently. The response now says so in `blast_radius_unavailable`.
+
+The other three findings in the report are split into their own issues:
+#874 (symbol-diff coverage), #875 (runtime `as_of`/`current`) and #876
+(dynamic dispatch as a model boundary). Reported by @Torolosko (#718).
+
+### Fixed - the installed agent policy grants absence only on a scan that proved it (#719)
+
+The policy `init` writes into CLAUDE.md told every agent that
+`negative_evidence.verdict: "no_implementation_found"` proves absence, and to
+stop searching. The product disagrees. On a stale or truncated index, it
+refuses to cite the absence (`handoff.absence_refusal`), while the verdict
+still reads `no_implementation_found` and `_meta.verdict.state` still reads
+`absent`. The agent reported a gap a re-index would have filled, and it was
+told not to look again. That's the one case where searching again changes
+the answer. #711 removed the same conflation from `plan_turn` and
+`get_session_snapshot` in code. This is the prose copy.
+
+⚠⚠ The proof is citability, not the state. The first draft of this fix keyed
+the rule on `state` of `absent`. Review round 1 put a stale index through the
+dispatcher and got `state: absent` with `absence_citable: false`: the draft
+granted the #719 case. An agent may now treat absence as proven only when
+`_meta.verdict.evidence_ref` holds an `absent:` token, or, where `_meta.verdict`
+isn't shown, when `_meta.absence_evidence.citable` is `true`. The shipped
+default `meta_fields: []` strips the verdict, and the encoded body then
+carries no `negative_evidence` either. So the citable carrier has to be
+enough on its own, and it is. Anything short of citable proves nothing. The
+agent reads the note or `absence_blocked_by`, re-indexes if it names the
+index, and searches again.
+
+Four copies carry the rule: the full surface, the front door, this repo's
+`AGENTS.md`, and the skill `init` installs. The skill still listed
+re-searching after `no_implementation_found` as an anti-pattern, with no
+condition. `tests/test_policy_grants_absence_only_on_a_proven_scan.py` checks
+the rule, not the token. A block that names the verdict, or tells the agent to
+stop searching in any of several phrasings, must name both citable carriers,
+say the verdict alone is not proof, and give the re-index advice. The
+round-one text fails it.
+
+⚠ Not fixed here, filed:
+- The product's own `absent` note still says "strong evidence the target is
+  not present" on a scan it refuses to cite (#872).
+- An existing install keeps the old wording, because `init` skips a CLAUDE.md
+  that already holds the policy and `config --check` compares tool names
+  only (#871).
+
+Filed by @jgravelle (#719).
+
+### Removed - three `LanguageSpec` fields nothing read, and the rule that stops a fourth (#725)
+
+`type_patterns`, `return_type_fields` and `param_fields` were filled in by
+every one of the 78 spec literals, 234 keyword arguments in all, and no line
+of `src/` read any of them. A field nothing reads can't disagree with
+anything, so it rots without a symptom. #713 added an entry to two of them
+believing they did something. `CSHARP_SPEC` and `JAVA_SPEC` came to spell the
+same construct differently in a list neither consumer existed for. A Go
+issue's diagnosis (#817) blamed `type_patterns` for a defect in a different
+channel. It's the `entry_point_patterns` shape of #561/#562, one dataclass
+over.
+
+#725 offered a choice: wire them up or delete them. They're deleted. A
+symbol's `signature` already carries its parameters and return type as the
+declaration's own text, so wiring them would have added a structured field
+nobody has asked for. Nothing the product returns changes, and no index needs
+rebuilding. ⚠ Code that builds its own `LanguageSpec` through the Python API
+and passes any of the three now raises `TypeError`; nothing in this tree
+does.
+
+⚠⚠ The rule is the property, not the three names.
+`tests/test_every_language_spec_field_has_a_reader.py` fails on any
+`LanguageSpec` field that no code in `src/` reads, so a fourth field added
+and never wired fails on arrival, whatever it's called. A keyword at
+construction counts as a write, not a read. Counting it would make every field
+look consumed, which is how three hid. `LANGUAGE_SUPPORT.md`'s add-a-language
+template and `ARCHITECTURE.md` drop the fields too. The template was the
+one place a contributor copied them from. Filed by @jgravelle (#725).
+
+### Fixed - a Swift `deinit` is a method of its type, and is never certified deletable (#754)
+
+`class Holder { deinit {} }` indexed `Holder` and nothing else, while the
+`init` beside it came out as `Holder.init`. `SWIFT_SPEC` declared
+`deinit_declaration` as a `method`, but the grammar gives it no identifier
+child at all (its only named child is the body), so `_extract_name` had
+nothing to borrow and the symbol was dropped. A deinitialiser is where a
+class releases resources, removes observers and invalidates timers, so it is
+the member someone searches for when chasing a leak.
+
+The name is now built as the declaration spells it, the way #714 built
+`this[]` and #736 built `constructor`: a type has at most one `deinit`, so
+`Holder.deinit` is unambiguous, in a class, an actor, a noncopyable struct or
+a nested type. A test asserts the grammar still names nothing, so a grammar
+that starts naming it wins.
+
+⚠⚠ The name creates a destructive surface, and it's closed in the same change.
+Swift forbids calling `deinit`, so no call site ever writes its name, and a
+reference search finds nothing. An identifier-shaped name therefore got a
+confident "no references, safe to delete" from `check_delete_safe` for a
+member the runtime calls on every release. `subscript[]` avoided this with
+brackets. `deinit` avoids it because `_name_reachability` now knows, per
+language, the identifier-shaped names a language forbids writing at a call
+site, and `check_delete_safe` passes the symbol's language. The #733 guard
+over built names asked the string alone; it now asks the same question
+under each name's language, which is what the consumer asks. Swift's
+`find_dead_code` report is unchanged. On a Swift corpus it rates every
+symbol file-level `zero_importers`, the deinit included, which is a
+pre-existing limit and not specific to this change.
+
+`PARSER_GENERATION` 8 names the new symbols; nothing moves. #745's gap
+ledger held #754, and its close guard failed when the form began
+extracting, so the entry is deleted and the #758 manifest no longer cites
+the issue. Filed by @jgravelle (#754).
+
+### Fixed - a TypeScript constructor parameter property is a member of its class (#802)
+
+`constructor(public injected: number, private readonly other: string) {}`
+declares and assigns two members of the class, and yielded no symbol:
+`parse_file` returned the class and its constructor and nothing else. This
+is how Angular and NestJS declare injected dependencies
+(`constructor(private readonly service: FooService) {}`), so in those
+codebases it is most of a class's state. #781 indexed class FIELDS and left
+this form out on purpose: the grammar spells it as a `required_parameter`
+or `optional_parameter` inside the constructor's parameter list, a second
+node type for the same concept (the #698 lesson).
+
+A constructor parameter carrying `public`, `private`, `protected`,
+`readonly` or `override` is now a member, by #781's kind rule: `readonly`
+is a `constant`, anything else a `field`. A plain parameter is not. ⚠⚠ The
+owner is the CLASS (`Audit.injected`, parent `Audit`), never the
+constructor the walk is inside. The member is withheld when the
+constructor is not the class's own: a class expression in a field
+initializer or an unbound one (the mixin) has no class symbol, and the
+first draft attributed its member to the ENCLOSING class. A modified
+parameter anywhere else (a method, a function, an arrow or an object
+literal inside the constructor body) is not a member; TypeScript rejects
+those and the grammar parses them.
+
+The symbols are new. They appear in `.ts`/`.tsx` files and in scripts
+re-parsed as TypeScript. One id moves: TypeScript lets a STATIC member share
+a name with an instance parameter property (`static a = 1` beside
+`constructor(public a: number)`), and the static member's `C.a#field`
+takes an ordinal by source order: `~1` when it comes before the
+constructor, `~2` when after. `PARSER_GENERATION` 8 names it. Filed by
+@jgravelle (#802).
+
+### Fixed - a JS/TS class expression is a class, named by what binds it (#803)
+
+`const C = class { x = 1; m() {} }` indexed `C` as a `constant`, `m` as
+a method with no owner, and the field `x` not at all. #781 withheld the
+field on purpose, because a member with no class to own it is #698's
+defect. An anonymous `export default class { ... }` published the same
+bare methods. A class expression inside a function published `f.k`,
+qualified as if the function declared `k`. The class node was in every JS
+spec's `container_node_types` and in no `symbol_node_types`, so nothing
+ever emitted it.
+
+A class expression is now a `class` named by its binder, the way `const d
+= function inner() {}` is already `d`. For a declarator that is the
+declarator's name (`const C = class Inner {}` is `C`). An anonymous
+`export default class`, TypeScript's `export =` and `module.exports` are
+`default`, and a named one keeps its own name (`module.exports = class
+UserService {}` is `UserService`, as `export default class Named {}` has
+always been `Named`). `obj.P = class {}` is `P`. Parentheses and TypeScript's `as`,
+`satisfies`, `!` and `<T>` wrappers are seen through. The methods and
+fields hang off it as they do off a class declaration. Its signature is
+the header up to the body, as a class declaration's is.
+
+⚠⚠ A class expression NOTHING binds (`new (class { ... })()`, `return
+class { ... }`, an argument) has no name to borrow, so it gets no symbol,
+and its methods keep what they always published: bare at module level, or
+qualified under the enclosing function. Its fields stay withheld (#781).
+The first draft withheld the methods too, and review measured the cost on
+the TypeScript mixin (`return class extends Base { stampNow() {} }`):
+`search_symbols("stampNow")` answered a confident ABSENT for a method that
+exists and `main` found. A false absence claim is worse than lexical
+nesting, so the issue's "not qualified under the function" does not hold
+for this shape. A class expression in a class-field initializer is
+unchanged, since its members were already qualified under the field.
+
+Ids move: `C#constant` (or `C#variable`) becomes `C#class`, and a bound
+class expression's bare `m#method` becomes `C.m#method`, in `.js`/`.ts`
+files and in every script re-parsed as JS/TS (Astro frontmatter, Razor
+`<script>` blocks, template files such as `foo.ts.j2`). `PARSER_GENERATION` 8 names all of it. The #781 absence test listed two bound shapes, which
+pinned this gap (Practice 9), so it now lists unbound ones. The NestJS
+corpus the issue measured is not checked out here and was not re-run.
+Filed by @jgravelle (#803).
+
+### Fixed - five tools asked a kind set typed before `field`, `property` and `variable` existed (#806)
+
+`get_repo_map`, `get_repo_outline` and `get_symbol_importance` each ranked
+a file's symbols with the same hand-typed table, and `find_implementations`
+and `get_group_contracts` each filtered or ranked with a literal of their
+own. All five predate the state vocabulary. A class member that used to
+arrive as `constant` passed their filters and ranked at the constant tier.
+Once its language learned the real word (Java, PHP, Kotlin, C++, Python,
+JS, then C#, Swift, Scala and Solidity), it fell to a default nobody chose or dropped
+out: a Python dataclass field ranked behind every module constant in
+`get_repo_map`, a JS `export let` was never a dead-contract candidate, and
+`find_implementations` resolved a same-named `template` ahead of a
+`property`. This is #760's lesson one layer over: "a consumer keyed on ONE
+kind string sees one of four."
+
+The three identical tables are one table now,
+`symbols.REPRESENTATIVE_KIND_RANK`, derived from `STATE_KINDS`: every state
+kind ranks where `constant` does, which is where those members ranked
+before they had their own words. `find_implementations` asks a different
+question and keeps its own rank, derived the same way. `get_group_contracts`
+counts a state kind as part of a module's contract at MODULE scope only. A
+class member is never imported by name, so listing every public field as a
+dead contract would be noise, and `constant` keeps its unconditional row.
+`tests/test_tool_kind_sets_derive_from_kind_order.py` fails on any
+literal under `tools/` that names a state kind beside another kind, and it
+is run against the reintroduced literal. Filed by @jgravelle (#806).
+
+### Fixed - a Kotlin top-level `val` or `var` is a module binding, not class state (#807)
+
+`val topLevel = 1` and `var topVar = 2` at file scope were indexed as
+`property`, the word `KIND_ORDER` reserves for class state, with no owner.
+A consumer asking a class for its members by keying on `property` (Kotlin
+and PHP class state both carry it) collected every top-level binding in
+the file too. Found in review of #769/#787, which excluded Kotlin from its
+module-scope demotion on purpose until this was decided.
+
+⚠⚠ **The decision the issue asked to be stated:** Kotlin follows the rule
+Swift and Scala already carry at module scope, with JS `const`/`let` and
+Go `const`/`var` beside them. A file-scope `var` is a `variable`. A
+file-scope `val` with no accessor and no delegate is a `constant` (its
+value is its initializer; a declaration-only `expect val` counts too). A
+`val` whose READ runs code is a `variable`: a getter (which every
+extension property has) or a delegate can return a different value on
+each read, which is how Swift's top-level computed `var` already reads.
+The constant channel still decides first: `const val` and a
+SCREAMING_CASE `val` (#428, #732) stay `constant` at file scope even with
+a getter or delegate, because the name is the author's declaration. In a
+class body that name rule is the whole answer, since Kotlin uses `val` for
+ordinary properties. Class, object, companion, enum and object-literal
+members stay `property`.
+
+⚠ **Scope is the declaration's direct parent (`source_file`), not "no
+type above it".** An object literal's members have a function or a
+property as their parent symbol and are still members; a rule keyed on the
+missing container would have called them constants. At file scope
+tree-sitter-kotlin spills a getter or a `by` delegate written on its own
+line into a sibling node, so that sibling is read too, past any comment
+or annotation between them. A getter whose body holds an object literal,
+or an annotated block-bodied one, is spilled as an error-recovered
+statement starting `get(` (its annotations inside it or ahead of it), not
+a getter node, so the sibling is read by its first token as well as by its
+type. `get(` counts after an initializer and after a `;`, as Kotlin's
+grammar binds a getter in both places (a getter may read the backing field
+the initializer sets), while `by` counts only for a `val` with no
+initializer and no `;` before it.
+A getter with no body (`val a = 1 get`) is the default accessor and runs
+no code, so its `val` stays a `constant`; whether `get` has a body is read
+from the next TOKEN, since Kotlin treats newlines and comments between
+`get` and `(` as whitespace. Kotlin 2.x's experimental explicit backing
+field (`field = 1` before the getter, opt-in) is not handled: its `val`
+reads `constant`. Review found each of these
+spellings published with the wrong kind.
+
+Ids move for every Kotlin file-scope property (`name#property` becomes
+`name#constant` or `name#variable`); names, spans and signatures do not.
+Every symbol parented to a file-scope property (an object literal's
+members, a local function or class in its initializer, delegate or
+same-line accessor) keeps its own id, and its `parent` moves with the
+owner's.
+`PARSER_GENERATION` 8 names it. Three older tests pinned a top-level `val`
+as `property` or as not a constant, and they encoded this defect
+(Practice 9). `test_kotlin_plain_val_needs_a_constant_shaped_name` moves
+its sample into a class body, where the name rule applies. The other two
+now assert the split. Filed by @jgravelle (#807).
+
+### Fixed - an F# `and` chain binds every name it declares (#824)
+
+`type A = int / and B = int` indexed `A` and nothing else; written as two
+`type` lines both indexed. `and` is how F# spells a mutually recursive
+pair, which is exactly the shape where losing the second type loses the
+relationship a reader is looking for. Measured at the same time, as the
+issue asked: `let rec f x = g x / and g y = f y` indexed `f` alone, a
+`let rec a = 1 / and b = 2` indexed `a` alone, and a class chain lost the
+second class and its members. Found by the scan #817 asked for; filed by
+@jgravelle (#824).
+
+⚠⚠ **#817's mechanism in a custom parser, three times.** One node, N
+names, one symbol: `_parse_fsharp_symbols` asked `_first_child_of_type`
+for ONE definition under `type_definition`, ONE binding left under
+`function_or_value_defn`, and ONE left again in the member walk. There is
+no spec map to correct (the extractor is inline), so the walk learns the
+chain itself: `_fs_defn_nodes` and `_fs_binding_lefts` list every
+definition and every left, and all three sites ask them. OCaml spells the
+same construct and binds both, so the language family was never the
+discriminator.
+
+⚠ **Rulings:** every definition in a `type ... and ...` chain is a symbol
+with the kind and qualified name the separate-line form gives, its
+members owned by it. Its span is the whole `type_definition` (keyword
+included, byte-identical to before) when it holds one definition, and the
+definition node when it holds several: #837's rule, the widest node
+addressing the name alone. Every binding in a `let rec ... and ...` chain
+is a symbol (`function` for a function left, `constant` for a value
+left); the grammar has NO node addressing one binding alone, since a
+left and its body are siblings of the defn, so every binding records the
+whole defn: the rule (Go's `const D, E = 5, 6`), never a synthesised
+range (#414), decided and pinned.
+
+⚠ New symbols on unchanged content; the FIRST type of a chain MOVES its
+span to its definition, and with it its `signature` (`type A() =` becomes
+`A() =`, the keyword dropped, since the signature is the span's first
+line), and keeps its id. `PARSER_GENERATION` 8 names both. A chained
+`let rec ... and` member inside a type body carries its OWN left as its
+signature (`let g y`), not the defn's first line, which names the first
+binding (review caught `T.g` reading `let rec f x = g x`); a single let
+keeps the line it always had. A return-type annotation belongs to its own
+binding: the scan is scoped to the segment between one left and the next
+(review round 2 caught `f` reading `let f x : int` with `g`'s annotation),
+and module level and a type body build the same signature. A
+`type_definition` the grammar could NOT parse yields its first definition
+only: tree-sitter-fsharp error-recovers a non-`rec` `let ... and` chain in
+a type body into a second `anon_type_defn` named after the binding, and
+emitting it published a fabricated `type b` owning a real member where
+`main` had an absence (review round 2; UNKNOWN is not a chain). That
+grammar limit, and the module-level non-`rec` chain it drops silently,
+are #856, filed and pinned as found.
+The `fsharp` row of `tests/test_one_declaration_binds_every_name.py`
+leaves `_GAPS`, which is empty now, so its tracked-gap test iterates
+inside the test instead of parametrizing over the register (an empty
+parametrize is a SKIP, and a skip has a budget).
+
+Red on `main`: `9 failed, 35 passed, 1 skipped` over the new file, the
+one-declaration file and the F# member file. Green: `654 passed` over every test file naming F# plus the one-declaration file, the retirement ledger and the node-type ratchets.
+
+### Fixed - a Zig packed or extern struct/union is the container its body is (#841)
+
+`const P = packed struct { a: u8, pub fn f() void {} };` indexed a bare
+`constant P` with no class, no `P.a` and no `P.f`, and `extern struct` and
+`extern union` did the same, while the identical body spelled `struct` was
+a `class` with owned fields and methods. A packed struct is how Zig spells
+a bit-field layout and an extern struct is every C ABI boundary, so the
+containers a systems codebase leans on were names with no contents. Found
+by the #809/#811 reviewer probing spellings beyond that diff; filed by
+@jgravelle (#841).
+
+⚠⚠ **A guard written against a spelling.** `_parse_zig_symbols._is_type_expr`
+asked whether the expression's TEXT starts with `struct`, `enum` or
+`union`; a qualifier starts the text instead, so the container branch was
+never taken and the declaration fell through to the plain-constant branch
+(Standing lesson 09-01; a node the parser never names reads as the language
+having no such thing, 09-15). The grammar spells every container
+`ContainerDecl > (packed|extern)? ContainerDeclType > <keyword>`, and the
+test asks that node now, so a future qualifier cannot re-open this.
+
+⚠ **Rulings:** a qualified struct or union is the same kind as its
+unqualified form (`class` for struct, `type` for enum and union) with its
+fields and fns owned by it, asserted EQUAL to the unqualified form's rows
+for the same body. `opaque` is a container the same node spells and is a
+`type`, decided rather than left: an empty `opaque {}` has no members and
+one with decls owns them. The signature keeps the qualifier
+(`const P = packed struct`, `const X = extern union`; review found the
+first draft rendering the unqualified spelling, and the ABI qualifier is
+the one fact a reader of an `extern struct` needs). `enum(u8)`,
+`union(enum)` and the unqualified container forms are unchanged.
+
+⚠⚠ **The text guard also FABRICATED containers, and that stops too.**
+`const V = struct_like;`, `const W = unionize(1);` and `const Z = enumerate;`
+were `class V`, `type W` and `type Z` on `main`, because the text starts
+with the keyword; they are plain constants now (review found the other
+half of the same guard; the red run recorded it before the wording did).
+
+⚠ Ids MOVE on unchanged content in BOTH directions: `constant` ->
+`class`/`type` for every qualified container, whose members are NEW
+symbols, and `class`/`type` -> `constant` for every constant whose
+initializer's text merely begins with `struct`, `enum` or `union`;
+`PARSER_GENERATION` 8 names both.
+`tests/test_a_zig_qualified_container_is_a_container.py` pins the reported
+struct, `packed struct(u16)`, `extern union`, `opaque` empty and with
+decls, a nested and a `pub` qualified container, the qualifier in the
+signature, the removed fabrication, and the unchanged spellings.
+
+Red on `main`: `10 failed, 15 passed` over the new file and the Zig member
+file. Green: `709 passed` over every test file naming Zig plus the
+node-type ratchets.
+
+### Fixed - each name in a multi-declarator JS/TS binding records its own span (#837)
+
+`let x = 1, y = 2;` gave `x` and `y` the whole statement as their span, in
+javascript, typescript and tsx alike, and `const c1 = 1, c2 = 2;`,
+`var v1 = 1, v2;`, `export const e1 = 1, e2 = 2;` and a
+`const f = () => 1, g = function () {}` pair did the same. Two symbols,
+one set of bytes: `get_symbol_source` on `x` returned `y`'s initializer
+too. Found by @jgravelle measuring the JS channels after #826 (#837).
+
+⚠⚠ **Two channels and no span rule.** `_extract_js_bindings` asked
+`_js_declarator_names` for the names and built every symbol over the
+statement, throwing the declarator each name came from away one frame up;
+`_extract_variable_function` (the `const f = () => ...` channel) walked UP
+from its declarator to the statement. #826 fixed the same defect for Go
+under the rule *the widest node that addresses this name alone*, as ONE
+function so two channels could not answer differently (Standing lesson
+08-19). `_js_binding_span_node` is that function for JS, asked by both
+channels: the declaration (keyword included) when it holds one
+`variable_declarator`, the declarator when it holds several, and
+`signature` follows the span. The `export` wrapper is each channel's own
+business, unchanged: the binding channel keeps it out of the span and the
+function-expression channel includes it for a single declarator, as both
+did before (review measured the asymmetry against `main`).
+
+⚠ **Rulings:** a destructuring pattern is ONE declarator however many names
+it binds, so `const { a, b } = o` keeps the declaration's span for both,
+the rule and not an exception (Go's `const D, E = 5, 6`; measured before
+the rule was applied, as the issue asked), while `const { a } = o, d = 3`
+gives `a` the pattern's declarator and `d` its own. Java's
+`private int a, b;` stays on its declaration, because #823's reasoning
+holds there (a Java declarator does not carry the type) and not here (a JS
+declarator carries the initializer, which is what a reader opens). Vue and
+Svelte record no byte span from the statement and are untouched.
+
+⚠ Spans, signatures and content hashes MOVE on unchanged content for every
+name of a multi-declarator statement; ids do not. `PARSER_GENERATION` 8
+names it. `tests/test_a_js_declarator_records_its_own_span.py` asserts
+every shape above over the three languages, line numbers following the
+declarator, and the PROPERTY that no two symbols from one statement share
+`(byte_offset, byte_length)`.
+
+Red on `main`: `26 failed, 266 passed` over the new file and the JS
+binding, destructuring and arrow-function files. Green: `2269 passed, 2
+skipped` over every test file naming a JS/TS fixture plus the ratchets.
+
+### Fixed - a C function prototype is a function, as the same bytes are in C++ (#835)
+
+`int f(int);` in a `.c` file yielded nothing, in every shape (`extern`,
+`static`, `static inline`, K&R `int old();`, a pointer or struct-pointer
+return, a struct-pointer parameter), while the identical bytes in a `.cpp`
+file yielded `function f`. A `.c` file's declared interface was invisible
+to `search_symbols` and to every reader of the outline. Found by
+@jgravelle measuring the three C-family spec copies after #830 (#835).
+
+⚠⚠ **Three spec copies of one grammar shape, the channel wired into two.**
+`CPP_SPEC` and `ARDUINO_SPEC` have carried a `declaration` row since #755,
+filtered through `_is_cpp_function_declaration`; `C_SPEC` had none, so a
+`declaration` whose declarator is a `function_declarator` was never visited
+(Standing lesson 09-15, #698; #797/#825, #823 and #830 are the same three
+copies). `C_SPEC` reads the row now, through the SAME gate in `_walk_tree`
+(`_is_c_family_function_declaration`), so a third copy of the prototype
+filter cannot drift, and C inherits #833's block-scope exemption with it.
+
+⚠ **Rulings, each decided rather than inherited, as the issue asked:**
+- A file-scope prototype in C is a `function`, C EQUAL to C++ for the same
+  bytes (kind, name and span), asserted over thirteen shapes.
+- A prototype followed (or preceded) by its definition in the same C file
+  is ONE `f`, the definition: C has no overloading, so name equality is
+  exact and the prototype is a mention. A second prototype of a name
+  already declared is a mention of the first, whose id does not move to a
+  `~1` twin when a redundant re-declaration is added (review). The drop
+  runs at the ROOT of the walk, so a `.h` that resolves to C inherits it
+  (review found the first draft's post-pass in one caller, and a header
+  publishing two `f` where a `.c` published one: Standing lesson 08-19,
+  the second call site). C++ keeps its two, because
+  `int f(int); int f(double) {}` are two overloads under one qualified name
+  and a by-name drop would lose a real declaration; the C++ twin is the
+  overload problem, not this one's.
+- `int a, b;` stays absent in both: no channel for a file-scope variable,
+  unchanged by design.
+- `int (*fp)(int);` stays absent in C: the declarator that binds the name
+  is a pointer, so C asks PER DECLARATOR (`_cpp_declarator_is_function`,
+  #755's own predicate). C++'s older subtree rule answers `function fp`
+  there; that is #850's, pinned as the one deliberate inequality.
+- A block-scope prototype (`void f(void) { int g(int); }`) declares an
+  external function and stays at file scope, as #833 ruled for C++.
+- `int f(int), g(int);` binds the first name only, in both languages;
+  pinned as found and filed as #852 (#817's mechanism, a fourth spelling).
+
+⚠ Every C prototype is a NEW symbol on unchanged `.c` content and no `.c`
+id moves. In a `.h` that resolves to C, one id DOES move (review): two
+prototypes of one name were `f#function~1`/`~2` and are one `f#function`.
+A prototype beside its definition in a `.h` was already one symbol on the
+released tree and still is (review measured it against `main`, after a
+first draft of this sentence claimed a pair that existed only on the
+branch). `PARSER_GENERATION` 8 names the move. `C_SPEC`'s
+`declaration` gains a sample in `tests/test_declared_forms_extract.py`.
+
+Red on `main`: `29 failed, 26 passed` over the new file and the C member
+file. Green: `1196 passed, 1 skipped` over every test file that parses C plus the node-type ratchets.
+
+### Fixed - a C++ type declared inside a function is owned by the function (#833, #798)
+
+`int f(void) { struct S { int x; }; typedef int L; enum E { A }; }` published
+`S`, `L` and `E` at FILE scope with no owner in C++ and Arduino, while C
+qualified the same bytes under `f`. `search_symbols` for `S` found a type
+that does not exist at file scope, `get_file_outline` listed it beside `f`,
+and two functions each declaring a local `S` collided into `~1`/`~2` twins
+with nothing to tell them apart. Inside a member function the same rule
+qualified the local under the CLASS: `class K { void m() { struct L {}; } }`
+gave `K.L`, as if `K` declared it, and `K::L` names nothing (#798). Both
+found by @jgravelle, #833 while fixing #823 and #798 in #755's review.
+
+⚠⚠ **A function body was not a scope.** `_walk_tree`'s C++ branch moved
+`next_parent` only at a type container or a typedef of an anonymous type,
+so a `function_definition`'s body inherited the function's own parent and
+scope; the generic branch every other language uses (C included) makes
+every symbol the parent of what it encloses. A `function_definition` is a
+scope boundary now, in the one site every C++ and Arduino symbol passes
+through. Fixed for the free function alone it would have left #798, a guard
+written against a spelling (Standing lesson 09-01); this is #698's owner
+question from the other side, where a non-member GAINED an owner.
+
+⚠ **Rulings:** a function-local type is qualified under the function and
+owned by it, as in C and Python (`Host.real.inner`), never absent: #699
+demotes same-named locals in ranking and never filters them. Inside a member
+function the local is `K.m.L`, owned by `m`. The anonymous local struct's
+method is `K.m.lm`, owned by `m` (the struct emits no symbol, the
+fall-through `main` already had). The body counts as one class-scope level
+for `kind`, because the only function DEFINITION a C++ function body can
+hold is a method of a local class (no nested functions; a lambda is not a
+symbol), so that method is `method` whether its class is named or anonymous.
+A block-scope PROTOTYPE (`void inner(int);` inside a body) declares a
+namespace-scope function and stays at file scope with no owner, as `main`
+answered it; review caught the first draft publishing it as `df.inner`, a
+`method`, a wrong kind and owner where `main` was right. Measured beside it
+and filed, not folded in: a local function-pointer variable and a lambda
+variable are published as file-scope functions on `main` and here alike
+(#850), because `_is_cpp_function_declaration` reads the declarator's
+shape; and the retirement ledger entry arrived in the fix commit rather
+than its own, an unenforced rule recorded as harness F-37.
+
+⚠ Ids MOVE for every function-local C++/Arduino type, field and method
+(`S` -> `f.S`, `K.L` -> `K.m.L`), named under `PARSER_GENERATION` 8.
+The tracked gap `test_a_cpp_typedef_list_inside_a_function_is_a_known_gap`
+retires with a `harness/retired.json` entry; the C-only local-typedef test
+is widened to both languages, and
+`tests/test_a_cpp_function_local_type_is_owned_by_the_function.py` asserts
+the free-function and member-function answers row for row, C++ equal to C
+for the same bytes, struct/class/union/enum/typedef/alias spellings, two
+same-named locals with two ids, and file scope and class scope unchanged.
+
+Red on `main`: `12 failed, 33 passed` over the new file and the typedef
+file. Green: `491 passed` over the new file, the typedef file and the neighbouring C++ and ratchet files.
+
+### Fixed - Pascal, F# and Nim class members are indexed and owned (#812)
+
+`TAudit = class FTally: Integer; function RunIt: Integer; end` indexed
+`TAudit` and nothing in it. F#'s `type Audit() = let mutable tally = 0;
+member this.RunIt() = tally`, the language's own member syntax, indexed
+`Audit` alone. Nim's `type Audit = object; tally: int` indexed `Audit`. The
+container was the only symbol; a method declared on the type was as
+invisible as a field, so an F# class was a name with no contents. Found by
+@jgravelle probing every class-bearing custom parser after #774/#776/#779/
+#782 (#812); Zig, PowerShell and MATLAB, which lost only the state, are
+#809/#811.
+
+⚠⚠ **The walk never entered the body.** Each of the three parsers matched
+the container node, appended it and returned, so no member node was ever
+named, and a grammar node a parser never names reads as the language having
+no such thing: Standing lesson 09-15 (#698), one file over. The three walk
+the body now and thread the owner SYMBOL through `_member_of` (#788's one
+helper), never a scope string, so every member is qualified AND carries
+`parent` (Standing lesson 08-19: ask the authority). None of the three had a
+row in the member-kind audit, which is why nothing enumerated the hole;
+three rows join it, and `_CONTAINER_KIND` learns that an F# or Nim
+container is a `type`.
+
+⚠ **Rulings, per language, because a member-kind row is a design task and
+not a copy:**
+- Pascal: a `declField` (every name it declares) and a `class var` are
+  `field`; a class-scoped `const` is `constant`; `procedure`, `function`,
+  `constructor`, `destructor` and `class function` declared in the class are
+  `method`; a `property` is `property`. A record is walked the same way.
+- F#: `let mutable` is `field`, `let` is `constant`, `static let` the same
+  (review found it unread: it sits under `member_defn > value_declaration`,
+  a level the first draft never entered), a `let`-bound function
+  is `method` (a private method, which is how it compiles); `member x.M(args)`
+  is `method`; `with get`, `member val` and an argument-less `member` or
+  `static member` are `property`, because a member without a parameter list
+  IS a property in F#. A record's `with member` is owned by the record.
+  `static member val Total` is named from its pattern (review caught the
+  grammar taking `val` as the name and `Total` as the arguments, which the
+  first draft published as a `method` called `val`: an `extra`, worse than
+  the absence `main` had).
+- Nim: an object's fields are `field`, the export marker `*` stripped, in
+  every `case` branch and behind `ref`/`ptr` (review caught the first draft
+  asking for `ptr_type`, a node the grammar never emits; it is
+  `pointer_type`, and `ptr object` yielded nothing while the claim said
+  otherwise: Standing lesson 09-01). A `proc` taking the type as its
+  first parameter stays a module-level `function`: UFCS is call syntax, not
+  membership, so the audit's method role is omitted with that reason.
+
+⚠ One id MOVES: a Pascal class-scoped `const` was emitted BARE (`LIMIT`, no
+owner) and is `TAudit.LIMIT` with an owner. Every other pre-existing
+qualified name is byte-identical. Named under `PARSER_GENERATION` 8, which
+already carries this release's other new-symbol changes. Four Nim node types
+(`object_declaration`, `field_declaration`, `symbol_declaration`,
+`variant_discriminator_declaration`) and F#'s `value_declaration` leave the
+unnamed-declaration inventory because the parsers name them now.
+
+Measured beside it and filed, not folded in: a Nim exported `proc runIt*`
+(#843) and a Pascal implementation-section `function TAudit.RunIt` (#844)
+are absent because each parser asks for a direct `identifier` child and the
+name sits under `exported_symbol` / `genericDot`; a Pascal `interface`
+type's members and F# `abstract` members, `interface ... with` blocks and
+`new()` constructors are unread (#845); a generic Pascal class `TBox<T>` is
+absent entirely (#846); a Nim type declared with a pragma carries the pragma
+in its name, which the new field ids inherit (#847); tree-sitter-fsharp
+spills `with get, set` after a `static member val` out of the type body and
+every later member is lost (#848).
+
+Red on `main`: `16 failed, 40 passed` over the new file and the audit.
+Green: `939 passed` over every test file naming one of the three languages
+plus the node-type ratchets.
+
+### Fixed - Zig, PowerShell and MATLAB class members are owned, and their state is indexed (#809, #811)
+
+`const Audit = struct { tally: u32 = 0, const LIMIT: u32 = 3; pub fn
+runIt(...) }` indexed `Audit`, a `constant Audit.LIMIT` and a `function
+Audit.runIt` with `parent=None`, and no `tally`. PowerShell's `class Audit {
+[int] $tally = 0; [int] RunIt() {} }` indexed the class and an unowned
+method and no `tally`. MATLAB's `classdef Audit` with `properties`,
+`properties (Constant)` and `properties (Dependent)` blocks indexed the class,
+unowned methods and none of the three properties. A member with no `parent`
+is invisible to every parent-keyed reader (the file summary's member count,
+`get_file_outline`'s tree), and a class whose state is absent is told to
+hold nothing. Both found by @jgravelle from the AST scan #788's fix ran over
+every custom parser.
+
+⚠⚠ **A second derivation, three more times.** Each parser threaded the
+enclosing class's NAME down its own walk and rebuilt `f"{scope}.{name}"` by
+hand, discarding the owner Symbol it had built one frame up, while
+`_member_of` (#788) already answered both halves for five other custom
+parsers. The three ask it now; every qualified name is byte-identical to
+before, so `parent` is populated and only one id moves: a Zig `fn` inside a
+container was `function` and is `method`, the kind half D and Solidity had.
+The state was never read at all: Zig's `ContainerField` and container-level
+`var`, PowerShell's `class_property_definition`, MATLAB's `properties`
+entries -- a grammar node a parser never names reads as the language having
+no such thing (#698's shape).
+
+⚠ **Rulings, per language, because the member-kind audit says a row is a
+design task and not a copy:** Zig has no property concept (role omitted);
+its struct field and container-level `var` are `field`, a container-level
+`const` a `constant`; an enum's variants are `ContainerField`s with no
+identifier and are not indexed (the family's decision, #759). PowerShell has
+no readonly class property and no accessor property (two roles omitted);
+every class property is `field`, `static` and `hidden` being lifetime and
+visibility, and the `$` sigil is not part of the name. MATLAB's `properties`
+entry is `field`, `constant` under the `Constant` attribute and `property`
+under `Dependent` (the `get.` accessor form); the existing `get.view` getter
+keeps `method` and its bare name.
+
+New symbols and populated parents on unchanged content, plus the Zig id
+move, so this rides `PARSER_GENERATION` 8, which names it. Three rows join
+`tests/test_member_kind_audit.py` with no `_GAPS` entry, so the cells are
+tracked rather than rediscovered; `tests/test_zig_powershell_matlab_members_are_owned.py`
+asserts each class row for row and pins free functions, file-scope
+constants, enum variants and a nested Zig struct. Red on `main`: `15 failed,
+38 passed` over the new file and the audit. Green: `199 passed` over the new
+file, the audit, `test_file_summary_member_kinds.py`, `test_parser.py`,
+`test_one_declaration_binds_every_name.py`, `test_inventory_reads_every_channel.py`
+and `test_grammar_spelled_forms.py` (PowerShell's `class_property_definition`
+leaves the unnamed-declaration baseline, which the full tier refused
+without).
+
+### Fixed - a Dart extension type is a symbol, and an enum body's data is owned (#819, #820)
+
+`extension type Meters(int v) { int get doubled => v * 2; static const int
+CAP = 1; }` indexed no `Meters` at all, published `doubled` as a top-level
+method with no owner (colliding in ranking with every other `doubled`), and
+withheld `CAP`. Beside it, `enum E { a, b; static const int CAP = 1; int get
+v => 1; }` indexed `E` and owned `E.v` while `CAP` was absent: an inconsistent
+answer inside one construct, which invites more trust than a missing one.
+Found by @jgravelle reviewing #818.
+
+⚠⚠ **Two causes, one list.** `extension_type_declaration` was in
+`DART_SPEC.symbol_node_types` nowhere and in `container_node_types` nowhere,
+#698's `abstract_class_declaration` one language over (#819). And
+`enum_declaration` was a symbol but not a container, so methods reached
+their enum through the walk's parent chain while data asked #818's owner
+gate, which reads the container list (#820): two paths answering "who owns
+this member". The list is the authority both readers consult; both node
+types are in it now. ⚠ The gate kept a second list beside it, the body node
+types a member may sit in, whose own comment said a third entry should make
+it computed; the third (`enum_body`) arrived, the set was listed again, and
+review refused it. The gate asks the container list alone now (not the
+container's `body` field either: a mixin's body carries no field name), and
+a ratchet samples a member in every container the list names, so a sixth
+container cannot withhold its data in silence.
+
+⚠ **Rulings, because both issues asked:** an `extension type` is a `type`
+(a zero-cost wrapper erased at runtime, like `enum` and `type_alias` here;
+`extension_declaration`, which adds methods to an EXISTING type, stays the
+pre-existing `class` outlier). Its representation `int v` is a `field` it
+owns, because it is the type's only state and every member reads it. Enum
+variants `a`, `b` are NOT indexed: no spec indexes enum variants today (PHP's
+cases are #759, open), and Dart alone answering a family-wide question would
+be a second derivation.
+
+New symbols on unchanged content, so this rides `PARSER_GENERATION` 8, which
+names it. `tests/test_a_dart_extension_type_and_enum_own_their_members.py`
+asserts every row of both reported bodies and the property that every Dart
+member has an owner across all five containers; the two-row gap test in
+`tests/test_class_state_is_indexed_in_three_spec_languages.py` failed when
+fixed, as designed, and retires with a `harness/retired.json` entry. Red on
+`main`: `9 failed, 4 passed`. Green: `373 passed` over the new file, that
+file, `test_dart_imports.py`, `test_member_kind_audit.py`,
+`test_one_declaration_binds_every_name.py`, `test_parser.py`,
+`test_retirement_ledger.py`, `test_declared_forms_extract.py` (which gained
+the new node type's sample), `test_inventory_reads_every_channel.py` (the
+representation's channel sample) and `test_grammar_spelled_forms.py` (both
+node types leave the unnamed-declaration baseline).
+
+### Fixed - a C++ template's span ends where the wrapper it starts at ends (#827)
+
+`template<typename T>\nclass Foo { public: int n; };` recorded 49 of its 51
+bytes and stopped before its own `;`: `content_hash` was computed over the
+fragment, and when the `;` sat on a later line, `end_line` disagreed with the
+bytes. Same for a templated `struct` and a member struct template inside a
+class, in C++ and Arduino. Found by @jgravelle reviewing #817.
+
+⚠⚠ **Two halves of one span from two nodes.** `_extract_symbol` widened the
+START of a templated C++ symbol to the nearest `template_declaration` and
+took the END from the inner node. #817 found the identical shape in Go,
+fixed it there, and scoped the fix to Go on purpose, leaving a comment that
+the C++ case was a decision for its own issue. Made here on its own
+measurement: the wrapper's end differs from the item's ONLY for a templated
+class or struct, whose `;` belongs to the wrapper, so the Go-only guard is
+the general rule now and no per-language end rule remains.
+
+⚠ **Decided, and what it is not:** the terminator is included because the
+span is the wrapper's bytes, not because a class should end at `;`. An
+UNTEMPLATED `class Bar { ... };` still records to its `}` -- that `;` is a
+sibling token under the file, not part of any node the symbol is built from,
+in C and C++ alike -- and moving every C-family class in every index does
+not belong inside a fix about templates. Pinned as a control row so the one
+is not read as a promise about the other.
+
+⚠ What moves, on unchanged content: every templated C++/Arduino class and
+struct gains its `;` in `byte_length` and `content_hash`, and `end_line`
+where the `;` sits on a later line. Rides `PARSER_GENERATION` 8, which names
+it. A templated function, alias, function declaration and member function
+template are byte-identical before and after, pinned by
+`tests/test_a_cpp_template_span_ends_where_it_starts.py`. Red on `main`:
+`10 failed, 11 passed`. Green: `160 passed` over the new file, the two Go
+span files, `test_cpp_data_members.py`, `test_a_go_method_belongs_to_its_receiver.py`,
+`test_parser.py` and `test_v1_108_277.py`. No third language sets the span
+node (only cpp/arduino and go do), which answers the issue's last line.
+
+### Fixed - each name in a grouped Go var/const block records its own span (#826)
+
+`const ( P = 1; Q = 2 )` gave `P` and `Q` the same bytes, the whole block, so
+`get_symbol_source` on `P` returned `Q`'s declaration too and every consumer
+reading a span got the block for either name. Same for a grouped `var`, a
+block holding a typed-only spec, and an `iota` continuation. Found by
+@jgravelle fixing #817, which had answered the same question for `type`.
+
+⚠⚠ **A second derivation, and the second one was wrong in its own
+docstring.** `_variable_symbol` and `_constant_symbol` both justified the
+shared span with "a grouped block has no narrower node containing one name
+alone". Go's grammar has one per line, a `const_spec` and a `var_spec`, and
+#817 had already used the sibling `type_spec` under the rule *the widest node
+that addresses this name alone*: the declaration when it holds one spec, so
+the common case keeps the bytes it had, keyword included, and the spec when
+it holds several. That function is `_go_binding_span_node` now and all four
+Go spec types ask it, so the channels cannot answer differently again.
+
+⚠ A spec that itself binds several names (`const D, E = 5, 6`) is the
+narrowest node addressing either, so both record it: the rule, not an
+exception, and never a synthesised range (#414).
+
+⚠ Spans MOVE for every grouped Go `var`/`const` on unchanged content, so this
+rides `PARSER_GENERATION` 8, which names it. `signature` follows the span.
+`tests/test_a_grouped_go_binding_records_its_own_span.py` asserts each form
+and the property that no two symbols in a file share a span. Red on `main`:
+`7 failed, 3 passed`. Green: `136 passed` over the new file and seven
+related ones.
+
+⚠ Measured past Go and decided, not changed: Java's `private int a, b;`
+keeps the declaration for both, because a Java declarator does not carry the
+type (#823's reasoning for C). JS/TS's `let x = 1, y = 2;` is Go's shape (a
+`variable_declarator` addresses `y` alone and carries its initializer) and
+is #837.
+
+### Fixed - a C-family type written as a reference is not a declaration (#830)
+
+`struct S { struct Other *link; };` declared a nested type `S.Other` that the
+file never defines, and `typedef struct S S_t;`, `void g(struct S *p);`,
+`struct S g;`, a cast, a `sizeof` and a local all declared `S` again -- in C,
+C++ and Arduino, for `struct`, `union`, `enum` and (C++) `class` alike. A
+consumer asking where `Other` is defined got this file; `check_delete_safe`
+on the real definition saw a second declaration that does not exist. Found by
+@jgravelle reviewing #797, whose C == C++ equality row would have frozen the
+fabrication in both languages.
+
+⚠⚠ **One node type spelling three concepts, in three spec copies.** The
+grammars spell a definition (`struct S { ... }`), a reference (`struct S`
+in a declarator, parameter, cast, typedef target) and a forward declaration
+(`struct S;`) as one `struct_specifier`, and `C_SPEC`, `CPP_SPEC` and
+`ARDUINO_SPEC` list the node type without asking whether it has a `body`. The
+inverse of #698's lesson (one concept, two node types): a spec that names the
+node type looks complete either way. The rule is one predicate at the walk
+site -- a specifier with no `body` yields nothing -- so all three copies, and
+a fourth, inherit it.
+
+⚠ **The forward declaration is a decision, because the issue asked for one:
+`struct S;` and `class K;` yield no symbol.** A forward declaration carries
+only the name; a header forward-declaring forty classes would otherwise
+publish forty memberless `class` symbols, each a second declaration beside
+the real one. A function prototype keeps its symbol because it carries the
+signature a caller reads.
+
+Symbols DISAPPEAR on unchanged content, so this rides `PARSER_GENERATION` 8,
+which names it. `tests/test_a_c_type_reference_is_not_a_declaration.py`
+asserts every reference position in all three languages and that a
+definition followed by references is declared once; the tracked-gap test in
+`tests/test_a_c_struct_member_is_indexed.py` is deleted and its
+`pointer-to-another-struct` row restored to the equality table. Red on
+`main`: `44 failed, 3 passed`. Green: `172 passed` over the new file and the
+four related ones.
+
+⚠ Measured beside it and unchanged by it: a C file-scope PROTOTYPE yields
+no symbol in any shape (`int f(int);` included) where the same bytes in C++
+yield a `function`; `C_SPEC` has no `declaration` row at all. Its own issue,
+#835.
+
+### Fixed - a C or C++ typedef list binds every name it declares (#823)
+
+`typedef int A, B;` indexed `A` and nothing else, in C and in C++. `B` was
+not mis-kinded or unowned; it was absent, while the same two names on two
+lines both indexed. Reported by @jgravelle from the #817 scan.
+
+⚠⚠ **#817's mechanism one language over, in three spec copies.** The
+declaration carries one declarator per name; `_extract_symbol` returns one
+symbol per node and `name_fields` reads the FIRST declarator, so a
+declaration binding N names yielded one. Go's fix was a spec remap to a
+narrower node the grammar supplies; C has none, so the fix sits at the one
+site every `symbol_node_types` symbol passes through -- a C-family
+`type_definition` with N declarators yields N symbols -- and `arduino`
+inherits it with `c` and `cpp`. Every declarator is named through the SAME
+unwrap `_extract_name` uses for the first, so the two cannot drift.
+
+⚠ **Found by the same measurement and absorbed, because the fix has to name
+each declarator through that unwrap:** C named `typedef void (*Cb)(int);` as
+the literal `(*Cb)` while C++ named it `Cb`. `parenthesized_declarator`
+carries its inner declarator as an UNNAMED child, and the C loop stopped
+there. It is `Cb` now, which moves that id; `PARSER_GENERATION` 8 names it.
+
+⚠ **The span is a decision, not a default, because the issue asked for one:**
+every name of a multi-declarator typedef records the DECLARATION's bytes. A
+C declarator (`*PP`, `Arr[4]`) does not carry the base type that gives the
+name its meaning, unlike a Go `type_spec`, so the declaration is the smallest
+node that says what `B` is; nothing joins to a typedef by byte offset. That
+is the #826 shape, taken on purpose and recorded in the test's docstring.
+
+⚠ Measured on the way and filed as #833, not folded in: C++ publishes ANY
+function-local type at file scope with no owner (struct, typedef, enum
+alike), where C qualifies it under the function -- the scoping cousin of
+#798. Pinned as a tracked gap that fails when it closes.
+
+`tests/test_a_c_typedef_binds_every_name.py`; red on `main`: `28 failed,
+3 passed`. The `c` and `cpp_typedef` rows leave `_GAPS` in
+`tests/test_one_declaration_binds_every_name.py`.
+
+### Fixed - a C struct or union indexes its members (#797, #825)
+
+A C `struct` or `union` yielded no member symbols at all. `struct S { int x;
+double y, *z; };` indexed as the bare name `S` in a `.c` file while the
+identical bytes in a `.cpp` file indexed `S`, `S.x`, `S.y` and `S.z`. A C
+struct is nothing but fields, so every C struct in every index was an empty
+name. Reported by @jgravelle in #797 (found while fixing #755) and again by
+the #817 scan as #825.
+
+⚠⚠ **A channel wired into one copy of a spec reaches one language, and this
+was the THIRD copy.** #755 gave C++ and Arduino the data-member channel
+(`field_patterns=["field_declaration"]`, one declarator walk that answers
+pointer, array, bit-field, N-names and function-pointer members); the C
+grammar spells the member with the same node type and `C_SPEC` was never
+given the entry, nor was `c` in `_CPP_FIELD_LANGUAGES`, the set both the
+dispatcher and the anonymous-owner guard read. The 09-15 standing lesson
+(#698) one spec over. Nothing new is written: C is added to the set and the
+spec, and inherits #755's whole answer, including that a file-scope object of
+an anonymous struct publishes no fields rather than bare ones.
+
+⚠⚠ **The enumeration built to catch this class could not see C, and the
+reason is worth more than the fix.** `test_member_kind_audit.py`'s gate asked
+which specs can emit a `class`. A C struct is a `type`, so C was reachable by
+the gate's own rule and excluded by it, and `_GAPS` read empty over a
+language that indexed no members. **A guard's reach defined by a KIND is a
+guard over whichever languages share that spelling.** The gate asks for a
+declared container now; measured before widening, that pulls in rust (already
+sampled) and C, and C has its row.
+
+⚠ **Measured, not assumed, before touching the spec:** #797 warned that
+making `struct_specifier` a container might move a nested struct's id from
+`In` to `Outer.In`. On `main` it was `Outer.In` with `parent` set already, so
+no id moves; `test_the_nested_struct_keeps_the_qualified_name_it_had` pins
+it. The new symbols on unchanged content ride `PARSER_GENERATION` 8, which
+now names #797 beside #698 and #821.
+
+`tests/test_a_c_struct_member_is_indexed.py` asserts C's answer EQUAL to
+C++'s for twelve declarator and container shapes rather than restating each
+by hand -- a second table would be a second copy of the thing that drifted.
+Red on `main`: `17 failed, 2 passed`.
+
+### Fixed - a member's owner survives the renumbering that disambiguates it (#821)
+
+Two same-named containers in one file are disambiguated to `~1` and `~2`. Their
+members were not: each one's `parent` still held the owner's PRE-renumbering
+id, which no emitted symbol carries.
+
+⚠⚠ **The member was PROMOTED TO TOP LEVEL, not lost.** `build_symbol_tree`
+appends a child whose `parent` does not resolve to `roots`, so
+`get_file_outline` rendered a field or a method beside the classes as though
+it were module scope, and nothing raised. ⚠ The consumer is
+`get_file_outline`; `get_class_hierarchy` does not read `parent` at all, and
+an earlier draft of this entry named it. That is #771's residue.
+
+⚠⚠ **It reached ordinary source in three languages, not only duplicated
+code.** An Objective-C `@interface` and `@implementation`, a C# `partial
+class` and a Swift `extension` are each one type written in two places — the
+language's own supported idiom — and all three produce two symbols with one
+id. `tests/test_a_class_member_carries_its_owner.py` had NAMED all three as
+shipping in that state since #771 and said this was "a different fix in a
+different layer". This is that layer; all three are closed.
+
+⚠⚠ **The twin is chosen by CONTAINMENT, because that is the relationship that
+made the member a member.** The stale string cannot say which twin it meant —
+both twins had it — and neither a name nor a line is an identity. The member's
+bytes sit inside exactly one twin's bytes.
+
+⚠⚠ **A member no twin CONTAINS has an UNKNOWN owner and is given none, and
+the first draft of this fix got that wrong in the reported corpus.** Rust
+attaches a method to an `impl` block and Go to a receiver, so neither sits
+inside its type and containment cannot answer. The draft fell back to the
+first twin, which filed `#[cfg(windows)]`'s method under the `#[cfg(unix)]`
+struct — valid, compiling Rust, and the exact shape #821 was filed from.
+**That is worse than the defect it replaced**: a dangling pointer is visibly
+broken and a wrong owner is not. `qualified_name` still carries
+`Conf.only_win`, so only the pointer says unknown. Absence over fabrication.
+
+⚠ **What that costs, stated because a reader diffing two indexes will find
+it**: the rule also discards the *coincidentally* correct attributions. Go's
+`A` and Rust's `only_unix` really do belong to the first twin, and both read
+unknown now. That correctness was an artifact of `setdefault` order — it was
+ordered, never established — so it is the same price `has_any()`'s tri-state
+pays, and the alternative is publishing the ones that are wrong alongside it.
+
+⚠⚠ **The guard that already described this defect could not fail on it.** Its
+helper stripped the `~N` off the member's parent AND off the container's id
+before comparing, so `~1`, `~2` and the un-suffixed id all compared equal — a
+comparison that cannot tell the right owner from the wrong owner from an id
+nothing carries. The helper is deleted and that file asserts exact ids, which
+is a strengthening.
+
+⚠⚠ **A consumer was compensating, and the compensation had to move in the
+SAME commit.** `_heuristic_summary` stripped the ordinal off its own side so
+that a member carrying the pre-renumbering id would still match, which made
+each namesake report the UNION of both halves' members. With the producer
+fixed, stripping there and a suffixed `parent` here match nothing at all — the
+workaround's failure mode is exactly the empty summary it was written to
+prevent. Each declaration now reports the members IT declares: for a
+`partial class` that is a per-declaration count rather than the class total,
+so the sentences sum to the file's real member count instead of reporting
+every member once per namesake, and a Swift `extension` no longer claims the
+class's method as well as its own property.
+
+⚠ `_disambiguate_overloads`, the pre-merge copy of the renumbering, was still
+in the tree, called by nothing, carrying this defect unfixed. Deleted: the
+ordinal rule has one implementation. `_ORDINAL_SUFFIX` goes with its only
+reader.
+
+### Fixed - a Go `type ( ... )` block binds every name in it (#817)
+
+`type ( A int; B int; C struct{ N int } )` indexed `A` and nothing else. Not
+mis-kinded, not unowned: `B`, `C`, `C`'s field and the ownership of every
+method on either were absent, while the same types on separate `type` lines all
+indexed. `var` and `const` had already been given the grouped form — #428 and
+#731 — so this was the third channel to arrive with one symptom, found
+separately each time.
+
+⚠⚠ **The diagnosis in the issue was wrong about where, and correcting it is
+the fix.** It read the gap as `type_patterns` naming the declaration with
+nothing walking down from it, and proposed sharing `_extract_go_variables`'
+descent. But `type_patterns` is read by NOTHING in the tree (#725, asserted by
+`tests/test_grammar_spelled_forms.py`): Go's type came from
+`symbol_node_types`, where `type_declaration` mapped to `type`, and
+`_extract_symbol` returns `Optional[Symbol]` — **at most one symbol per node,
+by signature.** No name extractor could have made that channel bind three
+names. There was no descent to share and no fourth channel to add: the
+declaration was the wrong node. `type_spec` is what binds one name, it is a
+direct child in both spellings, and the generic walk already visits it — so
+docstrings, interface keywords and lexical nesting keep working because none of
+them were ever Go's own code.
+
+⚠⚠ **A span must address one name, and that is what makes the grouped form
+work at all.** #778's receiver pass joins a method to its owner by BYTE OFFSET.
+Give three grouped types the declaration's span — which is what the `var` and
+`const` channels do with their own grouped blocks — and all three share one
+offset, so the join collapses and two of the three can own nothing. The rule is
+**the widest node that addresses this name alone**: the declaration when it
+binds one name, the spec when it binds several. The narrowest node is the spec
+in both spellings and taking it uniformly is simpler, but it moves the offset
+of every Go type in every existing index and drops `type` from every signature,
+to fix the minority form. Ungrouped types record byte-identical spans.
+
+⚠ **#778 needed a guard that this retires.** Because a grouped declaration
+yielded one symbol, the receiver pass had to refuse every spec but the first by
+name, or `B`'s fields went to `A`. The refusal is deleted and the test that
+pinned it is inverted rather than restored (Practice 9) — it was the gap's
+witness, not a guard on the pass. `harness/retired.json` carries the lesson.
+
+⚠⚠ **The guard that should have caught this passed, and correctly.**
+`tests/test_declared_forms_extract.py` asserts that every declared node type
+extracts its declared kind, and **every sample in it binds one name** — so the
+row for Go's type declaration was true and blind at once, and no row in that
+table can see this defect class for any language. The scan the issue asked for
+ran over thirteen spellings and found three more:
+`tests/test_one_declaration_binds_every_name.py` is the enumeration, with
+**#823** (a C and C++ `typedef int A, B;` binds only `A`) and **#824** (an F#
+`and`-chained type declares only the first) tracked as gaps that fail this
+suite when they close.
+
+### Fixed - a Rust struct's fields are indexed, and the oracle that scores us learned them first (#786)
+
+`struct Audit { tally: i32, pub limit: u8 }` reported the type and neither
+member. This was the last cell of the member-kind audit, and the only one that
+could not be fixed by wiring up a channel.
+
+⚠⚠ **The extractor was not the obstacle; the instrument was.**
+`fidelity.rust.extra` gates at **0** and is computed by NAME over every symbol
+we emit, with no kind filter — while the `syn` oracle carried no `field`
+definition at all. Emitting struct fields would therefore have failed the fast
+tier *on correct extraction*. The two ways out were to exempt the kind from the
+comparison, which ships the extraction unscored in **both** directions — the
+macro ceiling `benchmarks/rust_fidelity/README.md` already lives with, and not
+a thing to acquire a second instance of — or to teach the oracle. The oracle
+was taught, in the same PR, before a single field was emitted.
+
+⚠ **The omission was recorded and its reason was wrong twice over.** The note
+said fields bind no name another module can reach — a `pub` field is reached as
+`s.field` — and that emitting them "would make the `extra` gate reject correct
+extraction", which held only while we emitted none. Once we do, the *omission*
+is what fails the gate. The justification is replaced, not deleted.
+
+⚠⚠ **`visit_item_struct` did not push its own name onto the scope stack**, so
+fields would have been qualified as bare names — the collision `qual` exists to
+remove, and the defect the Rust harness was rewritten to catch (a set cannot
+count). It pushes now, and because nothing else is emitted from inside a
+struct, regenerating the frozen artifact **removed nothing**: 55 definitions
+became 62, the seven added all correctly qualified (`Config.depth`, `User.id`).
+
+⚠⚠ **An enum variant holds a `field_declaration_list` exactly as a struct
+does**, in the grammar and in `syn`, so a channel gated on the node type alone
+adopts `B { inner: u8 }`'s `inner` as a member of the enum. Both sides gate on
+the holder's owner instead. Variants themselves stay absent, and indexing a
+variant's fields while the variant is missing would be a half-answer.
+
+⚠ A **tuple struct** needs no exclusion on either side: its members carry no
+identifier at all (`ordered_field_declaration_list`; `ident: None` in `syn`),
+so both agree without either being told to. A **union**'s members are the same
+nodes a struct's are and are indexed for the same reason — excluding them would
+need a condition written against the word `union` for no statable reason.
+
+⚠ `tests/test_rust_fidelity.py::test_fields_variants_and_closures_are_not_symbols`
+asserted that `depth` must **not** be a symbol. It was the old decision's
+witness rather than a guard on the new one (Practice 9), so it is inverted, not
+worked around; the variant and closure names beside it are unchanged, which is
+what keeps the change scoped to the thing that moved.
+
+**`_GAPS` in `tests/test_member_kind_audit.py` is now empty.** The burn-down ran
+in five passes, one *mechanism* each rather than one language each: ownership
+(#788), the class state four custom parsers never extracted (#774, #776, #779,
+#782), Go's receiver (#778), the three spec-driven languages (#775, #777, #785),
+and this. ⚠⚠ An empty dict is not a solved problem: `_SAMPLES` covers the
+languages it covers, and #809, #811 and #812 are six languages it has never had
+a row for.
+
+### Fixed - a Dart, GDScript or Ruby class's state is indexed (#775, #777, #785)
+
+A Dart class reported its methods and its getters and none of its state:
+`final int limit`, `int tally` and `static const int CAP` were all absent. A
+GDScript class body's `const LIMIT` and `var tally` were absent. A Ruby class's
+`LIMIT = 3`, its `attr_accessor :view` and its `@@count` were absent. Six cells
+of the member-kind audit, three languages' worth of class members that
+`search_symbols` could not find and that `get_file_outline` counted as nothing.
+
+**This is the fourth mechanism in the family and the first that is purely
+spec-driven.** #788 gave five custom parsers an owner, #774/#776/#779/#782 gave
+four of them the class state they never extracted, and #778 resolved Go's
+receiver. Every language left reaches `_walk_tree` through a `LanguageSpec`, so
+nothing here is a parser reproducing a rule it could have asked for — the
+channels already existed and these three grammars were not wired into them.
+
+⚠⚠ **GDScript's `const` needed no channel at all, and that is the whole
+diagnosis.** `const_statement` was already in `GDSCRIPT_SPEC.constant_patterns`
+and a file-scope `const LIMIT = 3` already indexed. The gap read as "GDScript
+constants are missing" and was really "the gate stops at file scope", so the
+fix is one name in `_CLASS_SCOPED_CONSTANT_LANGUAGES` — the authority that
+question already had — rather than a second extractor answering it again.
+
+⚠⚠ **All three grammars spell a member and a LOCAL with the same node type**,
+so each channel is gated on what encloses the declaration. Ruby is the sharpest
+case: `LIMIT = 3` and `total = 1` are both `assignment`, and `attr_accessor
+:view` and `include Comparable` are both `call`. The node type alone would
+index half a Rails model as members, so a Ruby member must be a direct
+statement of a class or module body, and a `call` must name one of the three
+`attr_*` forms. Reading `attr_accessor` alone would have been fixed for that
+spelling only; `attr_reader` is the commoner of the three in real Ruby.
+
+⚠ **`final` is not `constant` in Dart**, by the same rule that made C#'s
+`static readonly` a field: a member is a constant only where the language's own
+dedicated constant keyword is used, and Dart has `const` to reserve the word
+for. Apex and Groovy went the other way on `static final` because neither has
+one. Ruby's constant is the grammar's own `constant` node on the left of the
+assignment, asked of the parser rather than inferred from SCREAMING_CASE.
+
+⚠ **Two declarator spellings in Dart**, because an ordinary member is an
+`initialized_identifier` and a `static const` member is a
+`static_final_declaration`: different node types for the same job, so reading
+one indexes half a class. `int a = 1, b = 2;` is two members, and one
+`attr_accessor :a, :b, :c` is three.
+
+⚠ **The Dart holder set was measured, not named.** A mixin and an extension are
+containers too, so the obvious set was `class_body`, `extension_body` and
+`mixin_body` — and there is no `mixin_body`, because a `mixin_declaration`
+holds a `class_body`. That third entry would have been inert: a guard written
+against a spelling the grammar does not use.
+
+⚠⚠ **Two guards shipped in the first draft with no witness, and one of them
+fabricated.** `attr_accessor` is always an implicit-self call, and the Ruby
+branch read only the called name — so `foo.attr_accessor :sneaky` in a class
+body published `Audit.sneaky`, an owned property appearing nowhere in the
+source, where the old tree emitted only the class. A missing member is a gap; a
+member that does not exist is a lie told to every consumer downstream, and this
+family fails toward absence. The Dart holder gate had the mirror problem: an
+`extension type` holds a `class_body` exactly as a class does, but
+`extension_type_declaration` is in no spec's `container_node_types`, so its
+member was published with **no owner** — #698's complaint and #788's whole
+subject, one language later. The gate now asks `DART_SPEC.container_node_types`
+rather than keeping a second copy of it.
+
+⚠⚠ **And the tests that claimed to guard the Ruby scope rule did not.** All
+three stayed green when the gate was deleted, because their fixtures are
+excluded by a different mechanism — a lowercase left-hand side is not a
+`constant` node, and `puts` is not an `attr_*` name. They passed for a reason
+unrelated to the rule. The shapes that actually reach the channel and are
+stopped by scope alone — an uppercase assignment, a `@@` variable and an
+`attr_accessor` call, each inside a `def` — are pinned now, and each one goes
+red when the gate is removed. A test asserting a file-scope Ruby constant kept
+its bare name was fully vacuous in the same way: Ruby emits no file-scope
+constant at all, so its loop body never ran.
+
+⚠ **A GDScript top-level `var` is still absent, and it is pinned as a limit.**
+A GDScript file is itself a class, so a file-scope `var` is arguably script
+state — but it is the same `variable_statement` node as a function local, and
+separating them at file scope needs a locality predicate this change does not
+have. Widening without it would publish every local in every script.
+
+### Fixed - a Go method belongs to its receiver, and a struct's fields are indexed (#778)
+
+`func (a *Audit) RunIt() int` came back as `RunIt` — not qualified by its type,
+not owned by it, owner unknown. And an `Audit` struct's fields were absent
+outright, so the type reported as holding nothing.
+
+Go was the one ownership issue deliberately left out of #788's family. The other
+five qualified their members correctly and lost only the `parent`; Go's method
+was not qualified **at all**, because Go attaches a method to a RECEIVER instead
+of nesting it inside the type, so there was no enclosing node to be a parent.
+Same symptom, different cause, and mixing the two would have made one change
+carry two mechanisms and one of them badly.
+
+**Resolving a receiver needs a second pass, and the language forces that.** Go
+does not require a type to be declared before a method on it, so a walk that
+resolved a receiver as it met one would answer `unknown` for every method
+declared first — and would look correct on any fixture written in the other
+order. `_attach_go_receivers_and_fields` runs against the types the walk found,
+and a test declares the method before its type.
+
+The receiver's type sits at three different depths — `(i ID)` is bare,
+`(a *Audit)` wraps it in `pointer_type`, `(b *Box[T])` wraps that in
+`generic_type` — and all three resolve to the base type. A struct's
+`X, Y int` is two fields, and an EMBEDDED field, which the grammar gives no
+name at all, takes its type's base name, because `a.Reader` is how Go itself
+reads it.
+
+⚠⚠ **Ids MOVE for every Go method.** `make_symbol_id` is keyed on the qualified
+name, and `RunIt` becomes `Audit.RunIt`. Go is the only language in this family
+that pays that; the other five were already qualified and only lacked a parent.
+
+⚠⚠ **Neither join is on a name or a line, and review is why.** The first draft
+keyed owners on the bare type name, so a function-local `type Config` inside a
+function body took the package-level `Config`'s method and field: the method got
+a wrong owner, a wrong qualified name and a wrong id, the local type gained a
+field it does not declare, and the real type was left reporting zero members —
+the very symptom this entry is about, reintroduced one scope over, and worse
+than the defect it replaced because the old answer was an honest absence. Only a
+package-level type can carry a method in Go, so both loops read the file's own
+children and never enter a body. Methods were keyed on the start LINE, which
+collapsed `func (a A) X() {}; func (a A) Y() {}` — the second won and `X` stayed
+bare. gofmt splits that line, which is why such a defect survives review and
+surfaces in the one file nobody formatted. Both joins are on the declaration's
+start byte now, and a miss leaves the member with today's answer.
+
+⚠ **A struct nested anonymously inside a field contributes the field and not
+its own members**, and a grouped `type ( A …; B … )` yields one symbol for the
+whole declaration, so B stays unindexed rather than having its fields filed
+under A. Both under-report in the direction the tree already did; both are
+pinned as limits so a later change has to move the line rather than discover it.
+
+⚠ **A receiver whose type is not in this file keeps today's answer.** Go allows
+it to live in another file of the same package, this parser sees one file, and
+inventing an owner id would be worse than leaving the method unqualified.
+Absence over fabrication, and a test holds the line so cross-file resolution has
+to move it.
+
+⚠ **Kotlin is NOT swept in, and that is a ruling.** Scanning for other languages
+that attach a callable to a type declared elsewhere found exactly one more:
+`fun Audit.r()` is a top-level `function` with no owner. A Go method IS the
+type's method and can reach unexported state; a Kotlin extension is resolved
+statically, cannot see private members and is not inherited, so calling it a
+member would claim more than the language does. Swift already disagrees with
+Kotlin here — its `extension` nests in the grammar and is owned — and that
+inconsistency predates this change. It is pinned rather than harmonised inside a
+PR about Go.
+### Fixed - an Apex, D, Groovy or Objective-C class's state is indexed (#774, #776, #779, #782)
+
+Four custom parsers walked a class body and emitted the METHODS only. Every
+field, every property and every constant in those four languages was absent from
+the index — not mis-kinded, absent — so a reader asking what a class holds was
+told it holds nothing, and the file summary's member count had nothing to count.
+The member-kind audit had carried nine ABSENT cells for them since it was
+written.
+
+This is the second mechanism in the same functions #788 touched. That change
+gave these parsers their owner and closed Solidity alone, because Solidity was
+the only one of the five already extracting its state. Ownership went first on
+purpose: doing this first would have meant writing owner-less `Symbol(...)`
+constructions and immediately fixing them. Every construction added here asks
+`_member_of`, and a test asserts it.
+
+**Each grammar was read, not guessed.** Apex hangs a member off
+`field_declaration > variable_declarator` and spells a PROPERTY as the same node
+carrying an `accessor_list`. D uses `variable_declaration > declarator` with the
+mutability qualifier as a `type_ctor` inside the type. Objective-C has two
+different nodes for the two words — an ivar inside `{ }` and `@property` — which
+is #743's split, where the channel is not the kind. Groovy has no field node at
+all: a field is a `command` of bare identifier units carrying an `=`.
+
+**Two of the kinds are rulings and they point opposite ways**, so each is pinned
+alone. Apex and Groovy are Java-shaped and have no `const`, so `static final` IS
+their constant spelling — the opposite of C#'s `static readonly`, which #770
+ruled a `field` precisely because C# also has `const` and `readonly` is the
+keyword you choose when you do not mean one. D's `immutable` is a `constant` for
+the same reason in reverse: Solidity's `immutable` is a `field` because Solidity
+also has `constant`, and D has no such pair. The shared rule under all four is
+the one `_STATE_KIND_REFINERS` already states — a member is `constant` only when
+the language's own dedicated constant keyword is used.
+
+`_csharp_has_modifier` is `has_modifier_keyword` now. C# hangs `modifier` nodes
+directly off a declaration and Apex wraps them in a `modifiers` node; one
+grammar question, two shapes, and writing the second as its own function is what
+the 08-19 standing lesson names.
+
+**Groovy's rule is the operator's source text, and three grammar facts forced
+that.** It has no field node and no assignment node — only `unit` runs and
+`operators` tokens — and `==` is TWO ADJACENT `operators` nodes each holding a
+bare `=`, `!=` is ONE `operators(=)` with the `!` dropped from the tree
+entirely, and `<=` puts an `ERROR` node where the name would be. So no count,
+adjacency or ERROR test can separate a declaration from a comparison: the
+contiguous operator run must read exactly `=`, with nothing but whitespace
+between it and the name. Eighteen statements are parametrized over that rule,
+declarations and calls alike.
+
+⚠ **What that rule costs, measured per shape rather than summarised.** Five
+kinds of real Groovy field go unindexed: one with no initialiser (`int tally`
+and the call `foo bar` are the same two bare units), one whose type is generic
+(`Map<String, Integer>` splits on its own comma and the name lands in an ERROR
+node), and one with a comment or a newline between the name and the `=`, which
+the whitespace clause needed to reject `!=`. Every one fails toward absence,
+never fabrication, and each is pinned so a later widening has to move a line and
+re-run the calls this keeps out.
+
+⚠ A name on the VALUE side is not a declaration: `int a = b = 1` declares `a`
+and assigns to an existing `b`, and emitting `b` would invent a member.
+
+⚠⚠ **The reported list was not the list, again.** Probing every class-bearing
+language with a custom parser found six more whose class state is absent and
+which the audit does not sample — Zig, PowerShell and MATLAB index their methods
+and lose their state (#811); Pascal, F# and Nim index the container and no
+members at all (#812). The reusable part is why nothing was tracking them: the
+audit's `_SAMPLES` covers 22 languages, and
+`test_every_class_bearing_spec_is_sampled_or_excused` is one-directional by
+construction for custom extractors, because a custom parser declares no
+`symbol_node_types` for the check to read. The enumeration built to stop this
+defect class being found one language per fix cannot see the languages it does
+not sample.
+
+⚠ **Scope, stated because the node type does not draw it.** D spells a
+module-scope `int x = 1;` with the same `variable_declaration` it uses inside an
+aggregate, so this extracts members only. Whether a module-scope D binding
+should be indexed at all, and as which kind, is its own decision with #807's
+shape; a test asserts it has not been made here by accident.
+
+Multi-declarator lines give every name, in Apex, D and Groovy alike —
+`int a = 1, b = 2` is two fields. Reading only one of them would index half a
+line.
+
+Nine `_GAPS` entries close with this. No custom-parser language has one left;
+every remaining row in the audit is spec-driven.
+
+### Fixed - a class member carries its owner, not just its owner's name (#788)
+
+Apex, D, Groovy, Objective-C and Solidity are parsed by custom extractors rather
+than the spec walk. Each threaded the enclosing class's NAME down its own walk
+and rebuilt `f"{scope}.{name}"` by hand, so every member came back correctly
+qualified — `Audit.runIt` — and carrying `parent=None`. That makes it invisible
+to every parent-keyed reader: the file summary counts members by `parent`
+(#760), `get_class_hierarchy` cannot place them, and the class reports as having
+no members at all. Four of the five get both readers back; see the
+Objective-C carve-out below.
+
+The owner's id was not unavailable. Each parser had computed it one frame up, as
+`make_symbol_id(filename, qualified, kind)`, and threw it away.
+
+**All five ask one function now.** `_member_of(parent, name)` returns the
+qualified name and the owner id together, and the parsers thread the owner
+SYMBOL instead of a scope string. The alternative — `parent=owner.id` at each of
+the ~15 `Symbol(...)` constructions across the five — is the sixth, seventh and
+eighth transcription of one rule, and `java_field_is_constant`'s docstring
+already says what happens next: it works on the day it is written and drifts
+into a gap later.
+
+⚠ **What the ratchet beside it does and does not cover, measured.** It walks the
+ASTs of those five functions and fails on a re-transcription inside them, in
+either spelling — an f-string or a `+ "." +` — and a companion test asserts the
+positive half, that each of the five calls the helper and passes a `parent`. It
+is a hard-coded list of five: a sixth parser inherits nothing from it, and
+widening the scan would fire on the other 22 custom parsers that build a dotted
+name from a module path, an arity or a namespace. The parametrized tests are
+what grade the five. And a parser can pass `parent=` at one construction and
+not another: dropping it from the NESTED-class site alone left every ratchet
+green, so `test_a_nested_class_owns_its_members_and_is_owned_itself` pins both
+links of `Outer -> Inner -> member` in the three languages whose walks recurse,
+and `test_a_d_aggregate_owns_its_enum_and_its_template_too` closes the last two
+sites no fixture reached. All 12 owner sites across the five are gated, each
+demonstrated by deleting it and watching exactly one test fire.
+
+⚠⚠ **Objective-C gets the qualified-name half only, and that is #771, not this.**
+`@interface Audit` and `@implementation Audit` are two symbols with one id, so
+`_disambiguate_overloads` renumbers the CLASS to `~1`/`~2` while the member's
+`parent` names the un-suffixed id. `build_symbol_tree` requires
+`symbol.parent in node_map`, so `get_class_hierarchy` still leaves ObjC members
+unplaced — measured at this commit, byte-identical to before. The file summary
+strips the ordinal and does benefit. C# `partial class` and Swift `extension`
+have shipped in that state since #771; this change neither fixes nor worsens it,
+and no consumer errors on the dangling id because all five guard membership
+before dereferencing.
+
+Two kinds move with it, and for the same reason: Solidity has had free functions
+since 0.7.0 and D spells a free function and a method with one node type, so
+both called every contract or class method a `function`. The owner is what
+separates them — the question `_member_of` has just answered, not a second rule.
+A Solidity `modifier` stays a `function`; it is not a method in Solidity's own
+vocabulary and moving it would re-id a released language for a question nobody
+asked.
+
+⚠ **Populating `parent` moves no id.** `make_symbol_id` is keyed on the
+qualified name, and every member of these five was already qualified
+`Owner.member`; `test_the_qualified_name_does_not_move` is the witness, and it
+passed on the red tree. The ids that do move are the two kind changes above.
+
+⚠⚠ **The reported list was not the list.** An AST scan for a custom parser that
+builds a dotted name and never passes `parent=` found twelve more beyond the
+five; probing each narrowed it to three with this exact defect — Zig, PowerShell
+and MATLAB (#809). They are deliberately not in this change: none has a row in
+the member-kind audit, and Zig's kind half moves ids. The scan is what made the
+gap a tracked issue rather than a rediscovery.
+
+⚠ `tests/test_member_state_is_not_a_constant.py::test_solidity_ownership_is_a_separate_issue_and_still_open`
+was written to fail when this arrived, and it did. It is retired into
+`harness/retired.json` and replaced by
+`test_solidity_ownership_arrived_and_this_is_the_witness`, which records which
+way the cell moved rather than only that it was broken. The lesson it carried —
+a cell can be HALF fixed, so the gap register is per cell — is kept.
+
+⚠ #774, #776, #779 and #782 stay open. Each also says "some class members are
+not indexed", which is the second mechanism in the same five functions and ships
+next, on top of this helper.
+
+### Fixed - a member you can reassign is not a constant (#769, #770, #787, #788)
+
+A C# field and auto-property, a Swift `var`, a Scala `var` and a Solidity state
+variable were all indexed as `kind="constant"`. A reader filtering `constant` on
+a C# repo got every field, property and event in it, and a reader filtering
+`field` or `property` got none of them.
+
+`LanguageSpec.symbol_node_types` maps a node type to a LITERAL kind, and four
+specs answered `constant` for every member they bound without ever consulting
+the declaration's own keyword. #741 settled this for JS/TS ("a JS `let` is not a
+constant") and #732 refused the same shortcut for Kotlin; nothing carried the
+question to the next four languages.
+
+**The spec now declares what the member IS and a predicate only narrows it.**
+`field_declaration` is a `field`, `property_declaration` a `property`, both C#
+event forms likewise, and Swift's two property forms are `property` — which is
+Swift's own word for a class member and what Kotlin's `var` already carries
+(#732). `_csharp_member_kind` and `_swift_member_kind` remove exactly one case
+each, the one the map cannot see: `const` and `let`.
+
+⚠⚠ The first draft put every rule in the predicates and left the specs
+advertising `constant`. `tests/test_declared_forms_extract.py` failed on
+`csharp.event_declaration`, which is its whole purpose: what a spec advertises
+is what the product must emit. The spec was wrong and the predicate was covering
+for it.
+
+⚠ **Scala needed no predicate at all** and is deliberately absent from the
+registry: it spells `val` and `var` as different node types, so the map answers
+alone. A language belongs there only when one node type carries both meanings.
+Its `var_definition` also leaves `constant_patterns`, where it disagreed with
+`symbol_node_types` about the same node — inert today (`_extract_constant` has
+no Scala branch, so nothing was double-emitted) and the #732 configuration
+waiting for someone to add the missing branch.
+
+⚠ **One ruling, argued rather than inherited: `static readonly` is a `field`.**
+Java's `java_field_is_constant` requires both `static` and `final` because Java
+has no other way to spell a constant. C# has `const`, so `readonly` is the
+keyword you choose when you do not mean one; Solidity's `immutable` is the same
+shape beside its `constant`. The rule the four share: a member is `constant`
+only when the language's own dedicated constant keyword is used.
+
+The kinds published in a file summary move with them. `Defines Cs class (1
+method, 2 constants)` reads `(1 method, 1 field, 1 property)`, and #760's
+disclosure that the summary could publish a word the parser got wrong is
+withdrawn — `test_naming_the_kind_publishes_whatever_the_parser_decided` was
+pinned to the wrong output and is inverted, not retired, the way
+`test_cpp_is_not_this_issue` was when #755 closed.
+
+⚠ **#788 is half of its issue.** Its Solidity members are qualified by the
+contract's name and carry no `parent`, so its cell stays in `_GAPS` and it
+closes with the ownership family (#774, #776, #779, #782, #778), not here.
+
+⚠⚠ **A binding with no type to belong to is a `variable`, not a member kind**,
+and the first draft of this change got that wrong: a Swift top-level `var` came
+out `property` with `parent=None`. #769 says it in one sentence -- "`variable`
+is the module-scope word and a class member belongs to a type" -- and this fix
+had taken the class half. `KIND_ORDER`'s own entry for `variable` gives the
+cost: reusing a member kind for a module binding mixes it into every consumer
+asking about a class's members. The demotion is generic rather than per
+language for the languages it covers. Found in review; the fixture held only
+class bodies, so nothing in the change could fail on it (#699's lesson, inside
+the fix for it).
+
+⚠⚠ **The demotion NAMES its languages (`swift`, `scala`) and Kotlin is the
+reason.** The first draft applied it everywhere and turned Kotlin's top-level
+`property` -- published since #732 -- into `variable`, which would be wrong a
+second way: `variable` is defined as a module-scope MUTABLE binding and a Kotlin
+top-level `val` is immutable without being SCREAMING_CASE, so
+`kotlin_property_is_constant` has already declined to call it a constant.
+Neither word is obviously right, and the decision moves ids in a released
+language, so it is **#807** rather than a silent ride-along here. The two
+languages in the set are safe by construction: their refiners turn every
+immutable module-scope binding into a `constant` first, so whatever still
+carries a member word is reassignable -- Swift from `_swift_member_kind`, Scala
+from its spec map, since Scala has no refiner. The exclusion is pinned by a
+test, so widening it is deliberate.
+
+⚠ The demotion's condition is **no type to own it**, which is wider than module
+scope: a mutable FUNCTION-LOCAL takes `variable` too, with its function as
+parent. That is the right answer -- a local is a member of nothing -- and it is
+asserted, because an earlier draft of the rule's comment said "module scope"
+while the branch already fired on locals.
+
+Ids move for these members (`Cs.counter#constant` becomes `Cs.counter#field`).
+⚠ `PARSER_GENERATION` is NOT bumped: #732 took it 7 to 8 and that bump is still
+under `[Unreleased]`, so any index a release of this can reach re-parses under
+it already.
+
+⚠ **#806 is filed from this change and is NOT fixed here.** Five tools
+(`get_group_contracts`, `get_repo_map`, `get_repo_outline`,
+`get_symbol_importance`, `find_implementations`) carry a literal kind set that
+predates `field` and `property`, so a member arriving under its real kind is
+excluded outright or ranked by an unchosen default. The gap is older than this
+fix -- Java fields, PHP and Kotlin properties, C++ data members and Python/JS
+class state already land there -- and this widens it to four more languages,
+which is what made it visible. `STATE_KINDS` exists for exactly this and
+`file_summarize` already asks it (#760).
+
+### Fixed - a class constant is owned by its class, in every language that has one (#780, #783)
+
+A Java `static final` field, a PHP class `const` and a Kotlin `const val` were
+indexed with `parent = None` and a bare qualified name. `Audit.java`'s `LIMIT`
+came back as `LIMIT`, not `Audit.LIMIT`, and belonged to nothing.
+
+A member with no parent is invisible to every parent-keyed reader, which is what
+makes this a defect and not a naming preference: the file summary counts members
+by `parent` (#760), so a PHP class whose only members are constants reported as
+having none, and `get_class_hierarchy` could not place them.
+
+The mechanism is one line and it had a language name in it. `_constant_symbol`
+hardcodes `qualified_name = name` and takes no parent, because for the
+file-scope languages it was written for that is the right answer. `_walk_tree`
+is the only place that knows the owner, and it repaired the bare name there --
+under `if language == "rust"`. Rust got the repair because the Rust fidelity
+harness could see the loss once it learned to compare qualified names, and
+nothing scores Java, Kotlin or PHP the same way. The condition is now
+`parent_symbol is not None`, which is the question actually being asked.
+
+⚠ The fix cannot widen what is EXTRACTED. The gate above this line already
+decided which constants become symbols, so every constant reaching the repair is
+one that gate admitted; a file-scope constant still has no parent and keeps its
+bare name, asserted in both directions.
+
+⚠ Kotlin carries no issue and is fixed here because
+`tests/test_class_constant_owner.py` asserts the property over
+`_CLASS_SCOPED_CONSTANT_LANGUAGES` rather than over the two languages that were
+reported. The audit that found #780 and #783 could not see the Kotlin cell at
+all: its Kotlin sample reaches the `property` channel.
+
+Ids move for these members (`LIMIT#constant` becomes `Audit.LIMIT#constant`).
+⚠ **Two constants of the same name in one file stop being told apart by an
+ORDINAL and start being told apart by their owner.** `class A { const K = 1; }
+class B { const K = 2; }` minted `x.php::K#constant~1` and `~2`; it mints
+`x.php::A.K#constant` and `x.php::B.K#constant` now. The symbol count does not
+move — `_disambiguate_overloads` was already separating them — so this is
+readability and id stability, not a recovered symbol: a `~2` is assigned by
+source order and moves when a class is reordered, where the owner's name does
+not.
+⚠ `PARSER_GENERATION` is NOT bumped, for the reason #735's and #743's entries
+give: #732 took it 7 to 8 and that bump is still under `[Unreleased]`, so any
+index a release of this can reach re-parses under it already.
+
+Found by the member-kind audit (`tests/test_member_kind_audit.py`); both cells
+are updated and both `_GAPS` entries deleted, which is the register's own
+closure path.
+
+### Fixed - a language's discard is not a symbol (#763, fix by @fathirramadhan-web)
+
+Go's blank identifier was indexed as a constant. `_` binds nothing and cannot be
+referenced, yet every one of them was indexed as `_`, so a file with several put
+several same-named entries into every ranking. `const ( _ = iota; KB; MB )` gave
+the index a `_` beside `KB` and `MB`, and two discards in one file collected
+`~1`/`~2` ordinals on top.
+
+@fathirramadhan-web found the fix and proposed it in PR #765: drop the discard
+where each name is read, so a real name declared beside it survives. The CLA was
+still unsigned when the PR's window closed, so none of that PR's code is in this
+change; the implementation and tests here were written independently, and the
+credit for finding the fix is theirs.
+
+The rule went one layer down from where it was proposed, because the report was
+itself the result of fixing one channel: #741's review gave Go's `var` channel a
+`_` skip and left the `const` channel named in a comment. **A discard dropped
+per channel is dropped in the channels someone remembered**, so it is dropped
+once, in `parse_file`, before disambiguation.
+
+⚠⚠ **An allowlist of languages, never a rule about the spelling, and the first
+draft of the allowlist was itself four spellings of the property.** My probe
+found the discard indexed in Rust (`const _: () = ...`, the static-assertion
+idiom), Swift and Scala; review ran a wider one and found OCaml (`let _ = main
+()`, the entry-point idiom) and Nim, whose two discards collected the same
+ordinals this fix removes for Go. Julia joins them: an all-underscore identifier
+is write-only there. A test fails if the allowlist and the
+cases in its test file ever disagree.
+
+Every KIND is dropped, not only constants: Go's `func _() {}` is the
+compile-time-assertion idiom and `type _ int` is legal, and neither can be
+referenced any more than `const _` can. A backticked Scala `` `_` `` is a name
+someone chose; it keeps its backticks and its members.
+
+In JavaScript, TypeScript, Python, PHP, Perl, Ruby, Lua and C# `_` is an
+ordinary identifier (lodash, gettext) and stays; the JS and TS direction was written as a
+test before the fix. Only the bare underscore counts, with one exception that
+review found: `_x` is a name everywhere, and `__` is a name everywhere except
+Julia, whose rule is that ANY all-underscore identifier is write-only, so `__`
+and `___` are dropped there too. ⚠ Not
+ruled on: Gleam, Zig, Kotlin, Elixir and Java emit a `_` symbol for source that
+is not valid in those languages (`const _ = 1` is not Zig; a Java field cannot
+be named `_` since 9), so nothing a user can write is affected and they are
+left alone (Elixir's `def _` could not be confirmed invalid). Haskell, F#, Dart,
+C and C++ emitted no `_` symbol in review's probe; Python emits none for a `_`
+ASSIGNMENT and keeps `def _()`, which is why it is in the list above. Existing indexes are re-parsed by the unreleased
+`PARSER_GENERATION` bump already in this block.
+
+### Fixed - a lock older than the process holding its PID is not that process's lock (#728, @Matt-hew93)
+
+`get_watch_status` and `list-repos` reported a repository as watched because
+the PID in its `_watcher_*.lock` was alive. On the reporter's machine that PID
+belonged to an `OpenConsole.exe` created a month after the lock was written. The
+repo had not been watched since, its index went stale, and everything said
+healthy. A new watcher would also decline the folder as already claimed.
+
+#450 (`1c7fa623`) closed PID reuse by recording the holder's creation time and
+comparing it exactly. It left one case on liveness alone: a lock with no
+`create_time`, because "there is nothing to compare against". ⚠⚠ **That is every
+lock written by a pre-#450 version, and a stale lock is by definition an old
+one** -- the fix could not reach the population it was for. (The reporter's lock
+is dated 2026-08-17 and #450 was committed 2026-08-13, so an older installed
+version wrote it: the population is versions, never dates.) Fixing a producer does not fix
+its history.
+
+There was something to compare against. Every lock ever written records
+`started_at`, and a process cannot hold a lock that was written before the
+process existed. A holder created more than five minutes after `started_at` is a
+recycled PID. A genuine holder was created BEFORE it wrote its lock, so its
+difference is negative, while a recycled PID's is the age of the stale lock.
+
+⚠⚠ **The rule compares against a timestamp frozen when the lock was written,
+so it is not step-proof, and review found the weak direction is the common
+one.** On Linux a process's creation time is `btime` plus ticks, and `btime`
+moves with every clock step: a forward correction larger than the margin (a
+board with no RTC, a WSL2 or VM clock that lagged through host sleep) makes a
+GENUINE legacy holder read as recycled. A false stale is the destructive
+verdict, because `acquire` unlinks the file and a second watcher starts beside
+the live one. So on Unix a stale verdict on a legacy lock is checked against
+positive evidence first: every lock writer this project has shipped holds
+`flock(LOCK_EX)` for the life of the process, and a refused probe proves a live
+holder whatever the timestamps say. Exercised for real under WSL. Windows has no
+flock layer; there a false stale needs a BACKWARD step over the margin between
+process creation and the lock write. The process registry has no flock either,
+so a stepped clock can mis-prune a legacy diagnostics row, never start a watcher.
+
+The rule lives in `_is_live_holder`, which `inspect`, `acquire` and the process
+registry already share, so `sprawl_report`'s pre-#450 rows inherit it; a test
+fails if any caller stops handing over `started_at`. UNKNOWN is never a verdict:
+an unparseable `started_at` or an unreadable creation time keeps the holder
+live, as before.
+
+⚠ **Three existing tests were this defect's witnesses**: two of #450's own, and
+the sprawl-hint test, which the full tier found after the touched files were
+green. Each dated a lock or a registry row to 2020 while naming the live test
+process, then asserted it live: a row years older than the process holding its
+PID, which is the report. The property each guards is kept (a genuine legacy
+holder stays live); the fixtures are dated by the process that writes them now.
+
+Not taken from the report: expiring field-less locks by age, which would kill a
+genuine long-running legacy watcher where this rule does not, and matching on
+the executable name, since `python.exe` is every Python program. Platforms with
+no creation-time source (macOS) keep liveness alone for the TIMESTAMP rule,
+unchanged from #450.
+
+⚠ **One behaviour change the probe brings, on every Unix:** a lock whose recorded
+PID is DEAD but whose flock is still held -- a forked child that inherited the
+descriptor -- now reads as held and blocks `acquire`, where it used to be
+reclaimed. Something does hold the lock, so the verdict is right; but the
+`LockHolder` that `inspect` returns still names the recorded PID, which is not
+the process holding it. On macOS every lock carries `create_time: null`, so
+this reaches modern locks there too. On a filesystem where flock is a no-op
+(some NFS mounts) the probe proves nothing and the clock-step limit stands.
+Thanks to @Matt-hew93 for a report that carried the lock contents, the process
+table and the contrast case where the check works.
+
+### Fixed - Haskell extracted no symbols at all (#722)
+
+A valid Haskell file with a data type, a newtype, a type synonym, a class and a
+function indexed as an empty list, and had for the life of the language. The
+grammar was installed and parsed the file without error, which is why a
+"supported" row said nothing about it. There were two causes and either one
+was sufficient.
+`HASKELL_SPEC` declared five node types and a name field for none, so every
+declaration resolved to no name and was dropped. And `type_synon` is a node
+type the grammar never emits: upstream spells it `type_synomym`, its own typo.
+Found by the map-agreement ratchet written for #712.
+
+Naming the fields would not have been enough. One Haskell function is several
+sibling nodes, a signature plus a node per pattern-matched clause, so the
+generic walk would have indexed a function once per clause and handed out
+`~1`/`~2` ordinals (the #763 shape); `main = ...` is a node type (`bind`) the spec never
+listed; a class method is usually a signature and nothing else; and the `->` of
+a type is a node the grammar also calls `function`. Haskell has its own
+extractor now. A signature and its clauses are one function spanning all of
+them, with the signature as its signature. Classes and instances are owners
+(`instance Shape A` and `instance Shape B` are two), and their methods belong
+to them. `where` and `let` bindings are locals and are not indexed. Haddock
+comments are docstrings, including on a module's first declaration, which sits
+outside the node a sibling walk reads; a block comment (`{- | ... -}`) loses its
+delimiters. A `-- ^` comment documents the item BEFORE it, so it is never read
+forwards: the fourth review found a constructor's note published as the
+docstring of the unrelated function below it. A signature written over several
+lines is kept whole. A class or instance head ends where its body starts, and a
+type's signature is its whole declaration. Every signature has its comments
+removed from the tree and is capped at 200 characters with a trailing ` ...`.
+One known absence: a forward doc with a later line that starts with `^` loses
+its docstring, the safe direction. Literate Haskell (`.lhs`) was on the supported row and yielded
+nothing in either style; bird tracks and `\begin{code}` blocks are both read
+now, a block marker may carry options (`\begin{code}[hide]`) while the environment
+must be named `code` exactly, and the prose is
+blanked in place so every span indexes the original file. Names, signatures
+and docstrings are read from the blanked view, or a several-line signature in
+a bird-track file publishes its `>` characters; review found that one, in the
+gap between two fixes that each had a test.
+
+⚠ The first draft of that extractor hardcoded its node types, and the #745
+register failed every Haskell row: removing a spec entry changed nothing, so the spec
+was a second copy nobody consulted, the mechanism this project keeps paying
+for. The extractor reads node types, kinds and name fields from `HASKELL_SPEC`.
+
+Not indexed, stated: an operator defined infix (`s |> x = ...`) carries no name
+field in this grammar, while the prefix form `(|>) s x = ...` has one and is
+indexed. Pattern bindings (`(p, q) = ...`), type and data families, an
+associated type inside a class, `foreign import` and Template Haskell splices
+are not declared forms. In `a, b :: Int` the signature joins `a` only. A bird-tracked line inside a
+`\begin{code}` block is not unlit. Closing #722 emptied two tracked-gap registers, and
+both guards loop inside the test, so an empty register passes instead of
+spending a skip. Existing indexes re-parse under the `PARSER_GENERATION` bump
+already in this block.
+
+### Fixed - a delete preflight reads the runtime hits it was given (#717, @Torolosko)
+
+`check_delete_safe` and `get_group_contracts` asked `runtime_calls` for
+`SUM(hit_count)`. The column is `count`, and `git log -S` finds no commit that
+ever called it anything else: both queries were wrong from the day they were
+written (`58901412`, `07b8e507`). Each caught the `OperationalError`, logged it
+at DEBUG and returned `None`, which every caller reads as "no runtime evidence".
+
+⚠⚠ **So ingesting traces changed nothing on the surface built to act on them.**
+A symbol with no static references and live production traffic graded as
+deletable, where the verdict should be `runtime_observed`. The reach was four
+surfaces, not the two reported: `check_edit_safe` and the deletion-safety
+investigator import the same helper.
+
+It survived because no test of these tools inserted a `runtime_calls` row. The
+phase-4 and phase-7 runtime tests do, for other readers and with the right
+column; the tests of `check_delete_safe`, `check_edit_safe` and
+`get_group_contracts` asserted only the no-data path, so these two queries never
+executed against a populated table. The new tests insert through the database `index_folder`
+creates and contain no `CREATE TABLE`, because a fixture written from the
+consumer's idea of the schema would carry `hit_count` and pass.
+
+The two helpers were copies, so the query lives once now, in
+`runtime.confidence.symbol_hit_count`, and a test refuses a returning copy. A
+second test compiles every statement in `src/` that names a `runtime_*`,
+`scip_*` or `diagnostics` table against the shipped schema: any verb, JOINs,
+f-strings, and the prefix of a concatenated statement. It found only these two
+sites. ⚠ Its first draft was scoped to the spelling `SELECT ... FROM runtime_`,
+and review planted `hit_count` behind `find_hot_paths`' `JOIN runtime_calls rc`
+and watched it pass; it also waved through any statement it could not compile,
+which is the branch a wrong column would hide in. A statement that cannot be
+compiled fails now.
+A query the schema rejects is logged at WARNING, since that is a defect in this
+package and DEBUG is where it hid for four months. Thanks to @Torolosko for a
+report that named both call sites and the correct column.
+
+### Fixed - a C++ or Arduino data member is a symbol, and a function-pointer member is data (#755)
+
+`class Holder { int probe; };` indexed as a class and nothing else, while
+`void probe();` in the same position was a method. A struct that is nothing but
+data indexed as an empty name. The grammar spells a data
+member and a member function prototype with ONE node type, `field_declaration`,
+told apart by a `function_declarator`; both specs claimed the node type for
+functions, so everything that path declined had no channel to fall to. #735 in
+a second language family, found by #745's behavioural guard and enumerated by
+the member-kind audit, whose four `#755` cells are closed and deleted here.
+
+Data members go through `field_patterns`, the N-names channel #735 added:
+`int a, b, *c;` is one node and three fields. Pointers, references, arrays,
+bit-fields, default values, `static`, `const` and `mutable` all name their
+member; a local VARIABLE is a different node type and is asserted absent (the
+fields of a function-local NAMED struct are its members and are indexed under
+it, like the struct itself). Ownership
+follows how the member is reached: an anonymous union's members belong to the
+enclosing class (`h.u1`), the members of `struct { int ax; } inst;` belong to
+`inst` (`h.inst.ax`, and to the first holder of `} a, b;`), and the fields of
+`typedef struct { int x; } Point;` belong to `Point`. An anonymous struct that
+nothing owns, a file-scope or function-local object, publishes no fields: a
+member with no owner is #698's defect, and one inside a method would have been
+attributed to the enclosing class. That is asked up the WHOLE chain of anonymous
+types: a struct nested inside one nothing owns is not owned either, which the
+first guard, reading one level, got wrong.
+
+⚠ Two ids that `main` already published move with the owner. A function defined
+inside `typedef struct { void m() {} } T;` was `m#function` and is
+`T.m#method`; a method of `struct { void im(); } inst;` inside `class H` was
+`H.im#method` and is `H.inst.im#method`, its parent a field. Both follow the
+same reach rule as the fields beside them. Both channels ask one question per DECLARATOR,
+`_cpp_declarator_is_function`, so `int g(), y;` is a method and a field and no
+name is ever both.
+
+That predicate changed for members. It asked whether a `function_declarator`
+appeared ANYWHERE in the declaration, so `void (*fp)(int);`, a function-pointer
+member, was indexed as a `method`. It asks which declarator binds the NAME now:
+`fp` is a field, `int (*getfp())(int);` and `int &at(int);` are still methods.
+A pointer-to-member (`void (H::*pmf)();`) is a field too: the grammar errors on
+its `H::` and still exposes the name beside the error.
+⚠ File-scope `declaration` keeps the old rule on purpose. C++ has no channel
+for a file-scope variable, so re-grading `int (*gfp)(int);` there would trade a
+wrong kind for an absence.
+
+`arduino` carries its own copy of the spec and got the same line, with its own
+sample in every register. Three older tests went red and each had encoded the
+absence: two file-summary assertions (`(4 methods)`, `(1 method)`) and a
+`test_languages.py` case whose docstring said "not indexed as functions" and
+whose assertion said "not indexed".
+
+Not indexed, stated: a function in a LATER declarator position (`f` in `int x, f();`),
+because the method channel names a declaration's first declarator; a member
+template variable (`template<class U> static U tv;`), which is not a
+`field_declaration`; the fields of an anonymous struct nothing owns, above;
+and plain C struct fields, which need C to have
+containers first and are #797.
+Existing indexes re-parse under the `PARSER_GENERATION` bump already in this
+block.
+
+### Fixed - a file summary counts every kind of class state, and names each one (#760)
+
+A class whose members carry any kind but `field` summarised as having none. Java
+and PHP reach the index through the same channel and differ only in the word
+each language uses:
+
+    Java, 2 methods + 5 fields      ->  Defines A class (2 methods, 5 fields)
+    PHP,  2 methods + 5 properties  ->  Defines C class (2 methods)
+
+⚠⚠ **The file summary is what a reader sees BEFORE opening a file**, so a PHP
+class read as having no state at all -- the symptom #743 and #735 were about,
+surviving one layer up from the fix that closed them.
+
+The cause is one hardcoded string against a vocabulary that has four state kinds:
+
+    field_count = sum(1 for s in symbols if s.kind == "field" and ...)
+
+The vocabulary grew four times: `constant` is the old one, `field` arrived with
+the `KIND_ORDER` tuple itself in #571 (`ef259ce8`), `property` in #732 and
+`variable` in #741/#742 -- so a consumer keyed on one string sees one of four.
+`field` is the string this consumer was keyed on, and it has never been the only
+answer since the commit that introduced it. **"Which kinds are
+declared state" is a property of the KIND VOCABULARY**, so it is answered beside
+`KIND_ORDER` as `STATE_KINDS` and imported -- a second copy in the summariser is
+how this returns for the fifth kind, and
+`test_the_summariser_asks_the_vocabulary_instead_of_naming_a_kind` scans the
+module for a state-kind literal.
+
+⚠⚠ **`STATE_KINDS` says what a kind IS, never where it lives.** `constant` and
+`variable` are reached at module scope AND as class members -- a Svelte
+component's bindings are parented to the component (#752) -- which is exactly
+the mixing `KIND_ORDER`'s own `variable` comment warns about. The PARENT filter
+is what keeps them apart, and widening the kinds is the change that could drop
+it. A component with three bindings summarised as `Defines C class (0 methods)`
+before this and reads `(1 constant, 1 property, 1 variable)` now, which also
+closes the consumer loss #768's entry disclosed.
+
+⚠ **Naming a kind in prose forces a plural rule**: `property` -> `properties` is
+irregular, so `kind + "s"` is wrong, and `plural_kind` is why `1 methods` is now
+`1 method`. A zero count is omitted, so a class with no members has no empty
+parenthetical.
+
+**What is impossible now:** a class member cannot be absent from its file's
+summary because of the word its language uses for it, and a summary cannot name
+a count without naming which kind it counted.
+
+⚠⚠ **Naming the kind publishes whatever the parser decided, and for two
+languages that word is wrong.** Counting only `field` omitted these members
+SILENTLY; naming the kind turns the omission into a visible false statement.
+Measured: swift `class Sw { var count: Int = 0 }` reads
+`(1 method, 1 constant)` for a MUTABLE `var`, and csharp's `private int counter`
+plus an auto-property `Name { get; set; }` both read as `constant`
+(`1 method, 2 constants`). That is #741's own lesson -- "a JS `let` is not a
+constant" -- in two more languages, and it is a PARSER defect this module can
+only report: filed as #769 (swift) and #770 (csharp) rather than papered over
+here.
+`test_naming_the_kind_publishes_whatever_the_parser_decided` pins the current
+wrong output, the way the C++ row below pins #755, so it fails when the parser
+is fixed and the disclosure can go.
+
+⚠⚠ **A nested class borrowed a top-level namesake's members, and this change
+would have handed that leak three more kinds.** The member filter matched
+`parent.endswith(f"::{cls.name}#class")`, which cannot tell `Outer.Inner` from a
+top-level `Inner` -- `::Outer.Inner#class` does not end with `::Inner#class`
+while `::Inner#class` does -- so kotlin's nested `Inner` was reported with the
+top-level one's member and lost its own two. The leak PRE-DATES this change and
+carried `field` alone. Matching the class's own `id` closes it outright; the
+`Foo`/`MyFoo` prefix shape was always safe, so the separator was the defect.
+
+⚠⚠ **Two classes of one name report the UNION of their members, and the
+first draft of the nested-class fix reported NEITHER.** When a file holds two
+same-named classes, `_disambiguate_and_compute_complexity` rewrites the CLASS id
+to `...#class~1`/`~2` and never rewrites its children's `parent` -- so matching
+`s.parent == cls.id` exactly found nothing, and every C# `partial class` and
+Swift `class` + `extension` summarised as empty. That is this entry's own
+symptom, shipped by the remedy for a different one, and no plant could express
+it. The comparison strips the ordinal now. The union is what the old name-suffix
+match produced too, is CORRECT for a partial class (they are one class), and is
+an over-count rather than an absence for the rest; separating them needs the
+producer to renumber children, filed as #771.
+
+⚠ **A second defect closed on the way, found in review rather than aimed at:**
+a class whose qualified name carries a NAMESPACE had its members uncounted, for
+the same reason the nested class did. `tests/fixtures/cpp/sample.cpp` holds
+`cpp/sample.cpp::sample.Box#class`, which does not end with `::Box#class`, so it
+read `Defines Box class (0 methods)` and now reads `(4 methods)`. Every
+namespaced C++, C# or Elixir class was affected. Pinned by
+`test_a_namespaced_class_counts_its_members`.
+
+⚠ **A C++ class still summarises with no members, and that is #755, not this.**
+Its data members yield no symbol at all, so the summary is faithful to the
+index; counting more kinds cannot conjure a symbol the parser never emitted.
+`test_cpp_is_not_this_issue` pins that so the two absences are not confused, and
+fails -- correctly -- when #755 is fixed.
+
+⚠ `signature_fallback` in `batch_summarize.py` also branches on
+`kind == "constant"` and is deliberately NOT changed: it asks a per-kind DISPLAY
+question, not "is this class state", and its `else` already handles every kind,
+so it loses nothing. A shared set there would answer a question it is not asking.
+
+⚠ The one blind guard, found by the non-vacuity pass and recorded because the
+fix was invisible without it: `test_a_module_scope_binding_is_not_a_class_member`
+first asserted `"2 constants" not in summary`, which is true whether or not the
+module constant is counted -- a planted removal of the parent filter left all
+twelve tests green. It asserts the whole string now
+(`.claude/state/evidence/plants.md`, every plant observed).
+
+
+### Changed - a Python class's state is indexed, in every class (#784)
+
+`tally: int = 0` and `LIMIT = 3` in a plain class yielded no symbol, so the
+class read as methods-only to `search_symbols`, the outline and the file
+summary. Not an oversight: #355 indexed annotated names for a dataclass, an
+attrs class or a class with a base NAMED `BaseModel`, and left every other
+class alone on purpose; #428 declined to widen it, to keep symbol counts still.
+The owner reversed both on 2026-09-19, for consistency with Java (#735), PHP
+(#743), Kotlin, Swift and C++ (#755). Enumerated by the member-kind audit, whose
+two `#784` cells are closed and deleted here.
+
+Every binding of ONE plain name in a class body is a symbol owned by its class:
+`x: int`, `x: int = 0`, `x = 0`, and each name of `a = b = 0`. UPPER_CASE is a `constant`, by the module-level
+convention, and anything else a `field`. A `ClassVar` is class state and is
+indexed. Dunders (`__slots__`) are class machinery and stay out, as do tuple,
+subscript and attribute targets, augmented assignments, and anything under an
+`if` or inside a method. A class whose body does not parse yields no state at
+all; that was #355's guard and it reaches every class now.
+
+⚠ The gate that went was also a guard written against a spelling. A model
+that inherits `BaseModel` INDIRECTLY (`class Child(Base)`) matched no name and
+got no fields.
+
+⚠⚠ **This moves symbol counts, deliberately, and moves no grade.** Python
+symbols before and after, from `symbol_growth.txt` of this change: this repo's
+`src/` 4800 to 4831, starlette 713 to 761, httpx 570 to 653, mcp 1559 to 1873,
+pydantic 2604 to 3207. `get_dead_code_v2` and `get_untested_symbols` read
+`function` and `method` alone, so #428's worry about published dead-code grades
+does not hold. Counts do change: `total_symbols`, what competes in a search,
+and the rows `find_dead_code(granularity="symbol")` lists for a dead file.
+⚠ One PUBLISHED figure will move and has not yet: `benchmarks/jcm_reference.json`
+records `fastapi/fastapi` at `symbol_count` 13240, mirrored in the README and
+`benchmarks/results.md`. It is a stamped earlier run, so nothing here is false
+today; the next `run_benchmark.py --reference` re-measures it under this parser
+and moves that cell and its mirrors. By how much was not measured in this change. ⚠ One
+id move: a field of a NESTED dataclass was `Meta.x` and is `Outer.Meta.x`, its
+owner's qualified name. Existing indexes re-parse under the `PARSER_GENERATION`
+bump already in this block.
+
+Three older tests pinned the old rule. `test_v1_108_80.py`'s
+`test_plain_class_fields_not_extracted` and `test_classvar_is_not_a_field` are
+retired in `harness/retired.json`. The second kept PASSING after the change,
+because its one ClassVar was spelled `REGISTRY` and is a `constant` now: it was
+grading the case of a name. And `test_v1_108_281.py` now proves the constant CHANNEL still
+declines a Python class body by switching the class-state channel off.
+
+### Fixed - a destructured JS binding declares names, and a Vue or Svelte script block has bindings (#751, #752)
+
+`const { a, b } = obj` yielded no symbol in javascript, typescript or tsx, and a
+Vue or Svelte component indexed with its own name and almost nothing else. Two
+reports, one shape: a name the extractor could see was there and did not reach.
+
+**#751 -- the declarator's `name` field is a pattern, not an identifier.**
+`_js_declarator_names` required an `identifier` and a destructuring spells that
+field `object_pattern` or `array_pattern`, so the declarator was declined for
+the whole life of that function. `const { useState } = React` and
+`export const { GET, POST } = handlers` are ordinary module surface and the
+second is a Next.js route's entire public API, so a file whose exports were all
+destructured indexed with none of them.
+
+⚠⚠ **The fix is a recursive walk with an ALLOWLIST, and the allowlist is the
+load-bearing half.** A pattern nests, and half the nestings bind something other
+than the name written first: `{ a: renamed }` binds `renamed`, `{ a: { b } }`
+binds `b` ALONE, `[, second]` has a hole, `{ ...rest }` binds through a
+`rest_pattern`. A walk that collected every `identifier` under the pattern would
+publish `a` for the first two -- a name that is a property of the right-hand
+object and is bound to no declaration. **An absence shows up as a missing search
+result; a fabricated symbol does not**, which is the direction #741's member gate
+already took. The bound side is read BY FIELD, because the other side of a
+`pair_pattern` is a `property_identifier` and the other side of the two
+assignment forms is arbitrary code. Planting the naive walk fails the guard
+(`18 failed, 59 passed`, `.claude/state/evidence/plants.md`).
+
+**#752 -- two extractors kept their own copy of a decision that already had an
+authority.** `_parse_vue_symbols` and `_parse_svelte_symbols` matched specific
+framework shapes -- a rune, a Vue macro call, a Svelte 4 `export let` -- and
+emitted them through a local helper that hardcoded `kind="constant"`. An
+ordinary `let count = 0` matched no framework shape and fell through; whatever
+did match was published immutable whatever keyword declared it.
+
+⚠⚠ **A Svelte prop was the worst case of the wrong kind: the parent assigns it,
+so it is the most mutable binding in the file.** It is a `property` now -- a
+declared input on a component these extractors already model as a class, which
+is what that kind means here (#732, #743). ⚠⚠ **`export let` is a prop and
+`export const` is not**, because Svelte does not let a parent set an
+`export const`; the first draft of the fix made both properties and
+`test_svelte4_export_let_is_prop_constant` caught it, which is Practice 9 in
+both directions -- half of that test was the defect's witness and half was a
+real fact nothing else recorded.
+
+⚠⚠ **Widening those branches removed the accident that had been keeping locals
+out.** The old rune/macro check meant a block-scoped `const` had no matching
+right-hand side and was silently never published, so asking for every binding
+makes the locality rule something that must be asked EXPLICITLY:
+`js_binding_is_member`, #741's gate, reused rather than re-derived. That row was
+missing from the first version of the new test file, and a planted removal of
+both gates was not seen at all until it was added; it now fails
+(`4 failed, 24 passed`, `.claude/state/evidence/plants.md`).
+
+**What is impossible now:** a JS/TS binding declaration whose names the grammar
+spells as a pattern cannot index as nothing, in any of the three languages or in
+Vue, Svelte or Astro; and a component's `<script>` bindings cannot be published
+under a kind their keyword contradicts. Astro needed no change at all -- it was
+already asking the shared binder, which is the argument for fixing this one
+layer down, and `test_astro_frontmatter_inherited_the_fix_with_no_astro_change`
+is what fails if it is ever given a fourth copy.
+
+⚠⚠ **A Svelte prop leaves the `constant` bucket, and that is #760's
+documented consumer class.** Measured: `export let title` was
+`('title', 'constant')` and is `('title', 'property')`. `summarizer/file_summarize.py`
+selects `s.kind == "constant"` and `summarizer/batch_summarize.py` branches on
+`kind == "constant"`, so a Svelte component's props leave the constants count
+and enter no other one -- #760's own words, "a consumer keyed on one string sees
+one of them", now with one more kind to miss. **The kind is right and the
+consumer is wrong**, which is why this entry names the loss instead of reverting
+the kind; #760 is the fix and is next.
+
+⚠ `PARSER_GENERATION` is NOT bumped, for the reason #735's and #743's
+entries give: #732 took it 7 to 8 and every one of those entries is still under
+`[Unreleased]`, so any index a release of this can reach re-parses under that
+bump already. This change does alter what the parser emits for files whose
+CONTENT never changes -- a destructured binding becomes a symbol, and a Svelte
+prop's kind change also moves its `make_symbol_id` -- which is the 08-05 #414
+lesson ("fixing a producer does not fix its history"); the pending bump is what
+answers it. The uncovered population is a tree indexed from source BETWEEN the
+commits -- a maintainer's own box, whose remedy is the re-index Practice 11
+already requires.
+
+⚠⚠ **A regression this change introduced, caught in review and measured on
+both refs: an exported function-valued Svelte binding stopped being a symbol.**
+The first draft copied the JS binder's "decline a function-valued declarator"
+line into the Svelte export branch. There that line is a HAND-OFF --
+`_extract_variable_function` emits it as a `function` -- and this walker has no
+such branch, so it deleted the symbol outright:
+`export const load = async () => {}`, a SvelteKit module's whole API, was
+`('load', 'constant')` on `origin/main` and nothing at HEAD. **Borrowing a guard
+also borrows the owner it assumes**, and an absence introduced by an
+absence-closing change is the kind nobody goes looking for. Restored, with the
+three exported spellings pinned. A LOCAL `const fn = () => {}` still yields no
+symbol, as it did on `origin/main`, and is now pinned as a disclosed gap rather
+than left to look like the same defect. Planting the copied line back fails the
+guard (`3 failed, 25 passed`, `.claude/state/evidence/plants.md`).
+
+⚠⚠ **The cost, found by the full tier and not by the touched files: a
+destructured import binding now CROWDS the thing it imports.**
+`const { process } = require('./service')` is a symbol named `process` in
+`main.js`, so a lookup by bare name is ambiguous where it used to be unique --
+which is what broke `tests/test_call_graph_ast.py::test_js_call_hierarchy`, a
+test with no obvious relationship to this change. The new symbol is correct
+(#751 names that spelling explicitly) and the crowding is the real price of
+indexing it, the #699 shape one axis over. Both survive with distinct ids and
+files; the broken test selects by file now, and
+`test_a_destructured_import_does_not_displace_what_it_imports` pins the property
+so the next consumer does not rediscover it by breaking.
+
+`tests/test_js_bindings.py::test_a_destructuring_pattern_is_a_known_separate_gap`
+was written to FAIL when this gap closed and it did; it is retired in
+`harness/retired.json` with the replacement that carries its lesson.
+
+
+### Changed - a JavaScript, TypeScript or TSX class field is a symbol (#781)
+
+`tally = 0;` in a class body yielded no symbol, so a class read as methods-only,
+and a React class component lost every arrow-function handler
+(`onDone = () => {}`) with it. The grammars spell the member `field_definition`
+(JS) and `public_field_definition` (TS, TSX) and no channel named either.
+Indexed under the same 2026-09-19 ruling as Python's class state (#784), and
+enumerated by the member-kind audit, whose five `#781` cells are closed and
+deleted here.
+
+A field whose VALUE is a function is a `method`, the way a module-level
+`const f = () => {}` is already a `function` and not a `constant`. A TypeScript
+`readonly` field is a `constant`, because the language says so; JavaScript has
+no immutable field, so no JS field is one. Anything else is a `field`. `static`,
+`#private`, `declare`, `abstract`, optional and definite (`!`) fields all name
+their member. A computed, string or numeric key (`['k']`, `'quoted'`, `0`) is
+not an identifier and adds nothing.
+What a field HOLDS is still attributed to the field and never to the class
+(#571's guard, asserted again here).
+
+⚠ Two rules protect what was already published, and review found the need for
+both. A function field that SHADOWS a real method (`use = () => {}` beside
+`use() {}`) is a `field`, not a second `method`: as a method it took a `~2`
+ordinal and pushed the real method's id to `~1`, measured on NestJS. And a field
+is published only under a CLASS symbol: a class expression
+(`const C = class { x = 1 }`) has none, so its field came out bare, or owned by
+whatever function enclosed it. Those are withheld until the class expression
+itself is a symbol (#803).
+
+⚠⚠ **This moves symbol counts and moves no grade.** On NestJS
+(`packages/`, 823 files), from `symbol_growth.txt` of this change: 3975 symbols
+to 4533, as 328 fields, 223 more constants and 7 more methods. The grading tools
+read `function` and `method` alone, so only those 7 can reach a grade. An id by
+id comparison (`regression_sweep.txt`) found 0 ids missing, 0 whose kind or
+parent changed, and 0 additions without a parent. Existing
+indexes re-parse under the `PARSER_GENERATION` bump already in this block.
+
+⚠ The channel is gated on the spec and NOT on `_JS_CLASS_FIELD_NODE_TYPES`.
+That set is #571's walker switch, and `test_fix_renames_and_never_removes`
+empties it to reproduce the pre-#571 walk; reading it here made that emulation
+delete fields, which the test caught. Its count literal moved from 5 to 7 (the
+two fields themselves); its property, that the toggle removes nothing, holds.
+
+Not indexed, stated: a TypeScript constructor parameter property
+(`constructor(private readonly svc: Svc) {}`), which is most of a NestJS or
+Angular class's state and is a different node with a different owner (#802);
+and an interface's property signatures, which are not class state.
+
+### Fixed - a Julia macro and every wrapped type head are symbols (#748, #749)
+
+A Julia macro yielded no symbol, and a `struct` or `abstract type` yielded one
+only when its name was bare. Add a type parameter or a supertype -- the ordinary
+case in numerical and interface-style Julia -- and it produced nothing: seven of
+nine type shapes were absent, and the two that worked were the least common.
+
+⚠⚠ **Neither is a ghost, which is what makes them one fix.** All three node
+types are in the compiled grammar and all three are matched by
+`_parse_julia_symbols`. The NAME LOOKUP read a depth the grammar uses only for
+the simplest spelling of each form:
+
+    macro sayhello(x)       signature > call_expression > identifier
+    struct Box{T}           type_head > parametrized_type_expression > identifier
+    struct S <: Super       type_head > binary_expression > identifier
+    struct Q{T} <: Sup{T}   type_head > binary_expression >
+                                parametrized_type_expression > identifier
+
+`_direct_name` asked for a direct identifier child, which a macro does not have;
+`_struct_name` read `type_head > identifier`, which only the bare head has.
+
+⚠⚠ **The third and fourth instance of one shape in one function, and that is
+why the fix is a resolver rather than two patches.** #738 was the first pair:
+the short form's name sits under `call_expression` and the helper wanted a
+`signature`. Its answer was `_callable_name`, ONE resolver asked by the long and
+short forms, which repaired the long form for free. `_type_head_name` is the
+same answer for type heads, asked by `struct_definition` and
+`abstract_definition`; the macro branch asks `_func_name`, because a macro's
+`signature` nests its name exactly where a function's does. **Four name helpers
+were reached one bespoke fix at a time, and a fifth would have been reached the
+same way.**
+
+⚠⚠ **The name is the LEFT operand, never "the first identifier found".**
+`struct S <: Super` mentions two identifiers and declares one, and
+`struct Box{T}` binds `T` for the head. A walk that collected identifiers would
+index a supertype defined in another file, and a type parameter, as declarations
+here -- **a failure worse than the absence it replaces**, because a fabricated
+symbol looks correct in a result list while a missing one is merely missing.
+Both are asserted as their own rows.
+
+⚠ A `binary_expression` is unwrapped by POSITION, not by matching the `<:`
+token: keying on the spelling is the defect class #709 was re-keyed through four
+times.
+
+⚠ `primitive type Bits 8 end` is NOT fixed here and is asserted as a separate
+gap. `primitive_definition` is a node type the extractor does not match at all,
+which is #698's class rather than this one, and it is julia's one remaining row
+in #724's inventory -- the row leaves when a change whose subject it is removes
+it.
+
+Both gap tests that recorded these defects are deleted with `harness/retired.json`
+entries, and `test_the_retired_gap_tests_are_gone_from_the_short_function_file`
+fails if either comes back: a gap test outliving its gap is the shape those
+tests existed to prevent.
+
+### Security - anyio 4.12.1 carries a critical TLS advisory, and the gate found it before a release did
+
+`deps.vuln_max` went red on every open branch at once, which is what a
+dependency floor looks like when the advisory is published rather than the tree
+changed. Two advisories against the locked `anyio==4.12.1`:
+GHSA-82r6-8w77-94w6 (critical -- `TLSStream` encodes host names with IDNA 2003,
+so a certificate can be spoofed for a name that normalises differently under
+IDNA 2008) and GHSA-5p39-cfhj-2xmp (medium -- a process-pool worker blocks
+indefinitely on undrained stderr).
+
+The TLS one reaches us through the HTTP transport, which is the surface that
+terminates TLS. Locked at 4.15.1, and the `http` and `all` extras declare
+`anyio>=4.14.2` rather than `>=4.0.0` -- a floor that admits the vulnerable
+version keeps admitting it after the lock moves, and the lock governs CI, not
+what a user resolves.
+
+### Fixed - three dead literals in two inline extractors, two of which hid a form (#736, #737, #738)
+
+A Solidity `constructor`, a Solidity custom `error` and a Julia short-form
+function all yielded no symbol. Three findings from #724's grammar inventory,
+batched because they live in two functions and share one record.
+
+⚠⚠ **#737 and #738 are #722's shape: the extractor matched a node type the
+grammar never emits.** `_parse_solidity_symbols` listed `error_definition` and
+the Solidity grammar spells the form `error_declaration`;
+`_parse_julia_symbols` tested for `short_function_definition` and the Julia
+grammar has no such kind at all. A literal that matches nothing is silently
+unextractable and **fails no test anywhere** -- `HASKELL_SPEC`'s `type_synon`
+against the grammar's `type_synomym`, twice more. Verified against the compiled
+grammar's own symbol table, never inferred from the node name, and the premise
+is now asserted so a grammar that later adds the other spelling forces a
+re-derivation instead of a quiet divergence.
+
+⚠⚠ **#738's spelling was UNESTABLISHED when the issue was filed, and
+establishing it was the fix.** Asked of the grammar, a Julia
+short form is an `assignment` whose first named child is a `call_expression`.
+**The predicate is the shape of the LEFT side, and that is what keeps the blast
+radius equal to the defect**: an `assignment` is the most common statement in
+Julia, so matching the node type alone would index every variable in every Julia
+file as a function -- the widening #732 took by accident in Kotlin and spent
+three review rounds undoing. Measured, the left side discriminates exactly --
+`call_expression` yes; `identifier` (`x = 1`, and `h = z -> z*2`),
+`index_expression`, `field_expression` and `open_tuple` no. ⚠ A `where` clause
+wraps the call (`k(x::T) where T = x`) and NESTS, so a one-level check silently
+indexes nothing for generic definitions, which are ordinary in numerical code.
+
+⚠⚠ **Review found the `where` unwrap had gone into the short-form helper
+ALONE, so `function f(x::T) where T ... end` still yielded nothing while the
+short form with the same clause worked** -- exactly the short-vs-long
+inconsistency this entry invokes below to decline the qualified forms, created
+in the commit that invoked it. The grammar puts `where_expression` in the same
+position for both, so one shared resolver now answers for both, and **it
+repaired the long form for free** -- a gap that predates #738 entirely. Review
+also named three shapes the first draft called exactly discriminated and did
+not handle: a declared return type (`f(x)::Int = x`), a nested `where`, and an
+operator method (`+(a::P, b::P) = 1`). All three extract now; the full left-side
+table is:
+
+| source | left side | is a function? |
+|---|---|---|
+| `f(x) = x + 1` | `call_expression` | yes |
+| `k(x::T) where T = x` | `where_expression` wrapping one | yes |
+| `k(x::T) where T where S = x` | `where_expression` nested twice | yes |
+| `f(x)::Int = x` | `typed_expression` wrapping one | yes |
+| `+(a::P, b::P) = 1` | `call_expression`, callee an `operator` | yes |
+| `x = 1` | `identifier` | no |
+| `h = z -> z*2` | `identifier` | no |
+| `x::Int = 5` | `typed_expression` wrapping an `identifier` | no |
+| `a[i] = 1` | `index_expression` | no |
+| `a.b = 1` | `field_expression` | no |
+| `a, b = 1, 2` | `open_tuple` | no |
+| `Base.length(x) = 1` | `call_expression`, callee a `field_expression` | declined |
+| `(m::Model)(x) = x` | `call_expression`, callee parenthesized | declined |
+
+⚠⚠ **#736 is an omission that a map entry alone does NOT fix.** The grammar
+gives a Solidity constructor no identifier child -- its named children are
+`parameter` and `function_body` -- so listing `constructor_definition` still
+drops it in silence, because `_first_identifier` returns None. The name is
+BUILT, the way C# operators, conversions and indexers were in #714. That the
+grammar names nothing is asserted, so if it ever does we prefer its name.
+
+⚠ **A third dead literal, and it is REMOVED rather than fixed.** Julia's
+`mutable_struct_definition` is also a kind the grammar does not emit -- but it
+spells `mutable struct X` as an ordinary `struct_definition`, which the branch
+already matched, so unlike the other two it cost nothing and hid nothing. It is
+gone because a reader who checks the grammar after #737 and #738 finds a third
+literal matching nothing and cannot tell which kind it is;
+`test_a_mutable_struct_still_extracts` proves the removal safe, because a
+cleanup that silently drops a language feature is the worse trade.
+
+⚠⚠ **`_INLINE_GHOSTS_FOUND` had NO READER for its whole life** -- one
+definition, one docstring mention, zero assertions -- so both entries could have
+outlived their defects and nothing would have objected. That is "a field written
+by nobody's reader is a defect with no symptom" (#561/#562) inside the
+instrument #724 built to find that class, and it is the same hole #735 found in
+`_CONFIRMED_GAPS` for fixes that close a gap through any channel other than
+`symbol_node_types`. `test_a_recorded_inline_ghost_is_still_a_ghost` is the
+missing sibling of `test_a_confirmed_gap_is_in_the_inventory`, and
+`test_the_inline_ghost_table_is_empty_and_that_is_deliberate` pins the fact that
+the new gate is vacuous today so it cannot sit unnoticed for a second time.
+
+⚠ Out of scope and recorded rather than left silent, and review added a THIRD:
+**Julia types are not indexed unless the name is bare** (#749) -- `struct
+Box{T}`, `struct S <: Super` and `abstract type B <: A` all yield nothing,
+because `_struct_name` reads `type_head > identifier` while the grammar nests
+the name under `parametrized_type_expression` or the `<:` `binary_expression`.
+Seven of nine type shapes, and the two that work are the least common in real
+Julia. ⚠⚠ **That, the macro gap and #738 itself are ONE shape three times: the
+node type is right and matched, and the name helper looks at the wrong DEPTH.**
+It is why this change's fix is a single shared resolver rather than a fourth
+bespoke helper, and why #749 argues for the same treatment of type heads instead
+of a fifth. **A Julia MACRO yields no
+symbol** -- found while building the fixture, filed separately: not a ghost,
+because `macro_definition` is in the grammar and is matched, but `_direct_name`
+takes the first direct identifier child while a macro's name sits one level
+deeper under `signature > call_expression`. The same "the helper looks in the
+wrong place" shape as the short form, in the same function, needing a different
+fix; `test_a_macro_is_a_known_separate_gap` fails when it is fixed. And the
+qualified and callable-object short forms (`Base.length(x) = 1`,
+`(m::Model)(x) = x`) are declined **because the LONG form drops them too** --
+naming them here would make the short form index what the long form cannot,
+which is a new inconsistency rather than a fix.
+
+The inventory went 272 to 270 forms. ⚠ #738 moves it by nothing, correctly:
+`assignment` is not declaration-shaped, so the form it hid was never in the
+inventory and only the inline-literal measurement could see it.
+### Fixed - a JS `let` is not a constant, and a `var` is a symbol (#741, #742)
+
+Two reports, one decision behind both. `let counter = 0` was indexed as
+`kind="constant"`, so every consumer asking what never changes was told a
+reassignable binding qualifies; and `var legacy = 2` yielded no symbol at all,
+so a module written in pre-ES6 JavaScript — or any ES5 transpiler output —
+indexed with no top-level bindings. Both in `javascript`, `typescript` and
+`tsx`.
+
+⚠⚠ **`const` and `let` are ONE node type and `var` is another, which is why one
+spec entry looked complete.** The grammar spells `const`/`let`
+`lexical_declaration` and `var` `variable_declaration`; all three specs named
+the first in `constant_patterns` and the second nowhere. #698's shape exactly —
+a grammar spelling one concept as two node types — with the extra twist that
+the node type they DID name covers a mutable form too.
+
+⚠⚠ **The keyword is a NAMED FIELD, and asking it is the fix.**
+`lexical_declaration` carries a `kind` field holding `const` or `let`, so
+`js_binding_is_constant` reads the declaration's own word rather than guessing.
+A capitalisation heuristic was the available shortcut and it is wrong in both
+directions on the reported cases: `let MUTABLE_CAP = 5` is mutable and
+`const config = {...}` is not. #732 refused the same shortcut for Kotlin in the
+words #741 quotes back at us; nothing carried that answer across, which is the
+mechanism half of this change.
+
+⚠⚠ **The kind is `variable`, APPENDED to `KIND_ORDER`, and deliberately not
+`property`.** #732 added `property` for class state; a module-scope `let`
+belongs to no type, and reusing that kind would mix module bindings into every
+consumer asking what a class declares. `variable` is the word this grammar uses
+(`variable_declaration`, `variable_declarator`) and the word LSP uses for the
+same three-way split against Property and Constant. A kind absent from
+`KIND_ORDER` is refused by `search_symbols`' `kind_filter` check and omitted
+from the published enum, which derives from the same tuple (#571) — so this is
+a wire change as well as a naming one, and the tuple is appended to rather than
+reordered because each existing position is bytes a client has already cached.
+
+⚠⚠ **A fourth channel, `variable_patterns`, rather than a `language == ...`
+branch.** One declaration binds N names (`const A = 1, B = 2`) and
+`_extract_symbol` returns one `Optional[Symbol]` per node, so `symbol_node_types`
+structurally cannot express it — #735's reason for `field_patterns`, and #731
+(Go's package-level `var`) inherits this one. `lexical_declaration` is now in
+`constant_patterns` AND `variable_patterns`, which `_walk_tree` runs
+independently on the same node, so `js_binding_is_constant` is the ONE
+predicate both channels ask: two channels deciding separately emit one `const`
+twice (#735 in Java, #732 in Kotlin).
+
+**Two more defects in the same function, neither in either report.**
+
+⚠⚠ **`const A = 1, B = 2;` bound `A` and dropped `B` in silence.** The branch
+`return`ed on the first `variable_declarator`. Every other N-name language got
+this in #428 — Go, Bash, PHP, Java — and Java's fields again in #735; JS was in
+neither change, so which declarations became symbols depended on whether the
+author used one statement or two.
+
+⚠⚠ **A block-scoped local was published as module state.** The constant
+channel's scope gate is `parent_symbol is None`, and a bare block, an `if`
+body, a `for` body and a `switch` case are not symbols — so at file scope
+`if (x) { const BLOCKY = 1; }` indexed `BLOCKY` as a module constant, and the
+`let`/`var` half of this change would have added two more spellings of the same
+leak. It is #732's round-3 defect one `if` above the Kotlin clause that fixed
+it, and the remedy is the same: `js_binding_is_member` reads the declaration's
+own PARENT against an ALLOWLIST of member positions
+(`program`, `export_statement`, TypeScript's `ambient_declaration`, and a
+`statement_block` owned by a namespace or declared module). **An allowlist
+because the DIRECTION is the rule**: it fails closed to the pre-fix status quo
+for an unlisted member position, where a denylist of local spellings fails open
+into false module state. ⚠ A TS namespace body is a `statement_block`, the same
+node type as a function body and a class static block, so the grandparent
+decides — the set was derived by asking the grammar for the parent of a binding
+in every scope JS and TS can spell, not from a reading of the report.
+
+⚠ Blast radius, and some of it is a narrowing. Every JS/TS repo gains its `var`
+bindings and every `let` moves from `constant` to `variable`, so symbol counts
+rise, `kind="constant"` returns fewer rows for these languages, and a heuristic
+file summary counting constants counts fewer. Bindings in top-level blocks
+disappear, which is the leak above. `find_dead_code` applies no `kind` filter,
+so an unreferenced `let` now enters the dead-code corpus like a Java field does
+since #735.
+
+⚠ `PARSER_GENERATION` is NOT bumped, for the reason #735's entry above gives
+verbatim: #732 took it 7 to 8 and all three entries are still under
+`[Unreleased]`, so every index a release of this can reach re-parses under that
+bump already. The uncovered population is a tree indexed from source BETWEEN
+the commits — a maintainer's own box, whose remedy is the re-index Practice 11
+already requires.
+
+⚠ `variable_declaration` STAYS in the frozen grammar inventory for the three
+languages although it is extracted now, because `_checkable_languages` derives
+the recognised set from `symbol_node_types` alone. That is the gate blind spot
+#746 recorded for `field_patterns`, unchanged here and deliberately not
+widened: "declared in a channel" is not "extracted by it", and java's
+`field_declaration` sat in `constant_patterns` for years while every ordinary
+field was dropped — widening the recognised set by declaration would have
+hidden the widest gap #724 found.
+
+⚠ Out of scope, filed rather than left silent: a destructured binding
+(`const { a, b } = obj`) still yields no symbol, because the declarator's
+`name` is an `object_pattern`; and Vue's and Svelte's own script extractors
+make the #741 decision separately — a Svelte `export let name` is published as
+a constant there, and an ordinary `let`, `const` or `var` in a `<script>` block
+yields nothing at all. Filed as #751 and #752;
+`test_a_destructuring_pattern_is_a_known_separate_gap` FAILS when #751 closes,
+so the pin cannot outlive it.
+### Fixed - a PHP class is indexed with its state, not only its methods (#743, #744)
+
+Two reports, one language, two different causes. `public $prop = 1` yielded no
+symbol in any visibility, and `const K = 3` inside a class yielded none either
+while the same `const` at file scope worked. A PHP class indexed with its
+methods and none of its state — #735's symptom in a second language.
+
+⚠⚠ **#743 is #712's shape one indirection down.** `PHP_SPEC` named
+`property_declaration` in `symbol_node_types`, mapped it to `property`, and
+gave it `name_fields["property_declaration"] = "name"` — and the grammar sets
+no `name` field on that node. Its named children are the modifiers and one
+`property_element` per bound name, each of which carries the name two levels
+down at `property_element > variable_name > name`. A `name_fields` entry
+pointing at a field the grammar does not produce resolves to nothing, so the
+symbol was dropped in silence while every map looked complete. **That is also
+why `property` sat in `KIND_ORDER` as a declared-and-dead kind until Kotlin
+became its first live emitter (#732): that entry named the symptom, this is the
+cause.**
+
+⚠ The `$` is not part of the name. `variable_name` spells `$prop` and its
+`name` child spells `prop`, which is what `$this->prop` writes and what a
+reader searches for.
+
+⚠⚠ **#744 is a SCOPE GATE, and the node type was right all along.**
+`const_declaration` was already in `constant_patterns`; `_walk_tree` gates the
+constant channel on `parent_symbol is None` unless the language is in
+`_CLASS_SCOPED_CONSTANT_LANGUAGES`, and that set read `{"java", "kotlin"}`.
+#428 opened the hole for Java and #732 closed it for Kotlin — PHP is the third
+language with the shape and was considered by neither.
+
+⚠⚠ **The gate has TWO halves and membership buys only one.** With `php` in the
+set, a class constant extracted and an ENUM constant still did not:
+`parent_is_container` is computed from the spec's `container_node_types`, which
+named class, trait and interface and not `enum_declaration`. Found by reading
+the output of the fix rather than the issue.
+
+⚠ **Naming the enum a container buys the constant and nothing else**, which is
+narrower than the first version of this entry claimed. An enum METHOD was
+already owned: PHP spells it `method_declaration`, which `symbol_node_types`
+maps straight to `method`, and `parent_is_container` only promotes a
+`function`. The enum constant it does add comes out BARE, like every other
+class constant here. Caught in review, measured against the pre-change tree --
+and the claim contradicted this change's own test, which asserts
+`("EK", "constant", "EK")` two files over.
+
+⚠ Properties route through `field_patterns` (#735's channel), not
+`symbol_node_types`: `public $a = 1, $b = 2;` is one node and two
+declarations, and `_extract_symbol` returns one `Optional[Symbol]` per node, so
+the second name is structurally unreachable through that map. **`_field_symbol`
+takes a `kind` now, because the CHANNEL is not the kind** — that channel
+answers "this declaration binds N names and is not a symbol in its own right",
+and what those names ARE is the language's own word. Java calls them fields,
+PHP calls them properties.
+
+⚠⚠ **A mutation pass found a defect review would not have.** `_walk_tree`
+re-mints a member's id when it qualifies it, with the literal `"field"` —
+correct while Java was the channel's only member, and wrong the moment PHP
+emitted a `property`: `a.php::C.prop#field` for a symbol whose kind says
+`property`, an id no kind-keyed lookup resolves. Reverting that line left all
+59 tests in the two files green, because every assertion read `name`, `kind`
+and `qualified_name` and none read the id. It reads `f.kind` now, and a test
+holds it.
+
+⚠ Blast radius: every PHP repo gains its class properties and class constants,
+so symbol counts rise and `find_dead_code` — which applies no `kind` filter —
+sees an unreferenced private property as it has seen a Java field since #735.
+An enum gains its constants; nothing about an enum's methods changes.
+
+⚠ One live consumer asymmetry, named rather than fixed:
+`summarizer/file_summarize.py` counts members with `kind == "field"`, so a PHP
+class with five properties summarises as "(2 methods)" where the Java class one
+node type over gets "(2 methods, 5 fields)". Not a regression — PHP yielded no
+properties at all before — and not worth teaching one heuristic summary about
+two kinds inside a parser fix, but it is the price of the per-language kind and
+a reader should not have to discover it. Filed as #760, because the asymmetry
+outlives the release that explains it.
+
+⚠ A PHP class constant keeps the BARE name that Java and Kotlin give theirs
+(`K`, not `C.K`). `_constant_symbol` hardcodes `qualified_name = name` and only
+Rust qualifies at the call site; qualifying PHP alone would make the answer
+depend on which language you asked. Recorded, unchanged, and now asserted so
+the inconsistency is deliberate rather than accidental.
+
+⚠ The frozen grammar inventory GREW by one (272 → 273): `php.property_declaration`
+left `symbol_node_types` and the inventory's recognised set reads that map
+alone, so a form that is now extracted reads as an unnamed gap. **That is the
+blind spot #735 recorded, and the count moving in the wrong direction during a
+fix is the second instance — filed as #757.** Also filed: #758, a tracked-gap
+entry can cite an issue that does not exist, in all three ledgers.
+
+⚠ Out of scope, pinned rather than folded in: a PHP `enum_case` (`case A;`) is
+a node type no spec map names, so enum cases yield no symbol (#759).
+`test_an_enum_case_is_a_known_separate_gap` FAILS when that closes.
+### Fixed - a Go package-level `var` and a Scala 3 `given` are symbols (#731, #734)
+
+Two languages, one class of defect, and the same one #698, #712, #713, #722,
+#732 and #735 were: a declaration form the grammar spells that the spec never
+names. Both were found by #724's inventory rather than by a user, and both were
+confirmed by running the product.
+
+**Go (#731).** A package-level `var` yielded no symbol while a `const` in the
+same file did. `http.DefaultClient` is one of these, and so is every sentinel
+error a package exports -- `io.EOF`, `sql.ErrNoRows` -- which are exactly the
+names a reader searches for and could not find.
+
+⚠⚠ **The asymmetry is invisible from the extractor, which is why it survived.**
+`const_declaration` reaches the index through `constant_patterns`;
+`var_declaration` reached nothing. A reader who opens Go's constant binder sees
+a language whose grouped, multi-name declarations are handled properly and stops
+looking. That is #735's Java case and #732's Kotlin case in a third costume.
+
+⚠⚠ **Go spells a LOCAL `var` with the SAME node type**, so this needed a scope
+gate that #735 did not -- Java spells a local `local_variable_declaration`.
+`go_var_is_package_level` reads the direct parent against an ALLOWLIST, for
+#732's reason: a denylist of local spellings fails OPEN, publishing a
+function-local as package state and moving every symbol count and dead-code
+grade downstream, while an allowlist fails CLOSED to the pre-fix status quo.
+
+⚠⚠ **Go nests its two grouped forms differently, and a binder written by analogy
+drops half of them.** A grouped `const ( ... )` holds its specs directly under
+the declaration; a grouped `var ( ... )` wraps them in a `var_spec_list`. The
+obvious copy of `_extract_go_constants` finds every constant and no variable.
+`test_a_grouped_var_block_binds_every_name` is that case.
+
+⚠ The form rides `variable_patterns`, a CHANNEL this entry introduces, because
+one `var_spec` binds N names (`var C, D = 3, 4`) while `symbol_node_types`
+yields at most one symbol per node. #741/#742 adds JS/TS `let` and `var` to the
+same channel on a separate branch; Go is its only member here. The kind is `variable`,
+appended to `KIND_ORDER` -- that tuple is PUBLISHED in the cached schema prefix,
+so a reorder is a full-rate cache write for every user. No owner is attached,
+unlike a field: module-level state belongs to no type, and qualifying it against
+the enclosing symbol would invent one.
+
+⚠ Two findings came out of probing the fix rather than out of the report, and
+both are recorded rather than folded in. Go's blank identifier `_` was indexed
+as a `variable`; it is the language's discard, cannot be referenced, and several
+can sit in one file, so the channel skips it -- and the CONSTANT channel has the
+same hole for `const ( _ = iota; KB; MB )`, which is filed as #763 instead of
+being changed in passing, because that is a different channel with its own
+history (#428).
+
+**Scala (#734).** A `given` yielded no symbol while the `val` and the `def`
+beside it extracted. `given` is how Scala 3 replaced `implicit val`, so the
+declarations that drive implicit resolution -- the ones hardest to find by
+reading, because the call site never names them -- were the ones missing.
+
+⚠ **One name, one node, so this needed no channel**: `given_definition` carries
+a `name` field, which is exactly what `symbol_node_types` + `name_fields`
+expresses. The channel argument in #735 and #731 applies only to forms binding N
+names, and reaching for it here would have been ceremony. The kind is
+`constant`, the kind the `val` it replaced already takes; a new kind would claim
+a distinction that does not exist and would cost another published-prefix entry.
+
+⚠⚠ **The grammar spells three things `given_definition` and only one has a
+name.** `given Conv = ???` and `given [T]: Ord[T] = ???` are anonymous, and
+Scala synthesises their names from the type at compile time. They stay absent,
+asserted in both directions rather than papered over with the type name: a name
+that appears nowhere in the source cannot be searched for and cannot be told
+apart from a `given` genuinely called `Conv`. `extension_definition` is unnamed
+in the spec too and is in the same inventory, but an extension's methods do
+extract, so that is a smaller separate gap and is pinned rather than fixed here.
+
+⚠⚠ **A structural `given` is a CONTAINER, and this fix regressed its members
+before it fixed them.** `given ordering: Ordering[Int] with { def compare ... }`
+holds members; once the given became a symbol it became their parent, and a
+parent absent from `container_node_types` promotes nothing and qualifies
+nothing -- so `O.compare` (method) became a bare `compare` (function). That is
+#698's complaint, a member losing its owner, arriving through the fix for a
+different form. Measured against `main` in a worktree rather than reasoned
+about, after review asked what the untested shapes did. `given_definition` is a
+container now, which is also the truthful answer: `compare` belongs to the
+given, and it comes out as `O.ordering.compare`.
+
+⚠ The inventory goes **272 -> 271** and both `_CONFIRMED_GAPS` entries leave.
+The two removals are ASYMMETRIC on purpose: `given_definition` leaves the
+inventory because the spec now names it, while `go/var_spec` stays listed and
+only loses its gap entry -- the fix declares `var_declaration`, the node a reader
+opens and the one that wraps every spec of a grouped block, so the row's claim
+that no channel names `var_spec` is still true. What stopped being true is the
+gap entry's claim that the form yields nothing.
+### Fixed - the grammar inventory's recognised set reads all four extraction channels (#757)
+
+`tests/test_grammar_spelled_forms.py` freezes, per language, the
+declaration-shaped node types a grammar emits that the language's spec does not
+recognise. `_checkable_languages` derived that recognised set from
+`symbol_node_types` alone, and a spec has four extraction channels --
+`symbol_node_types`, `constant_patterns`, `field_patterns` (#735) and
+`variable_patterns` (#741). Three of them were invisible to the file whose job
+is naming what is unindexed.
+
+⚠⚠ **The tell is the DIRECTION: closing a gap could make the count go UP.**
+#735 indexed every Java field through `field_patterns`, and
+`java.field_declaration` stayed listed as unrecognised -- that one is on `main`.
+The second was measured on #743/#744's branch (PR #761, merged since), which
+moves `php.property_declaration` out of `symbol_node_types` into the same
+channel: the inventory GREW there **in the change that fixes it**. The two
+figures that measurement carried are not restated, because the base moves with
+every parallel fix. So the artifact a reader consults to pick
+the next gap was reporting indexed forms as gaps, and a fix could make its own
+evidence worse.
+
+⚠⚠ **"Declared in a channel" is not "extracted by it", which is why this was
+correctly left alone twice and why the union ships with a second half.**
+`java.field_declaration` sat in `constant_patterns` for years while every
+ordinary field was dropped, because that channel required `static final`. A set
+unioned by DECLARATION alone would have called the form recognised and hidden
+the widest gap #724 found -- re-installing the defect #735 exists to fix,
+silently, in the instrument that measures it.
+
+So every form the widening suppresses a row for owes a sample in
+`tests/test_inventory_reads_every_channel.py`, and each sample proves the
+channel extracts that form **by deletion**: the node type is removed from every
+channel, the file is re-parsed, and the symbol must stop coming out. Appearance
+alone cannot carry the claim -- a sample has to be legal source, so it carries a
+container the spec also declares, and a container can answer "the kind appears"
+by itself. That was the hollow row review found in #745's guard, one channel
+over. A form that stops extracting now returns to the inventory instead of
+hiding in it.
+
+⚠⚠ **The classification is keyed to the SHAPE, and the rule is INVERTED so an
+unrecognised shape fails closed.** Keying it to a spelling was wrong twice --
+first no rule at all, then a rule over `list[str]` while the canonical channel
+`symbol_node_types` is a `dict[str, str]`, which is the natural spelling for any
+channel carrying a kind. Both versions were the same fail-open shape, narrower
+each time, which is #709's history exactly: re-keyed four times in six rounds,
+and what held was one shared predicate plus pinned cases. So the SCALAR
+spellings are pinned and every other annotation is treated as a collection of
+node types owing one of four classifications. `tuple[str, ...]`, `frozenset[str]`
+and a nested dict now land in the rule by default rather than escaping it, and a
+new scalar KIND fails loudly instead of being waved through. A rule over `list[str]` alone misses the shape the canonical
+channel has -- `symbol_node_types` is a `dict[str, str]`, node type to kind,
+which is the natural spelling for any channel carrying a kind -- so a
+dict-shaped fifth channel walked through the rule written to stop exactly that.
+One predicate over node-type collections now covers both, and #709 is the
+precedent: re-keyed four times in six rounds, and what held was one shared
+predicate plus pinned cases.
+
+⚠ **The scan found a third write-only spec field on its first run.** #725 named
+`type_patterns` and `return_type_fields`; `param_fields` is required
+positionally, so every spec fills it in, and nothing in `src/` reads it. It was
+classified "signature detail" here on the strength of its name until the scan
+disagreed, which is the argument for scanning a classification rather than
+stating one.
+
+⚠⚠ **An UNKNOWN read is not an absence, and the irony is load-bearing.** The
+scan matches a literal attribute, a constant `getattr` and a constant subscript;
+it cannot see `getattr(spec, name)` with a variable -- which is precisely how
+the channels themselves are read here. If the parser adopted that style over a
+spec field, the scan would report a field read on every call as unread and the
+unread test would CERTIFY the classification it exists to refuse. A dynamic read
+in the package that consumes specs now fails loudly instead, the same tri-state
+rule the product applies to `has_any()`.
+
+⚠⚠ **The channel list is one gated roster, not a list two files transcribe.**
+Both readers import one tuple, and `LanguageSpec`'s field roster is pinned: a
+fifth field fails by name and forces one decision, channel or not-a-channel with
+the reason. The classification cannot be the lazy answer either -- a node-type
+LIST classified as a non-channel owes either "nothing reads it", which is
+SCANNED across `src/`, or a named non-extraction read, which is
+`container_node_types` alone and pinned to the file that reads it. That closes
+the recurrence one field over: `type_patterns` is declared by 19 specs and read
+by nothing (#725), so the day something wires it in it becomes a channel the
+recognised set has never heard of, and the only symptom would be this inventory
+quietly listing forms the product extracts. Ten planted defects, ten named
+guards red, each one PREDICTED before it was run.
+
+⚠ Inventory **272 -> 264**: eight rows leave, across go, java, javascript, php,
+rust, tsx and typescript. `docs/harness/ARCHAEOLOGY.md` carries the new count.
+`variable_patterns` is read through `getattr`, so this does not depend on the
+order #741's branch and this one merge in.
+### Fixed - a Swift protocol's requirements and every subscript are symbols (#733)
+
+A protocol indexed as a bare name. `func required()` and `var value: Int { get }`
+inside it yielded nothing, and so did every `subscript`, while an ordinary method
+in a struct beside them extracted. A protocol's requirements ARE the protocol --
+they are the contract a caller reads and the names a caller searches for, since
+the call site writes the requirement's name and never the conforming type's --
+so the one Swift declaration whose members are its whole meaning was the one
+whose members were absent. Found by #724's grammar inventory, which had all three
+node types recorded in `_CONFIRMED_GAPS`, verified by running the product.
+
+The seventh language in the class #698 named: a form the grammar spells that the
+spec never names. ⚠⚠ **And the reflex remedy -- add the node type, add its name
+field -- is right for exactly one of the three, which is why this is not three
+lines in a spec.** Both other forms HAVE a `name` field, and on both it points at
+the wrong thing:
+
+- `protocol_property_declaration`'s `name` field is a `pattern` whose text is
+  **`var value`**, because inside a protocol body the binding keyword sits INSIDE
+  the pattern. The identical field on `property_declaration` in a class body
+  yields the bare name, because there the keyword is a SIBLING. One field name,
+  two nestings, and the entry that works in one place indexes a symbol with a
+  space in its name in the other -- unsearchable, and indistinguishable from a
+  fabricated identity.
+- `subscript_declaration`'s `name` field is a `user_type` holding the RETURN
+  type, so an entry there is not merely useless: every subscript in a corpus
+  would index as `Int`, `String` or `Element`. Its name is BUILT in
+  `_extract_name`, #714's remedy for the three C# forms with no identifier to
+  borrow, and it is spelled **`subscript[]`**, mirroring that fix's `this[]` for
+  the same construct one language over.
+
+⚠⚠ **The brackets are load-bearing and a bare `subscript` would have shipped
+#714's defect past the guard written to prevent it.** `tools/_name_reachability.py`
+is THE ONE ANSWER to whether "no references found" is evidence about a symbol,
+and it asks a property of the STRING: a name that is not a plain identifier
+cannot be a call-site token in any language, so it refuses the absence claim. A
+subscript is invoked as `m[i]` and its declaration's name is never written at a
+call site -- but a bare `subscript` is identifier-shaped, so the predicate would
+have called it searchable and `check_delete_safe` would have returned
+`safe_to_delete` for a member the corpus uses on every line that indexes the
+type. Measured: the mutation that drops the brackets fails thirteen tests,
+`test_a_subscript_in_use_is_not_certified_deletable` among them. The guard would
+not have fired, would not have been touched, and would have been wrong -- a
+guard written against a spelling, where the spelling was one we chose.
+
+That is fixed at the level it belongs to rather than in this one name.
+`test_every_built_name_in_the_extractor_is_unreachable_by_name` classifies every
+`return` in `_extract_name` into three buckets and fails on any built name
+`name_can_appear_at_a_call_site` would accept: returned literals, the literal
+scaffolding of every f-string reachable from a return, and -- the bucket that
+makes the other two mean anything -- a return it cannot show to be a name
+BORROWED from the source, so a built name arriving by a variable or a
+concatenation cannot pass by being unrecognised. The property that whole module
+rests on had never been asserted.
+
+⚠⚠ **Its first version reached one of the three interpolated builders and
+said in three places that it reached all three.** `return f"operator checked
+{token}" if checked else f"operator {token}"` is an `ast.IfExp`, so a test on
+the return's TOP node walks past both C# operator builders while its own
+vacuity floor stays satisfied by the third -- green against an identifier-shaped
+`operator_+`. Found in review by planting exactly that. The scan walks each
+return's whole expression now, the builder count is PINNED so a fourth forces a
+decision, and four planted shapes (a bare literal, an f-string behind a
+conditional, a name behind a variable, a concatenation) are parametrized as the
+non-vacuity pass -- [[a-ratchet-can-pass-against-the-defect-it-names]], in the
+ratchet written to close that very lesson.
+
+⚠ A second round found the same shape one layer in and it is fixed the same
+way: the borrowed-name test was a SUBSTRING scan, so
+`return "get_" + source_bytes[a:b].decode("utf-8")` -- which builds the
+identifier-shaped `get_foo` and carries both substrings -- classified as
+borrowed. It asks the expression's SHAPE now, and that case is the fifth planted
+row.
+
+⚠ **The blanket fix was available and refused.** Descending every Swift pattern
+to its identifier covers the protocol case in one line and silently changes
+`property_declaration`, where `let (a, b) = (1, 2)` binds two names: it would
+publish `a` and drop `b` without a trace. `_swift_bound_identifier` returns None
+for a pattern binding none or several, so that case stays where it belongs --
+a channel, not a name resolver (#731's argument) -- and
+`test_a_tuple_binding_is_a_known_separate_gap` pins today's behaviour in both
+directions so the decision is visible rather than accidental.
+
+⚠ A type may declare several subscripts and they share the built name. That is
+#714's accepted limit, recorded here rather than discovered later: the
+alternative is committing the name to a parameter list that overloads disagree
+about. They stay distinct by id and by line.
+
+Impossible now: a protocol requirement or a subscript that reaches the index
+under its return type, under a name carrying a binding keyword, or not at all.
+The three node types leave the grammar inventory and the `swift`
+`_CONFIRMED_GAPS` entry is deleted, so the record cannot outlive the defect. (A
+before-and-after TOTAL is deliberately not quoted here: the base moves with
+every parallel fix that closes a gap, and a delta pinned to one is stale the
+next time this file is merged. The figure lives in the fixture, which is
+regenerated, and in `docs/harness/ARCHAEOLOGY.md`, which is gated against it.) ⚠ Untouched and still tracked:
+Swift `deinit` (#754, PR #756's gap table) and `associatedtype_declaration`,
+which is in the inventory and has never been confirmed by running the product.
+### Fixed - the spec-map guard checked that a name COULD resolve, never that it did (#745)
+
+`tests/test_language_spec_maps_agree.py` (#712) asks whether a declared node
+type has a way to get its name: an entry in `name_fields`, or a branch in
+`_extract_name`. That is a question about the MAPS. A spec could declare a
+symbol, map it to a kind, give it a name field, produce nothing, and stay
+green — and one did, for the whole life of the PHP spec.
+
+⚠⚠ **The two questions differ by one indirection, and that is where #698,
+#712, #722, #732 and #743 all lived.** `php.name_fields["property_declaration"]`
+says `name`; the grammar sets no such field on that node, so
+`child_by_field_name("name")` returns `None` and no PHP class property has ever
+been indexed. Every assertion in the old guard passes on that.
+
+⚠⚠ **A static scan cannot close it.** The compiled grammar's symbol table
+enumerates node KINDS — that is #724's property A, and it reports clean across
+every declared node type — but it cannot enumerate which FIELDS a grammar
+sets on a node, so the PHP case is invisible to it. Hence a behavioural check:
+`tests/test_declared_forms_extract.py` parses a sample per declared node type
+and asserts the declared kind comes out, the same form
+`test_every_declared_extraction_channel_actually_yields_its_kind` (#735) and
+`_CLASS_SCOPED_SAMPLES` (#732) take.
+
+**142 declared node types across 22 specs, and the first run found 12 failures
+in three classes.** ⚠ The count is re-measured on the current merge; it read
+139 when this branch opened, and #731, #734, #741, #743 and #733 have each
+added or moved forms since. The twelve findings are unchanged — only the
+denominator moved. Four were wrong SAMPLES of mine, two are new defects, and
+the rest were already tracked:
+
+- **#754, new**: a Swift `deinit` yields no symbol while the `init` beside it
+  extracts. The grammar gives `deinit_declaration` no identifier child at all —
+  its only named child is `function_body` — so there is no name to borrow. The
+  name must be BUILT, as #714 built `this[]` and #736 built `"constructor"`.
+- **#755, new**: a C++ and Arduino DATA member yields no symbol, while a member
+  function prototype in the same position does. The grammar spells both
+  `field_declaration` and the spec maps that node type to `function`, so
+  everything the function path declines has no channel to fall to. #735 in a
+  second language family, and `field_patterns` is the channel it needs.
+- **#743** (PHP properties) and **#722** (Haskell extracts nothing) were known
+  and are now pinned by a test that FAILS when either is fixed, so the record
+  cannot outlive the defect. ⚠⚠ #743's entry is already GONE, and it left by the
+  OTHER exit: #744 moved `php.property_declaration` out of `symbol_node_types`
+  into `field_patterns`, so the form stopped being DECLARED rather than
+  stopping being broken. `test_a_known_gap_is_still_a_gap` covers the first
+  exit and `test_the_two_lists_partition_every_declared_form` caught the
+  second — worth knowing before reading either failure.
+
+⚠⚠ **The sample obligation was ONE-WAY, and the merge is what showed it.**
+A declared form with no sample failed by name; a sample for a form nothing
+declares sat green forever, which is how PHP's outlived the declaration it
+was evidence for. `test_no_sample_describes_a_form_that_is_not_declared` is
+the mirror, and a stale sample is not deleted work — PHP's moved to
+`tests/test_inventory_reads_every_channel.py`, where the form is now
+recognised. The rule is that it lives where the form is declared.
+
+⚠⚠ **A row asserts TWO things, and review found the second one missing.** The
+declared kind must come out AND must stop coming out when the node type is
+removed from the spec. Without that second half one row was hollow:
+`rust.associated_type`'s sample needs a `trait` to be legal Rust, `trait_item`
+is ALSO mapped to `type`, and the row passed with `associated_type` deleted
+from the spec entirely. **A sample needs a container, a container is a declared
+form too, and a check asking only whether the kind APPEARS can be answered by
+the wrapper.** The deletion is the assertion on every row now, so a carelessly
+written future sample cannot reintroduce it -- #745's own defect class, inside
+the file written to find it.
+
+⚠ **The samples are deliberately unavoidable.**
+`test_every_declared_node_type_has_a_sample` fails BY NAME for a declared form
+with no sample, so a spec cannot grow a form that nothing exercises — the
+alternative, iterating the samples, passes by DELETION.
+`test_the_two_lists_partition_every_declared_form` closes the other route: a
+form parked in the tracked-gap table stops being checked, so both halves are
+asserted and nothing can be in neither.
+
+⚠ **The one allowance is asserted in the strict direction.** Four forms exist
+only inside a container (a C++ member prototype, a bodiless Rust `fn`, a
+bodiless Scala `def`), where `_walk_tree` promotes `function` to `method`.
+Those rows require the PROMOTED kind rather than accepting either, so a form
+that started extracting under its declared kind fails and the entry is deleted;
+`test_the_container_promotion_is_real` pins that the promotion exists at all,
+and `test_every_promotion_entry_is_a_function_form` refuses an entry for any
+other declared kind.
+
+⚠ Tracked gaps are EXCLUDED from the parametrization rather than skipped inside
+it, and that is a Floor decision: seven `pytest.skip`s would take
+`ci.skips_windows` from 24 to 31 against a ceiling of 25, spending the suite's
+skip budget on bookkeeping — against the instrument the project reads first
+when a run looks green.
+
+⚠ Added to the fast tier (92 files), because it answers a question about the
+specs that a commit can break and costs 0.6 s.
+
+### Fixed - every Java field is a symbol, not only the `static final` ones (#735)
+
+A Java class indexed with its methods and none of its state. `private int
+balance`, a package-private `String owner`, a `static int instances` and a
+`final Logger log` all yielded no symbol, while `public static final int
+MAX_RETRIES` in the same class did. The widest of the nine gaps #724's grammar
+inventory found, by volume: every Java class with state had it, for the whole
+life of the spec.
+
+⚠⚠ **The gap reads as being about `final` and it is about the NODE TYPE.**
+`MAX_RETRIES` reaches the index through `constant_patterns`, which matches
+`field_declaration` and requires BOTH `static` and `final` (#428).
+`JAVA_SPEC.symbol_node_types` never named that node type at all, so everything
+the constant channel declined -- which is most fields -- had no channel to fall
+to. A reader who finds the `field_declaration` branch in the extractor sees
+coverage and stops, exactly as in #732.
+
+⚠⚠ **One `field_declaration` binds N names, and `symbol_node_types` structurally
+cannot express that**: `_extract_symbol` returns one `Optional[Symbol]` per node,
+while `int a, b, c;` is one node and three declarations. The constant channel has
+bound every declarator since #428, so a field channel naming only the first would
+have made the discriminator between indexed and silently dropped the presence of
+`static final` -- the shape of #732's capitalisation incoherence, where which
+declarations became symbols depended on how they were spelled. Hence a channel:
+`LanguageSpec.field_patterns` and `_extract_fields`, mirroring
+`constant_patterns` and `_extract_constants` rather than a `language == "java"`
+branch in `_walk_tree`. #731 (Go's package-level `var`) is the same shape and
+inherits it.
+
+⚠⚠ **A third node-type list beside two write-only ones is a risk, not a
+neutral addition.** `type_patterns` and `return_type_fields` are declared across
+the spec table -- 19 and 14 of the 79 specs respectively -- and read by nothing
+(#725), and a list no channel consults is
+indistinguishable from the defect it was added to fix.
+`test_every_declared_extraction_channel_actually_yields_its_kind` asserts the
+readership through the product, keyed on the spec so the second member is
+checked when it arrives rather than joining unwatched.
+
+⚠⚠ **`field_declaration` is now in `constant_patterns` AND `field_patterns`,
+which is a trap unless one predicate owns the split.** `_walk_tree` runs the two
+independently on the same node rather than as an `elif`, so `static final int
+MAX` emits twice unless something decides. `java_field_is_constant` is that
+predicate and both channels ask it -- extracted from `_extract_java_constants`
+and MOVED, not transcribed, because a second copy of "both modifiers" works on
+the day it is written and drifts into a gap or a double-emit later. #732 is the
+identical trap in Kotlin, and this is its lesson applied on arrival.
+
+⚠ **No scope gate, and that is a fact about the grammar rather than an omission.**
+Java spells a local `local_variable_declaration`, a different node type from
+`field_declaration`, so #732's Kotlin problem -- one node type serving both a
+member and a local -- cannot arise here. Asserted anyway rather than argued: a
+fix routed through `variable_declarator`, which locals DO use, fails those tests.
+
+⚠ The kind is `field`, already in `KIND_ORDER` and already live: the Python
+parser has emitted `field` for dataclass attributes since before #571, which is
+how @devtomnl found that both gates rejected the kind while 399 of them sat in
+this repo's own index. So there is no tuple edit here and no cached-prefix cost,
+and Java joins an established kind rather than reviving a dead one -- the
+opposite of `property`'s position in #732, where PHP had declared the kind and
+nothing emitted it.
+
+⚠ A field carries its owner (`Account.balance`, and `Account.Inner.innerField`);
+a field published as a bare name is #698's complaint in another language, so
+`_field_symbol` is qualified at the call site, which is the only place that
+knows the parent.
+
+⚠⚠ **That leaves the two channels on this node type disagreeing about
+ownership, and it is recorded here rather than discovered later.** A field comes
+out as `Account.balance` and the `static final` constant beside it comes out as
+a bare `MAX`, so whether a Java declaration knows its owner is now decided by
+the presence of `static final` -- a discriminator of exactly the kind this entry
+refuses two paragraphs up. The constant half is #428's behaviour and predates
+this change: `_constant_symbol` hardcodes `qualified_name = name` and only Rust
+qualifies at the call site, because threading a parent through
+`_extract_constants` reaches the Bash, Go, PHP and Java binders at once. Fixing
+it here would take that blast radius for a defect nobody reported, so it is
+named and left, not silently inherited.
+
+⚠ Blast radius: a new symbol class for every Java file changes symbol counts,
+and `find_dead_code` applies no `kind` filter, so an unreferenced private field
+now enters the dead-code corpus and moves `dead_code_pct` and the health-radar
+grade for every Java repo. That is what the tool is for, and it is a grade
+movement users will see on their next re-index.
+
+⚠ `PARSER_GENERATION` is NOT bumped, and that is deliberate rather than
+forgotten: #732 took it 7 to 8 one PR ago and both entries are still under
+`[Unreleased]`, so every index a RELEASE of this can reach re-parses under that
+bump already, and a second increment would re-parse the same trees twice.
+⚠⚠ **The uncovered population is a tree indexed from source BETWEEN the two
+commits** -- stamped 8, never re-parsed, Java fields absent permanently. That is
+a maintainer's own box and nobody else's (Practice 11: we develop jcodemunch
+using jcodemunch), and the remedy is the re-index Practice 11 already requires
+after a release, not a bump that would charge every user for it.
+
+⚠ Out of scope and recorded rather than left silent: a Java interface's
+`int X = 1;` is `constant_declaration`, a different node type that yields
+nothing today, and so is the identical declaration in an annotation type
+(`@interface Ann { int LIMIT = 3; }`). Both stay in #724's inventory. Naming one
+spelling and not the other is how a boundary note becomes the next omission.
+
+Found by #724's grammar inventory and confirmed by running `parse_file`, not by
+reading the scan. Its `_CONFIRMED_GAPS` entry leaves in this commit.
+
+⚠⚠ **That removal was voluntary, and #724 claimed it could not be.** The gate,
+`test_a_confirmed_gap_is_in_the_inventory`, fails when a recorded gap has left
+the inventory -- and the inventory is derived from `symbol_node_types` alone, so
+a gap closed through any OTHER channel (this one through `field_patterns`, and
+`constant_patterns` before it) leaves the row in place and the record green. The
+claim that the record cannot outlive the defect holds only for fixes that take
+the one route. Recorded so the next such fix knows the gate is not watching.
+
+### Fixed - coverage's C tracer was ~40% of the full tier's wall clock (#740)
+
+CI opened a `suite.full_seconds` regression on `main`: 379.77 s against a 360 s
+Floor, on the ubuntu leg of `main.yml`.
+
+⚠⚠ **The suite was not slower per unit of work, and eight sampled `main.yml`
+runs say so.** They are a SAMPLE of the runs ending at the failure, not a
+consecutive window -- at least one (7c90f432, 10521 tests at 269.41 s) sits
+between two of them, and an earlier draft called them "the eight main runs
+before it", which claimed a completeness the sampling did not have. Across the
+sampled endpoints the test count grew **2.4%** (10518 to 10772) while the
+measurement swung **52%** (249.80 to 379.77) -- and it did not track the count at
+all: 10550 tests measured 355.39 s, 10679 measured 257.59 s. The distribution
+straddled the Floor for days and one run crossed it. Reading that single crossing
+as "the suite got slow" would have aimed the fix at the wrong thing, which is why
+the table was built before anything changed.
+
+⚠⚠ **What WAS recoverable is the tracer**, and the numbers below are written from
+`.claude/state/evidence/740_measurement.json` rather than typed (`docs/harness/
+FINDINGS.md` F-32 carries the row). Four runs back to back on the measuring box,
+same tree, same command, `-n auto`:
+
+| condition | wall |
+|---|---|
+| ctrace (coverage's C tracer) | 336.33 s and 332.41 s |
+| `sysmon` (`sys.monitoring`) | 203.98 s |
+| no coverage at all | 199.16 s |
+
+So sysmon's instrumentation costs **4.82 s** where
+ctrace's costs **135.21 s**, and the tier drops
+**39.0%**.
+
+⚠ An earlier draft of this entry claimed "roughly half the tier" and "close to
+free" from a single favourable sysmon sample of 150.09 s, while four other
+measurements of the same thing read 184-206 s and were not reconciled. Found in
+review. The controlled set above replaced all of it; the shape of the conclusion
+survived and its size did not.
+
+⚠⚠ **The coverage number is NOT weakened, and a CONTROL is what shows it rather
+than an assertion.** `coverage.min` is itself a Floor, so a tracer counting fewer
+lines as missed would be a loosening by a side door. Run twice on the SAME core,
+ctrace reported 9475 then 9471 missed
+lines; sysmon reported 9470. **The between-run difference
+inside one core (4) is larger than the
+between-core difference (1)**, and every
+delta sits in `server.py` -- the async dispatcher -- which reported 1132, then
+1127, then 1127. Statements are identical at 52,487
+throughout.
+
+⚠ **Not version-gated by us.** coverage checks `sys.monitoring`, branch support,
+dynamic contexts and the concurrency setting, then warns and falls back to its
+default core (`coverage/core.py`, slug `no-sysmon`). The 3.10 and 3.11 legs of
+the PR-gate matrix measure exactly as before and nothing raises. A
+`sys.version_info` check in the harness would be a second copy of that decision,
+correct the day it was written and wrong the first time coverage widens support.
+
+⚠ `setdefault`, not assignment: `COVERAGE_CORE=ctrace uv run python -m harness
+full` still forces the old tracer, because the comparison has to stay
+reproducible by whoever doubts it.
+
+⚠⚠ **No Floor moved, and the arithmetic that would have moved it is recorded
+because it points the wrong way.** `docs/harness/DESIGN.md`'s tolerance rule is
+`floor = 2x the median of three consecutive runs on one box at one commit`. Three
+harness runs at this commit -- 184.81 / 197.47 / 200.25, median 197.47 -- yield
+**395**, LOOSER than the 360 in force. Applying a rule because it is the rule, in
+the direction that weakens the gate, is what `loosened` blocks exist to make
+loud; 360 stays. Against the Floor's own calibration the tier is back to roughly
+its original speed: **188.43 s when 360 was set on 2026-09-03**
+(`harness/thresholds.json` `set_at`), against **197.47 s now**. The nearest
+recorded suite total to that date is 9,260 at 1.108.317 on 2026-09-04
+(CLAUDE.md), against 10,804 today -- **16.7% more tests** for about the same wall
+clock. ⚠ An earlier draft said "roughly 9,000" and "20%", which rounded in the
+flattering direction and had no source; the count at the Floor-setting commit
+itself was never recorded, so the day-later figure is named as what it is.
+
+⚠ `tests/test_full_tier_coverage_core.py` asserts the env the tier BUILDS, by
+calling `tier_full` with a stubbed `_run`. Its first version scanned source text
+and was worthless: review mutated the function to request `ctrace` and all four
+predicates stayed green, because "the constant `sysmon` appears" and "the string
+`COVERAGE_CORE` appears" are two existence checks that never bind to each other.
+A ratchet passing against the defect it names, guarding the instrument that gates
+every other change. It deliberately asserts no wall time -- a "finishes in under
+N seconds" test would measure the runner, which the sampled run table shows is the
+unstable thing.
+
+### Fixed - every Kotlin property is a symbol, and the constant channel keeps its own (#732)
+
+A Kotlin class indexed with its methods and none of its state. `val owner`,
+`var balance`, a `private val`, and a top-level `val` or `var` all yielded no
+symbol at all, so a data class -- whose entire surface is properties -- was an
+empty name in the index.
+
+⚠⚠ **Reading the extractor said this was covered.** There is a
+`property_declaration` branch keyed on kotlin, added by #428, and it is a
+CONSTANT extractor: it declines anything that is not a `val`, and any `val`
+whose name does not read as SCREAMING_CASE. It does exactly what it was written
+to do and nothing was wrong with it. Ordinary properties had no channel, and the
+branch's existence is what kept that invisible to a reader -- it took running
+the product to see it.
+
+⚠⚠ **`property_declaration` is now in `symbol_node_types` AND
+`constant_patterns`, which is a trap unless one rule owns the split.**
+`_walk_tree` runs the constant check independently of symbol extraction on the
+same node rather than as an `elif`, so two channels deciding separately emit
+`const val MAX_RETRIES` twice. `kotlin_property_is_constant` is the single
+predicate both sides ask about constant-ness: the constant branch extracts when
+it answers True and `_extract_name` declines when it does. Locality is the
+second shared predicate and had to become one the same way -- see below, where
+leaving it to the constant channel's scope gate alone published `init`-block
+locals as class constants. A second copy of #428's rule inside
+`_extract_name` would have worked on the day it was written and drifted into a
+gap or a double-emit later, which is the second-derivation shape this project
+keeps paying for.
+
+⚠ The kind is `property`, not `constant`. A `var` is mutable, and every
+constant-oriented consumer would otherwise be told it never changes.
+
+⚠⚠ **#571 was one entry from repeating, and the whole suite stayed green over
+it.**
+`property` was not in `KIND_ORDER`, so `search_symbols(kind="property")` is
+refused by the `kind_filter not in VALID_KINDS` check and the published schema
+enum omits the value -- a symbol indexed, and unreachable through the one filter
+meant to find it. `PHP_SPEC` had mapped the kind for years while nothing emitted
+one, so it sat declared-and-dead and no test could see it; Kotlin is the first
+live emitter. #571's fix DERIVED the enum from `KIND_ORDER` so the two copies
+could not drift, and that was not enough, because nothing checked that a kind a
+SPEC can emit is a kind the tuple contains.
+`test_every_spec_kind_is_a_valid_kind` is that check, over every spec; run
+against the pre-fix tuple it names both kotlin and php.
+
+⚠⚠ **Kotlin also joined `_CLASS_SCOPED_CONSTANT_LANGUAGES`, and that is not part
+of the property fix -- it closes a hole the property fix would otherwise have
+made structural.** The constant channel is gated on `parent_symbol is None`
+unless the language is in that set, so at class or object scope it never ran for
+Kotlin. Once `property_declaration` was declared, `_extract_name` began
+declining constant-shaped properties to a channel that could not accept them, so
+`val MAX_SIZE` in a class body, and `const val` in a `companion object` or an
+`object`, were emitted by NEITHER: the split was disjoint but not exhaustive. A
+`const val` in a companion object is the idiomatic Kotlin constant, so the hole
+sat over the most common shape. Found in review, against a first fixture that
+had no companion object in it and therefore could not fail on it.
+
+⚠ Appending to `KIND_ORDER` is safe for the cached prefix -- positions 0-7 are
+byte-identical and only the insertion point onward moves -- but it is not free:
+the `search_symbols` schema grows 2 tokens (`core_compact` 3967 to 3969), one
+full-rate prefix rewrite per user, inside `schema.drift_tolerance` and well
+under the 4,000 ceiling. The Counter surface is untouched -- `counter_compact`
+stays at 945 tokens and the byte pin in
+`tests/test_counter_surface_stability.py` at 4,184 B over six tools, neither
+of which this change reaches.
+
+⚠⚠ **The first fix indexed every Kotlin local variable, and the gate that
+closed it was wrong for three more scopes.** Kotlin spells a local `val x = 1`
+inside a function with the same node type as a class member, so declaring
+`property_declaration` made `Foo.m.localOrdinary`, `Foo.m.inner` and
+`topFn.topLocal` symbols -- one of them declared in a `for` body. The first
+gate was a DENYLIST of local scope spellings
+(`{function_body, lambda_literal, anonymous_initializer}`, walked up the
+ancestors), and it missed a secondary constructor's body, an `if` body and a
+`when` body: `class C { constructor() { val inCtor = 2 } }` published `inCtor`
+as a property of `C`. A guard written against a spelling, recurring through its
+own fix. The rule is an ALLOWLIST of member parents now -- `class_body`,
+`enum_class_body`, `source_file` -- derived by asking the grammar over 25
+shapes rather than by listing what came to mind: every local's direct parent is
+`statements` and every member's is one of those three, with no exceptions and
+no walk. ⚠ The DIRECTION is the rule: an allowlist fails closed to the pre-fix
+status quo, where a denylist fails open and publishes a local as class state.
+It also fixes the other direction -- a property of a class declared inside a
+function is a declared member of an indexed type, and an ancestor walk called
+it a local.
+
+⚠⚠ **The constant channel has to ask the locality predicate too.** An `init`
+block and a secondary constructor are not symbols, so `parent_symbol` is still
+the class and `parent_is_container` is still True inside them: once kotlin
+joined `_CLASS_SCOPED_CONSTANT_LANGUAGES`, `class A { init { val MAX_I = 1 } }`
+emitted `MAX_I` as a constant belonging to `A`. The two channels were
+disagreeing about the same node while a docstring claimed one predicate decided
+for both. Both ask both predicates now. This also closes the last of the
+capitalisation incoherence: outside a function body, a local `val MAX_W` was
+dropped while the `val inWhen` beside it was indexed, so which declarations
+became symbols depended on how they were spelled.
+
+⚠⚠ **`PARSER_GENERATION` 7 to 8, and this one repairs a released fix as well.**
+Symbols on unchanged content is the clearest case the counter has: every `.kt`
+file in an existing index was parsed at gen 7 with no properties, and
+incremental never re-reads unchanged content, so without a bump Kotlin
+properties stay missing forever for anyone who already has an index. #698 --
+TypeScript abstract classes, shipped in 1.108.319 -- is the identical case and
+shipped WITHOUT a bump, so it currently reaches only files that have changed
+since. The counter is one integer for the whole tree, so this re-parse carries
+that fix to existing indexes too. Named rather than left as a silent side
+effect.
+
+⚠ Blast radius, stated rather than left to be discovered: a new symbol class
+for every Kotlin file changes symbol counts, and `find_dead_code` applies no
+`kind` filter, so every private Kotlin `val`/`var` with no importer now enters
+the dead-code corpus and moves `dead_code_pct` and the health-radar grade for
+every Kotlin repo. That is the correct behaviour -- an unreferenced private
+property is exactly what that tool is for -- and it is a grade movement users
+will see on their next re-index. `find_similar_symbols` and `get_parity_map`
+default to callable kinds and are unaffected.
+
+⚠ Out of scope and stated as tests rather than left silent: a constructor
+`val` parses as `class_parameter`, not `property_declaration`; and
+`val (a, b) = pair` is `multi_variable_declaration`, which binds more than one
+name, so naming it would have to pick one. Both remain in #724's inventory.
+
+Found by #724's grammar inventory on its first review, and confirmed by running
+`parse_file` rather than by reading the scan. Both ratchets from the two
+preceding PRs fired on this fix -- #712's pairing check when the node type
+became declared, and #724's `_CONFIRMED_GAPS` assertion the moment the gap
+closed, naming the record to delete. The inventory went 273 to 272 forms.
+
+### Added - the grammar is asked what it spells, instead of trusted to match what we wrote (#724)
+
+Four issues were one property wearing four costumes. TypeScript spelled
+`abstract_class_declaration` and neither TS spec named it, so every abstract
+class was absent (#698). Java spelled `record_declaration`,
+`compact_constructor_declaration` and `annotation_type_declaration` and the
+spec named none of them (#713). TS and TSX spelled
+`generator_function_declaration` and both specs were silent (#712). Haskell's
+spec says `type_synon` and the grammar spells it `type_synomym` -- the
+grammar's own typo -- so the entry matches nothing (#722). Every one was found
+by a human or an external benchmark.
+
+`tests/test_language_spec_maps_agree.py` (#712) asks the complement: a node
+type a spec DECLARES must be nameable. It reads only what the spec already
+lists, so a form the spec omits entirely is invisible to it by construction,
+and `tests/test_languages.py`'s 71 extraction tests are fixture-authored from
+our own understanding, so they cannot express a form nobody knew to write.
+
+The source is the compiled grammar's own symbol table --
+`Language.node_kind_count` / `node_kind_for_id` / `node_kind_is_named` -- which
+is the vocabulary the parser will actually emit and cannot go stale against the
+binary it comes from. ⚠ #724 proposed reading each grammar's
+`node-types.json`; the pack ships `__init__.py`, `bindings/` and `py.typed` and
+no grammar metadata at all, so that file does not exist here.
+
+Two properties, and only the first is exact. A node type a spec declares that
+the grammar never emits is a typo with no defensible reading, and it fails.
+A declaration-shaped node type the grammar emits and the spec omits is usually
+CORRECT -- `parameter_declaration`, `local_variable_declaration`,
+`accessor_declaration` and `catch_declaration` are all rightly absent -- so
+that half is a frozen inventory (`tests/fixtures/grammar_declaration_inventory.json`,
+273 forms across 34 languages), gated in both directions and regenerated by
+`scripts/refresh_grammar_inventory.py`. The suffix is a naming convention, not
+a claim that the form is a symbol, and an entry is not proof the form is
+unextractable -- `constant_patterns` and `container_node_types` are separate
+channels, so `rust/const_item` and `javascript/lexical_declaration` do yield
+symbols, and a spec-declaring language's extractor can match a node type
+literally too. The entry means nothing in the node-type map claims the form.
+
+⚠⚠ The scan reads TWO sources, and reading one was a blind spot big enough to
+miss the issue's own class. 22 specs declare `symbol_node_types`; of the 44
+that declare none and have a grammar, 34 parse with that compiled grammar and
+match node types against literals written inline in `_parse_<lang>_symbols` --
+solidity, nim, graphql and vue among them. Treating all of them as
+"regex-parsed" exempted exactly the languages where an omission is #698. The
+literals are harvested by AST; 32 of the 34 reach the scan, and the two that do
+not (elixir and nix, which match in module-level helpers) are asserted rather
+than dropped quietly.
+
+⚠ The label was not wrong for everyone: 7 of the 44 are genuinely regex-parsed
+and 3 have no extractor function at all, so for those ten the exemption was
+correct. A first correction here said "wrong for all 35", which replaced one
+imprecise claim with another.
+
+⚠⚠ What the inventory does not do: adjudicate an omission that has always been
+there. `abstract_class_declaration` was in the TypeScript grammar from the day
+the spec was written, so a growth gate would have recorded it as unnamed on day
+one and said nothing. What it buys is that the set is written down and cannot
+grow in silence. Reviewing it is what finds a standing gap -- and the first
+review found nine across six languages, each confirmed by running the product
+rather than reading the scan: a Go package-level `var`, every Kotlin property,
+every Swift protocol requirement and subscript, a Scala 3 `given`, a plain Java
+instance field, and a Solidity `constructor` and `error` all yield no symbol
+today. Two more are ghosts rather than omissions -- Solidity matches
+`error_definition` where the grammar emits `error_declaration`, and Julia
+matches `short_function_definition`, which its grammar does not emit at all, so
+`f(x) = x + 1` is invisible. That is #722's shape in two more languages. All of
+them are recorded, not fixed here; one issue, one verdict.
+
+⚠ Solidity is disabled in this box's config, so its first probe returned an
+empty list that looks exactly like a total extraction failure. The gap was
+confirmed with the language gate patched, which is the documented way to ask
+this question here.
+
+⚠ All four reported defects are fixed on main, so the scan reports clean about
+them, which is indistinguishable from a scan that reports clean about
+everything. `test_the_scan_would_have_caught_each_reported_defect` removes each
+spec entry -- reproducing the tree as it was when the defect shipped -- and
+asserts the form is reported.
+
+### Fixed - a search miss in one repository is no longer an absence claim about another (#711)
+
+`plan_turn` could return the three symbols implementing a feature and, in the
+same response, tell the caller "The feature does not exist in the indexed
+codebase. Do NOT search again." It took one zero-result search in ANY
+repository to trigger it, and the two sentences sat side by side in one
+payload.
+
+`SessionJournal` records a search twice and the records are not equivalent.
+`record_search(query, result_count)` keeps a query string and an integer -- no
+repository, no filters, no index generation -- and is session history.
+`record_negative_evidence({query, repo, verdict, ...})` keeps the producer's
+own finding, named to a repository, and `retrieval/verdict.py` withholds it
+entirely when absence cannot be established (the v1.108.184 packer guard). The
+prior-negative-evidence check read the first one. The search that caused the
+reported failure had published `citable: false`; that qualification lived in
+the channel nobody read, so every producer test stayed green while the claim
+was reassembled downstream from the integer beside it -- the #566 and #569
+lesson reaching a consumer that was never audited.
+
+An absence now needs two things at once: `SessionJournal.citable_absence(repo,
+query)` -- the one answer to whether an absence may be asserted, filtering the
+evidence log on repository, query and verdict -- and no matches on the current
+page. The second condition is not belt-and-braces: a filter, a token budget or
+a reindex between the two calls all leave a stale miss in the log, and none of
+them makes the symbols in front of the caller disappear. `low_confidence_matches`
+is not an absence verdict and is refused by name.
+
+Second spelling, fixed in the same change: `session_state` had persisted the
+negative-evidence log since it was added and `restore_journal` replayed only
+the query counts, so a resumed or compacted session kept the counts and dropped
+every repo-scoped finding. Harmless while the claim came from the counts;
+after this fix it would have quietly retired #205's stop signal at every
+resume.
+
+`tests/test_plan_turn.py::test_prior_evidence_stops_repeat_search` asserted the
+stop from an unscoped `record_search` and so could only pass while the defect
+existed. Its outcome is the feature and is kept; its mechanism was the bug, and
+the evidence now arrives through the channel that names a repository.
+
+Review found the same class one refusal reason over, twice more.
+
+The verdict alone cannot say whether a scan may prove absence.
+`verdict.py`'s `_packed_empty` guard withholds `negative_evidence` for six
+degraded cases and covers neither `index_changed` nor incomplete coverage: both
+fall through and publish `no_implementation_found` on a scan the handoff layer
+refuses, where `handoff.absence_refusal` puts the rule in one line -- only
+`absent` can prove absence, a weak or partial scan is not evidence of nothing.
+"Re-running the same terms will not change the answer" is exactly false there,
+because re-indexing is what changes it. The dispatcher records the verdict STATE
+beside the finding now, read before `meta_fields` strips `_meta`, and an entry
+with no state is refused rather than assumed good.
+
+`get_session_snapshot` was a second consumer and the widest surface the defect
+had -- it is the text the model reads at every compact and resume. It rendered
+every log entry under "don't re-search", dropped the repository, and kept
+`low_confidence_matches`, which is a search that FOUND weak matches. It imports
+the two conditions from the journal rather than restating them, names the
+repository on each line, and carries it in the structured half.
+
+A search and a plan can also spell the same repository differently, since
+`load_repo_index_or_error` resolves a path or a bare name; `plan_turn` offers
+the resolved `owner/name` beside the caller's spelling. A third spelling on the
+recording side is a stated gap and fails closed -- the stop signal does not
+fire, and no false claim is made.
+
+Both consumers call one predicate, `SessionJournal.entry_is_citable`. Writing
+the two conditions as a comprehension in each was the second-derivation shape
+this entry is about, reproduced one layer inside its own fix; a test patches
+the predicate and requires both consumers to fall silent.
+
+⚠ A third surface is NOT fixed here and is filed as #719: the agent policy this
+server installs still tells the model that `verdict: no_implementation_found`
+is evidence of absence, and presents `degraded` as an alternative value of the
+same field when it is a different field that can be true at the same time.
+
+Two existing tests turned red and neither was fixed back.
+`test_prior_evidence_stops_repeat_search` drove the stop from an unscoped
+`record_search`, and `test_snapshot_includes_negative_evidence` required a
+weak-match verdict to be published as a dead end. Both stated the mechanism
+that was the defect; both keep the outcome that is the feature.
+
+### Fixed - Java records and annotation types were never indexed (#713)
+
+A `record`, its compact constructor, an `@interface` and its elements produced
+no symbols at all, and the methods written inside a record extracted with **no
+owner** -- an index holding a method that belongs to nothing.
+
+The grammar spells `record_declaration`, `compact_constructor_declaration`,
+`annotation_type_declaration` and `annotation_type_element_declaration`, each
+with a `name` field. `JAVA_SPEC` named none of them, so the declarations were
+never matched. Records have been in Java since 16.
+
+⚠⚠ **This is #698 in a third language, and the ownership half already had a
+guard.** #698 added `abstract_class_declaration` to the TypeScript specs, and
+its lesson was recorded as that fix plus the Rust `qual_mismatch` bucket, which
+gates at 0 on the rule "the owner is `self_ty`, never the trait". Neither
+reached Java. The suite stayed green because `test_languages.py`'s Java fixture
+holds a class, an interface and an enum -- the three forms the spec already
+named. A fixture written from the spec can only confirm the spec (#699).
+
+**The two halves are separate and both are asserted.** Names come from
+`symbol_node_types`/`name_fields`; ownership comes from `container_node_types`,
+which is why a method inside a record extracted before this change and reported
+`parent=None`. A fix that added the names alone would have looked complete and
+left every record member ownerless.
+
+⚠ **A record COMPONENT is deliberately not a symbol**, with a test that says so.
+A component is closer to a PARAMETER of the header than to a member: it is
+declared in the signature, and what the class exposes because of it -- the
+backing field, the accessor -- is generated, so indexing those would report
+members nobody wrote. #713's own Test section asks for `Point.value` with an
+owner, so this declines one item the issue names; it declines it in the open,
+with a flip path in the test. If that boundary should move it moves
+deliberately, with its own evidence.
+
+⚠ Two entries were added to `return_type_fields` and `type_patterns` in the
+first draft and removed: **nothing in the tree reads either field**, across all
+79 specs, so the entries would have changed no behaviour while implying they
+did. Filed as #725. The omission half of this defect class -- a form the grammar
+spells that no spec names, which is #698, #713 and half of #712 -- still has no
+guard; #723's ratchet reads only what a spec already declares. Filed as #724.
+
+### Fixed - C# operators, conversion operators and indexers were not indexed (#714)
+
+A C# type resolved while three kinds of callable member inside it did not exist
+as symbols: `Vec + Vec` had no definition to jump to, and a cast operator could
+not be found at all.
+
+⚠⚠ **Declaring the node types is only half, and the other half is why this is
+not a one-line spec edit.** None of the three has an identifier to borrow. The
+grammar gives an operator's name as the bare token `+`; a conversion operator
+has no name field whatsoever, only a direction and a target type; an indexer is
+spelled `this[...]`. A `name_fields` entry would have produced a symbol called
+`+`, which matches nothing a reader types and collides with punctuation in a
+lexical index. The names are built in `_extract_name`'s csharp branch:
+`operator +`, `explicit operator string`, `implicit operator int`, `this[]` --
+each the text a developer writes at the declaration, so searching the
+declaration's own spelling finds it.
+
+⚠ **The guard for this was already in the function that needed changing.** That
+branch exists because `field_declaration` and `event_field_declaration` have the
+same shape -- a node type whose name is not at `child_by_field_name("name")`. It
+was solved for those two and never stated as a rule, so three more forms with
+the identical shape went unasked about. "A guard written against a spelling is
+fixed for that spelling only" (#566).
+
+Overload identity needed nothing: two `operator +` on one type already get
+`~1`/`~2` ids from the existing machinery, exactly as ordinary method overloads
+do, and the new forms inherit it. C# 11's `operator checked +` is a different
+member from `operator +` and carries the keyword in its name, so two members
+never publish one name. An indexer's `get` accessor is deliberately not
+promoted to a symbol -- a test says so, because indexing accessors would put a
+`get` on every type with a property.
+
+⚠⚠ **These are the first members here that no name-based reference search can
+see, and that made `check_delete_safe` dangerous on them.** An operator is
+invoked as `a + b`, an indexer as `a[0]` -- the declaration's name appears at no
+call site, so "no references found" is not evidence about it. Measured on a
+corpus using every one of them: the ordinary method in the same file returned
+`internal_uses_blocking`, and `operator +` returned **`safe_to_delete` at
+confidence 1.0**, "No callers or refs found." The new `name_not_searchable`
+verdict replaces the absence verdicts for any symbol whose name is not something
+a call site could write, capped at the same `UNPROVEN_CEILING` an unprovable
+absence already uses, and it is BOUNDED rather than terminal -- reading the call
+sites or ingesting runtime evidence still settles it. `tools/_name_reachability.py`
+is the one answer to "can a name-based search see this symbol", so the next
+consumer asks instead of re-deriving. This is #566's lesson -- capping a report
+does not cap the tool that ACTS on it -- on surface this change created.
+
+Fourth language in the #698 family (#698 TypeScript, #712 JavaScript/TS/TSX,
+#713 Java). The scan that would have caught all four -- a declaration form the
+grammar spells and no spec names -- is #724 and still does not exist.
+
+### Fixed - generator declarations were listed as supported and dropped (#712)
+
+`function* gen(a) { yield a; }` produced no symbol in JavaScript, TypeScript or
+TSX. An ordinary function did, and so did a generator EXPRESSION assigned to a
+variable, which is what made the reported case look arbitrary.
+
+Two maps decide whether a declaration form survives. `symbol_node_types` says
+which tree-sitter nodes become symbols; `name_fields` says which field carries
+each one's name, and `_extract_name` returns nothing for a node type missing
+from the second, so the symbol is dropped unnamed. JavaScript listed
+`generator_function_declaration` in the first map and in NEITHER of the other
+two -- advertised as supported, never emitted. `param_fields` had the same hole,
+which would have left a generator reading as a zero-argument function.
+
+⚠⚠ **#698's lesson is satisfied by this defect and could not catch it.** #698
+was a node type missing from the spec, and its remedy -- list the node type --
+passes here, because the generator IS listed. The contract between the two maps
+was already encoded one module over, for a different pair
+(`tests/test_ts_module_extensions.py`: "adding an extension to
+`LANGUAGE_EXTENSIONS` without its rewrite entry makes the file visible and its
+importers invisible"), and was recorded against that spelling rather than the
+shape.
+
+`tests/test_language_spec_maps_agree.py` asserts the property over all 79 specs
+in `LANGUAGE_REGISTRY`, so a language added later inherits it. An exception
+needs a real `_extract_name` branch behind it, asserted against that function's
+source, so the list cannot be used to silence a gap.
+
+Running it found what the report did not. TypeScript and TSX drop the same form
+by the OTHER mechanism -- they never listed the node type at all, #698's shape,
+in the two specs #698 itself fixed -- and both are fixed here. And Haskell's
+`name_fields` is empty, so **the language extracts nothing at all**; that is a
+separate verdict, filed as #722 and recorded as a tracked gap rather than
+excused.
+
+Found by an external critique of 1.108.319.
+
+### Fixed - the release's post-publish check asked PyPI a different question than the one it needed (#709)
+
+`release: post-publish` installs the just-published artifact into a clean venv,
+runs the handshake against it, and compares its tool count to the pre-flight's.
+The two steps after it -- the GitHub release and the MCP registry publish -- run
+only if it succeeds.
+
+On 1.108.319 it failed on both platforms 13 seconds after the upload finished,
+giving up in under a second against a ten-minute budget:
+
+```
+No solution found when resolving dependencies:
+Because there is no version of jcodemunch-mcp==1.108.319 ...
+```
+
+The step is named "poll up to 10 min" and it did not poll. Its readiness loop
+asked `https://pypi.org/pypi/<pkg>/<version>/json` -- the JSON API -- and the
+install that followed read the `/simple/` index. Those are separately cached, so
+the JSON API answered on the first iteration, the loop broke, and the install ran
+against an index that had not published the file yet.
+
+⚠⚠ **The ten-minute budget was real and was never spent.** This was never PyPI
+being slower than expected: a probe on a different endpoint can only confirm
+readiness by luck, and when the luck ran out the release went half-finished --
+PyPI and the tag done, the GitHub release and the registry entry skipped, behind
+a dispatch that had already reported success.
+
+The install is the probe now. `uv pip install` retries itself inside the loop,
+which is what `smoke from test pypi` one job earlier had been doing since it was
+written. Polling `/simple/` instead would have worked today and rotted the moment
+the installer changed what it reads; a probe and a consumer cannot drift when
+they are the same operation.
+
+⚠ The second half is the cost of the first, and it was already live in the smoke
+job: the `if` that makes a retry possible also swallows the last attempt's exit
+status, so an exhausted loop walked on to the handshake with nothing installed
+and failed later, confusingly. Both loops are followed by a check that the
+package is actually there, failing with the version and the budget named.
+
+`tests/test_release_install_is_its_own_probe.py` holds the properties, including
+the one that fails if the scan stops finding the steps it is about. Its scan is
+keyed on the install verb and the absence of a local artifact, never on how the
+version is spelled: the first draft matched `==$V` and would have missed this
+workflow's own `==${{ needs.preflight.outputs.version }}` idiom.
+
+⚠ `docs/cicd/RUNBOOK.md` carried the same mistake at the human layer -- it told
+the operator to re-run post-publish "once the version shows on
+`https://pypi.org/pypi/jcodemunch-mcp/X.Y.Z/json`", which is the endpoint that
+lied. Two of the three readers of "is PyPI ready" were code; the third is a
+person, and it is corrected here.
+
+⚠ 1.108.319 itself was recovered on the day: the failed jobs were re-run once
+PyPI had propagated, and the GitHub release and the registry publish both
+completed. Nothing was yanked and no version is missing.
+
+### Fixed - the inbound gate tests stubbed `gh` in a way that shadowed nothing on Windows (#705)
+
+`tests/test_inbound_workflows.py` executes each inbound workflow's gate step
+under bash, so the shell logic that holds a model job back is checked by running
+it rather than by matching patterns against it. It stubbed `gh` and `python` as
+extensionless files in a `bin/` directory prepended to `PATH`, with `chmod +x`
+in the prologue.
+
+**Git Bash on Windows resolves a command only through an executable extension.**
+The executable bit does not enter into it, so the stubs shadowed nothing:
+`command -v gh` answered `C:\Program Files\GitHub CLI\gh`. Every Windows run
+of that test called the real `gh` against the fake repo `o/r`, over the network,
+with whatever credentials the machine had.
+
+⚠⚠ **It never went red, and the reason is a lesson this project already wrote
+down.** The gate step pipes its output — `gh issue list ... | tr ... | sed ...`
+— and a pipeline reports its last command's status. The real `gh` failed, `sed`
+succeeded, `go=true` was written anyway. That is inbound item 6's rule from
+2026-09-04, *a gate's exit status is never the left side of a pipe*, reproduced
+inside the fixture written to check it.
+
+The symptom was a nightly timeout: `subprocess.TimeoutExpired ... after 60
+seconds` on two consecutive nights, on two different Python versions, always on
+the `True-True` combination. That combination is the only one that reaches the
+`gh` branch, which is why it and nothing else failed, and why Linux was green
+throughout.
+
+The stubs are shell functions now. Bash resolves a function ahead of `PATH` on
+both platforms, and a function needs no file, no `chmod` and no process.
+`test_a_gate_step_cannot_reach_the_real_tool` asserts what `command -v` answers,
+because resolution is the property that a file on `PATH` gets right on one
+platform and wrong on the other; it was run against the old mechanism first,
+where it reports the real `gh` and the real interpreter.
+
+⚠ `test_the_stub_refuses_a_command_it_does_not_implement` is the other half. A
+stub that answers everything hides the next dependency, so dispatch is by
+basename and an unrecognised script exits 127 with a named message. Without it
+this fix would trade a false positive for a silence (#569).
+
+Measured back to back on the dev box, both arms in one session, and recorded
+in `.claude/state/evidence/timing.md`: `2 failed, 156 passed in 18.71s` before,
+`158 passed in 4.21s` after. The two failures in the before arm are the new
+guards reporting that `gh` and `python` resolve outside the harness; the rest
+pass, because a fast local `gh` behind a pipe that hides its status is exactly
+what made this invisible. A runner without a usable `gh` is where the 60
+seconds came from, and this box cannot reproduce that.
+
+## [1.108.319] - 2026-09-16 - the numbers a competitor published about us were right, and so was the refusal we had shipped over twice
+
+### Fixed - the published benchmark tables are derived from the reference, not from three different runs (W-16)
+
+`/release` step 4 recomputes every published figure and refuses on a
+disagreement. It refused three consecutive releases on the same thing, and the
+first two shipped over it — which is how a refusal becomes ceremony.
+
+The disagreement was real and larger than it had been recorded. Three artifacts
+carried a per-repo jCodeMunch column for one run:
+
+| source | express | fastapi | gin | grand |
+|---|---|---|---|---|
+| `benchmarks/jcm_reference.json` (CI-captured) | 1,007 | 2,149 | 1,537 | 23,467 |
+| `README.md` | 1,017 | 2,218 | 1,573 | 23,467 |
+| `benchmarks/README.md` | 1,002 | 2,271 | 1,577 | **24,249** |
+
+That they describe one run is not an assumption: the reference's per-repo totals
+sum to 23,467, the grand total both files already printed. The rows were never
+regenerated when the reference was recaptured on 2026-09-03.
+
+⚠⚠ **`tests/test_provenance.py` gated the grand total and nothing gated the
+rows.** So the total stayed correct in both files while three sets of per-repo
+numbers drifted underneath it, and the ratchet was green throughout. A guard over
+the figure everyone remembers to update cannot see the figures they forget —
+**gate the cells the reader actually reads.**
+
+Every cell is now computed from `benchmarks/jcm_reference.json`, and
+`tests/test_benchmark_tables_mirror_the_reference.py` fails if either table
+drifts again: the per-repo average against the artifact, the `vs read-all` ratio
+against the published average (so a reader dividing two printed cells gets the
+printed ratio), and the identity that the rows sum to the total.
+
+⚠ The corrected numbers move slightly **in our favour** (15.5x → 15.6x, 38.4x →
+39.7x, 20.3x → 20.8x), which is worth stating plainly: the stale rows were
+under-claiming, so this is not a flattering correction arriving under cover of a
+process fix.
+
+⚠ The per-query spread each file published — 7.3x-79.8x in one, 7.6x-81.2x in the
+other — is derivable from nothing committed, because the reference records totals
+and averages only. It is withheld rather than picked, until
+`run_benchmark.py --reference` records per-query figures.
+
+### Fixed - an exact-name match is no longer evicted from the result page by a same-named local (#699)
+
+`search_symbols` cuts to `max_results` with a bounded heap keyed on BM25 alone,
+so eviction could not tell an exact-name match from a lexical near-miss, or a
+real definition from a local that happens to share the name. Where a name has
+more exact matches than the cap, ranking alone decided which survived — and the
+ones that lost did not appear at a lower rank, they did not appear at all.
+
+Two reproductions, and they do not share a discriminator. On zod, `partial`
+returns ranks 1-4 as real definitions and ranks 5-10 as six `constant` rows in
+test files, pushing `v4/mini/schemas.ts::partial` out; kind separates that one.
+On this repository, `run` returns ten rows that are all `#function`, every one a
+helper nested inside a test function, while `tools/refresh.py::run` and
+`watcher.py::WatcherManager.run` are absent; kind separates nothing there.
+
+The property both share is neither kind nor path: a crowder is declared inside a
+function body and is a local by construction, while a real answer is
+module-level or owned by a type. A path rule would have demoted a genuine
+`ZodObject.partial` declared in a fixture, and a nesting-depth rule would have
+demoted it too. The heap key is now `(declaration rank, score)`, and the final
+sort reads the same key — a row that survives the cut under one rule and is then
+ordered under another ranks below rows it outranked to get there. Locals are
+demoted, never filtered: they remain legitimate answers to "where is this name".
+
+⚠⚠ **The rank has two conditions and each alone leaves half the defect live.**
+A declaring KIND separates zod's case: its crowders are `const partial = ...`
+rows that the TypeScript extractor records with no owner path, so the index sees
+module-level constants and an owner probe scores them exactly like a real method.
+A function-OWNER probe separates this repository's case: `run`'s crowders are
+helpers nested in test functions, all of kind `function`, so kind separates
+nothing. A first draft shipped with the owner probe alone, passed its own tests,
+and left the reported case byte-for-byte unchanged — the fixture had no
+module-level-constant shape in it. Both conditions ship, and both shapes are in
+the fixture now.
+
+⚠ The owner is probed **positively** for being a function, and an owner that
+cannot be resolved is not demoted. Asking the opposite — is the owner a class or
+struct? — reads a failed lookup as proof of a function body, and a Rust `impl`
+block puts the type in another file, so a real method would have been demoted
+below a same-named local in exactly the languages this was not measured against
+(C++ `.cpp`/`.h`, C# partial classes, Swift extensions and Ruby reopened classes
+are the same shape). UNKNOWN is a third bucket, never False.
+
+⚠⚠ **The tool caps its page in three places, and all three now read the same
+rule**: the lexical heap, the similarity sort behind `semantic=True`, and the
+fused sort behind `fusion=True`. Fixing only the heap would have left one tool
+answering the same query two incompatible ways depending on a flag. A source
+ratchet asserts every cut site consults the rank, so a fourth exit inherits it.
+
+Two consequences worth stating rather than discovering. `sort_by="centrality"`
+and `"combined"` now rank an exact-name match above everything else before
+PageRank is consulted; that is the point of the change, and it is a semantics
+change to two documented sort modes. And `_meta.verdict.best_score` is still the
+best score seen during the scan — unchanged — but `results[0]` is no longer
+necessarily the row carrying it, because a promoted definition can sit above a
+higher-scoring local.
+
+The cut is deliberately **not** gated on `is_identifier_query`, which the
+`_meta.exact_match` report is. That gate refuses a single lower-case word with
+no underscore, which is right for deciding whether to attach a report and wrong
+for deciding what to keep: `partial`, `pick` and `run` are all that shape, so a
+cut inheriting the gate would be unfixed for every case that reported the defect.
+
+`_meta.exact_match.exact` was the second reader of the same cut. It counted the
+rows that survived, so a query with 38 exact matches reported `exact: 9` and read
+as complete — #559's rule ("a count taken after the page is cut describes the
+page") in the one place #559's own ratchet did not reach, because its `_CASES`
+roster is a hand-kept literal of four tools. The count is taken during scoring
+now, with `exact_returned` and `exact_truncated` beside it, and `search_symbols`
+has been added to that roster so the property ratchet covers the pair.
+
+⚠ The report stays gated on `is_identifier_query` while the cut does not, so
+`exact_truncated` is attached to `get_user_id` and never to `run`. The visibility
+half therefore does not reach the four names that reported the defect; the
+correctness half does. Ungating the report is a separate judgment about noise on
+prose searches and is not made here.
+
+One older ratchet had to be restated rather than satisfied.
+`test_v1_108_228.py::test_the_semantic_sort_uses_a_total_order` pinned the
+literal string `scored.sort(key=lambda x: (-x[0], x[1]["id"]))`, and adding a
+leading rank component failed it while leaving its invariant — ties broken on the
+symbol id, so the numpy float32 and Python float64 lanes cannot disagree at rank
+0 — entirely intact. It stated the mechanism instead of the outcome (Practice 9).
+It now asserts that the key ends in the symbol id and orders score descending,
+which passes with a further component added and still fails when the id tiebreak
+is removed; that was verified by removing it.
+
+What is impossible now: a cut that silently drops the symbol a caller named, on
+any of the three exits.
+
+Found by the benchmark in
+[amritessh/scalpel-fse2027-artifact](https://github.com/amritessh/scalpel-fse2027-artifact),
+which traced it to `partial`/`pick`/`ZodType` on zod and named the mechanism —
+ranked-and-capped retrieval dropping answers an unranked exact lookup returns
+unconditionally.
+### Fixed - TypeScript and TSX index `abstract class`, and its methods keep their owner (#698)
+
+tree-sitter-typescript gives `abstract class X` its own node type rather than a
+modifier on `class_declaration`, and neither `TYPESCRIPT_SPEC` nor `TSX_SPEC`
+named it. Every abstract class in a `.ts` or `.tsx` file was therefore absent
+from the index, while every concrete class in the same file indexed normally —
+so the symbol a caller most wants, the base class where a hierarchy declares its
+API, was the one that could not be found.
+
+`container_node_types` omitted it too, which is the half with the wider reach.
+The methods inside an abstract class were still extracted, attributed to nobody:
+the id came back as `<file>::parse#method` instead of
+`<file>::ZodType.parse#method`. That is the `qual_mismatch` rule the Rust
+fidelity harness already enforces one language over — the owner is the declaring
+type — encoded there as a benchmark rather than as a property, so TypeScript
+inherited none of it.
+
+Asking the grammar rather than guessing turned up a second node in the same
+family: an abstract member parses as `abstract_method_signature`, so the base
+class's declared contract extracted as nothing while its concrete siblings
+extracted normally. Both nodes are now mapped in both specs. `export`, `declare`
+and `default` are wrappers around the declaration and need no entries of their
+own; all four spellings are parsed in the tests, because "the wrapper does not
+matter" is a claim about the grammar and a wrapper that did hide the declaration
+would look exactly like this fix being complete.
+
+A third reader had to move with it. `_detect_interface_keywords` tags a class
+`abstract` for dispatch resolution by scanning for an `abstract` **modifier**,
+which is how Java and C# spell it — TypeScript spells it as the node type, so
+that scan returned `[]` on a class that plainly is one. Fixing only the spec
+would have made the symbol newly findable and newly mislabelled:
+`abstract class B {}` now yields `keywords=['abstract']` in TypeScript, matching
+Java's long-standing answer for the same declaration.
+
+Measured on zod at `e359f7378fe56d695134701cda1e9055a08892dc`, over the files
+that contain an abstract class:
+
+| measure | before | after |
+|---|---|---|
+| abstract classes found as kind=class | 0 | 7 |
+| methods with no owner in the id | 52 | 13 |
+| symbols extracted from those files | 968 | 977 |
+
+The 13 that remain are not residual defect: three are accessors (`get error()`,
+`get with()`, `set with()`) and ten are methods declared inside an object
+literal, which zod v4 mini uses to build per-instance method bags. Neither has a
+class owner to lose.
+
+What is impossible now: a TypeScript-family spec that knows `class_declaration`
+and not `abstract_class_declaration`. The guard is stated over the property, not
+over the two specs that exist today, so a third one inherits the rule instead of
+reintroducing the defect. Its reach is bounded, and the bound is worth naming:
+the ratchet iterates `LANGUAGE_REGISTRY`, so it cannot see the hand-rolled Vue
+and Svelte `<script>` walkers in `extractor.py`, which match `class_declaration`
+only and still miss an abstract class inside a single-file component. That is
+pre-existing and tracked separately.
+
+Interface members (`method_signature`) remain unindexed on purpose. An interface
+is type structure rather than a class body, and indexing it would move the
+symbol count of every TypeScript repository on a judgment call that needs its own
+measurement.
+
+Found by the benchmark in
+[amritessh/scalpel-fse2027-artifact](https://github.com/amritessh/scalpel-fse2027-artifact),
+which hit the same defect in its own indexer, traced it to zod's `ZodType`, and
+fixed it there first.
+
+### Fixed - get_tectonic_map finds modules instead of one plate that is most of the repository (#668)
+
+`get_tectonic_map` partitioned the fused file graph with label propagation,
+which adopts the heaviest neighbouring label. A hub file that every module
+imports links every module to every other, so one label flooded the graph:
+on this repository the largest plate held 772 of 1,139 indexed files at
+cohesion 0.0024 (#668), and #667's temporal signal made it larger, not
+smaller. The
+partition was also not stable. Its seeded RNG did not fix the order of the
+fused edges, which follows string hashing, so the same index gave a
+different largest plate under a different `PYTHONHASHSEED`.
+
+The partition is now Louvain modularity clustering, deterministic (sorted
+visiting order, no RNG) and pure Python. Measured on the fused graphs of
+seven local indexes, main's label propagation against this branch (a plate's
+share is out of the files in the fused graph, not of all indexed files):
+
+| corpus | files in graph | main: largest plate | main: modularity | branch: largest plate | branch: modularity | branch ms |
+|---|---|---|---|---|---|---|
+| local/jcodemunch-mcp-0394b683 | 958 | 811 (84.7%) | 0.137 | 183 (19.1%) | 0.459 | 59 |
+| local/nestjs-nest-d3d8a6be | 1668 | 1612 (96.6%) | 0.007 | 575 (34.5%) | 0.285 | 356 |
+| fastapi/fastapi | 969 | 556 (57.4%) | 0.358 | 280 (28.9%) | 0.475 | 27 |
+| local/jdocmunch-mcp-6bc87e58 | 330 | 192 (58.2%) | 0.249 | 77 (23.3%) | 0.403 | 16 |
+| local/authlib-cc94e0b7 | 301 | 301 (100.0%) | -0.000 | 64 (21.3%) | 0.421 | 20 |
+| local/jdatamunch-mcp-a1bb3bdc | 184 | 184 (100.0%) | -0.000 | 51 (27.7%) | 0.361 | 9 |
+| expressjs/express | 99 | 42 (42.4%) | 0.468 | 27 (27.3%) | 0.566 | 2 |
+
+Everything downstream of the plates changes with them: anchors, cohesion,
+drifters, nexus alerts, and the plates `assemble_task_context` puts in a
+task capsule. `_meta.methodology` reads `tectonic_louvain`, and
+`_meta.label_propagation_seed` is gone.
+
+### Fixed - git's changed paths match the index when it is rooted below the git top level (#685)
+
+`git log --name-only`, `git diff --name-only` and `git status --porcelain`
+print paths from the git top level. `index_folder(..., identity_mode="local")`
+on a folder below it roots the index at that folder, with folder-relative
+paths, so every name git printed missed. `get_hotspots` scored a file changed
+four times as churn 0, which reads as a cold file rather than an error;
+`winnow_symbols`' churn axis did the same; `get_delivery_metrics` counted
+files outside the index root, and (once paths were relative) listed commits
+that changed nothing under it with an empty file set, which can never be
+reworked and so raised `durable_rate`: it now reads only commits under the
+root (`-- .`), so `commits_total` for a sub-rooted index counts that corpus's
+commits, not the monorepo's; the git-blame context provider attached
+nothing; `get_changed_symbols` reported symbols under paths the index does
+not hold. The working-tree guard behind absence claims failed the other way:
+every dirty path read as unindexed, so an uncommitted file anywhere in the
+monorepo refused absence claims for a corpus that was current.
+
+#667 fixed this in `get_tectonic_map` alone. The issue named four readers; a
+test over the property found five `--name-only` calls without `--relative`,
+and a search for other path-printing git calls found the porcelain probe,
+which `--relative` cannot fix (it scopes to `-- .` and strips the prefix
+`git rev-parse --show-prefix` reports). A failing `git log` in the two churn
+readers is now a WARNING instead of reading as no churn; a repository with no
+commits yet stays silent, because no churn is the right answer there. The test scans `src/`,
+so a new `--name-only` call without `--relative` fails it.
+
+### Changed - the inbound jobs that bill the model have their own switch, and it is off
+
+The inbound layer had one switch, `INBOUND_ENABLED`. It covered jobs that
+cost nothing (intake labels, the stale sweep, the digest's numbers) and
+four that call the model through the owner's Anthropic API key: triage,
+the digest's paragraph, fix and dependency evaluation. Two of them, triage
+and the digest's paragraph, spent $22.14 between 2026-09-07 and 2026-09-12
+that nobody saw, because no audit record carries a cost and the daily
+ceiling counts runs. $13.36 of it was 20 triage runs on #625 on 2026-09-07.
+Turning the switch off to stop the spend also stopped the free jobs.
+
+A second variable, `INBOUND_MODEL_ENABLED`, now gates the part that bills.
+The gate job in front of every model job reads it with the same
+exact-`true` rule, so absent is off, and a model job starts only when both
+switches read `true`. The digest posts its numbers without a paragraph
+when the model switch is off. A test fails any `claude-code-action` job
+whose gate does not feed that read into the output it starts from; against
+`main`'s four workflows it finds one offender each. The owner's ruling is
+that the model switch stays off and issues are triaged by hand.
+
+### Fixed - the inbound digest reports a kill-switch flip only when the switch moved (#690)
+
+The W37 digest (#687) listed 12 kill-switch flips in one week. The switch
+never moved. Every job writes its audit record through `ledger.py write
+--field k=v`, which parses each value as JSON. The shell writers pass a bare
+`kill_switch_state=true`, stored as a boolean; the inline-Python writers pass
+`json.dumps("true")`, stored as a string. The digest compared consecutive
+records with `!=`, and a boolean never equals a string. `item` had the same
+split. The September ledger holds 23 boolean and 53 string switch states, and
+13 integer and 70 string items.
+
+`make_record` now stores both fields as text however the workflow quoted
+them, and the digest reads older switch states through the same helper, so the
+history on the ledger branch needs no rewrite. Replaying that ledger, the
+week reads 71 records and 12 flips through the old digest and 0 through the
+new one. A real flip written in either spelling is still reported. The gate
+was never affected: `killswitch.enabled()` reads the repository variable,
+not the ledger.
+
+### Fixed - `get_tectonic_map`'s git co-churn signal runs, and says when it cannot be trusted (#667)
+
+`get_tectonic_map` documents three fused coupling signals and gives git
+co-churn 30% of the weight. That signal had produced no edges on any
+repository since the tool shipped. It ran `git log --format=COMMIT_SEP`, and
+git reads a bare `--format=` value as the NAME of a pretty format. On this
+repository the call exits 128 with `fatal: invalid --pretty format:
+COMMIT_SEP`. The non-zero branch returned an empty signal and logged nothing,
+so `signals_used` quietly listed two signals. Every test that mentioned
+`"temporal"` handed a hand-written fixture to an encoder, and the producer's
+own test asserted only `"structural"`, which an empty signal satisfies.
+
+The call now uses `--format=format:COMMIT_SEP`. It also passes `--relative`,
+because `--name-only` prints paths from the git top level while the index
+holds them from its own root. Without it, an index rooted in a subdirectory
+would miss every name and lose the signal by a second route. A failing git
+is logged at WARNING with its stderr. On this repository, over 90 days, the
+signal now yields 4655 edges, and `signals_used` lists all three.
+
+A working signal makes a shallow clone matter. Each signal is normalised
+against its own maximum, so a truncated history would rescale co-churn, not
+weaken it: a pair that co-changed once in a three-commit history would score
+the same 1.0 as one that co-changed hundreds of times in the full history. The
+tool asks `churn_is_measurable` first. When the window isn't covered, it
+withholds the signal and names the reason in a new `signals_withheld` field
+in the answer, not in `_meta`, which a default install strips. The field
+survives the compact encoding. A ratchet now fails any git call under `src/`
+that passes a `--format=` or `--pretty=` literal git would read as a name.
+
+### Changed - a credential makes an inbound item `security` when it is exposed, not when it is named
+
+The inbound intake scan labels an item `inbound:security` + `needs-human`
+before any model reads it. Its credential clause was a word list:
+`credential`, `token`, `secret`, `api key`, `private key` or `key material`
+anywhere in the text. Over every issue in this repository (321) it fired on
+75. The bare words `token` and `tokens` matched in 50 of those, and were the
+only match in 42, in a project where a token is usually the LLM unit. It labelled #670 security 13 seconds after filing,
+for describing a defect that involves no credential at all. Owner ruling,
+2026-09-13: "mentioning credentials is fine; exposing them is not."
+
+POLICY section 1 rule 1 now says a credential is exposed when a token, key
+or password VALUE appears in the item, or when the item says a credential
+was leaked, logged, printed, committed, shipped, returned or otherwise made
+readable. `.github/inbound/scan.py` matches exactly that: secret-shaped
+values (GitHub, Anthropic, OpenAI, AWS, PyPI and Slack token forms, a PEM
+private-key header, a long `key = value` assignment), or a credential noun
+within four words of an exposure verb or state, in either order. A negation
+inside that span breaks the match ("stores nothing about secrets", "the token
+cannot leak"), while "not only leaked" and a negated safeguard ("the api key
+wasn't redacted and is in the log") do not. After the credential, an aside in
+commas, parentheses or dashes does not break it either ("my api key (the prod
+one) was leaked"). After a verb a comma does, because there it crosses a
+clause: allowing it there flagged #76, #167, #371 and #489, which only mention
+secrets. A negation just before the verb cancels too ("should not log the api
+key", "cannot contain secrets"), read from the same negation list as the gap,
+with only an auxiliary or adverb between ("I cannot believe it leaked my api
+key" still counts).
+"contains" and "shows" count with an owner or a realness word ("shows
+the user's real api key"), or an article before a credential named by kind
+("the wheel contains the .env file"), never before a UI word ("shows the API
+key field"). A bare `token` counts only
+beside a strong exposure word ("pasted my token", "the token is logged") and
+never before an LLM-unit word ("token count"). `Authorization: Bearer`
+values, short `password=` values (not code such as `Path.cwd()`), `*_access_key =` assignments and PGP, npm,
+Hugging Face, Google and temporary-AWS key forms are values too. Every
+repetition is bounded: the scan runs in CI on untrusted text, and the
+first draft of these patterns took 205.53 s on "secret" repeated to 6,000
+characters; the bounded patterns scanned a 600,000-character adversarial
+input in 1.10 s, and the test file checks that twenty adversarial shapes
+grow linearly: four times the text in under ten times the time, measured in
+one process so a loaded CI runner slows both sides alike. Over the same corpus
+it flags 20. Every security-shaped report the audit lists that the word list
+caught is still caught (#444, #448, #508, #509). The other rule-1 triggers
+(vulnerability, exploit, CVE, traversal, cross-repo, arbitrary write, data
+exposure, redaction failure) are untouched.
+
+⚠ The trade-off, accepted with the ruling: a disclosure written only in
+plain words with no credential noun ("the key is in the log") no longer
+trips the scan, and neither does one with more than four words between the
+credential and its exposure (a five-word window flagged mention-only
+sentences). The triage model still reads rule 1.
+
+### Fixed - a triage result the model cannot produce is escalated, not retried forever (#670)
+
+When the inbound triage model failed, `apply_triage.py` planned exactly the
+right response (`inbound:unknown` + `needs-human`, remove `inbound:queued`)
+and then threw it away: it learned WHICH issue to write to from the model's
+own JSON, which is the one fact missing when the model has failed, so the
+except branch set the target to `None` and `apply` never ran. The job
+reported success, no label moved, and the issue was re-triaged every 15
+minutes. Observed as 14 consecutive `inbound triage` failures on two issues
+(runs 34707967479 to 34719256359, recorded in #670), against POLICY 6.4's
+"the job that escalated it does not run again on it". Reported by
+@jgravelle.
+
+The test for that branch asserted the defect as intent:
+`test_malformed_result_file_escalates_and_applies_nothing` required
+`called == []`. Two rules had been collapsed into one. The model's
+CLASSIFICATION must never reach `gh` on a malformed result, which stays
+true. The escalation is not the model's classification: it is our fixed
+response to the model failing and carries nothing it said.
+
+The workflow now passes the issue it is processing as a required
+`--issue`, and that is the only write target, the duplicate-link comment
+included. A model result naming a different issue is itself malformed and
+escalates the named one, without echoing the model's value into the public
+Actions log. The escalation now fires for ANY exception while reading,
+planning or drafting, not a list of them: the first version of this fix
+caught three exception types, and review found four inputs that escaped
+it and kept the loop. Those were an unhashable category, a non-string draft,
+invalid UTF-8 and deeply nested JSON. The witness test is retired in
+`harness/retired.json`. Its replacement asserts the two exact `gh` calls the
+escalation makes and that no model-derived label is among them. A ratchet
+over every `apply_*.py` on disk asserts that each takes a required
+`--issue`/`--pr` and passes it to every call in `main` that writes through
+`gh`. `apply_depeval.py` always did; triage was the one that diverged.
+`tests/test_retirement_ledger.py` now also accepts a `file::test_name` entry
+and fails if that function is defined again.
+
+⚠ The first red run of the new tests reached the real `gh` with the
+developer's credentials: `test_the_issue_argument_is_required` did not stub
+it, and on the pre-fix script `main` applied to the placeholder repository
+`o/r`, and `gh` answered "Could not resolve to a Repository with the name
+'o/r'" and exited 1, so nothing was written. Every test in the file now runs
+under an autouse stub that fails on an unstubbed `gh` call.
+
+⚠ Not fixed here, and named in #670 as separate: what makes `classify`
+fail (a rejection before any token is spent), and a retry ceiling for any
+future failure that leaves `inbound:queued` in place.
+
+### Fixed - committing a tree no longer invalidates the full-tier stamp taken on it (#675)
+
+`pre_pr` refuses `gh pr create` unless the full tier passed on THIS tree,
+and the stamp names the tree by `_common.tree_id()`. That id hashed
+`git ls-tree HEAD` plus `git diff HEAD` plus the untracked listing, and a
+commit moves a change from the second string into the first: the same
+content, two different strings, a different hash. So the natural order
+(run the tier, commit, open the PR) was refused on a clean working tree
+and paid for a second full tier (218.14 s on #673, as recorded in #675)
+for a result it already had. The docstring had claimed the opposite since W-21, which was
+marked FIXED having implemented only its other half (docs-only commits);
+no test ever ran the sentence.
+
+The id now names content. The working copy under the stamp paths is
+staged into a throwaway index and written as a git tree, so a
+modification, a new file and a deletion each read the same before and
+after they are committed, staged or not, in a worktree too; untracked
+files still count and the real index is never written (git does store
+unreferenced objects for uncommitted content, which `gc` collects). A git
+failure yields an id no stamp can match, so two failed reads cannot
+certify each other, and it names its cause instead of reading as a tree
+that moved during the run.
+
+⚠ The first draft of this fix copied the index with `copyfile`, which
+stamps the copy "now". Git re-reads a file whose stat matches its entry
+only when the entry is as new as the INDEX FILE, so the fresh copy made
+every entry look settled and a same-size edit in that window was trusted
+from the stat cache: 3 of 25 runs named stale content, which is a stamp
+accepted for a tree the tier never saw. `copy2` keeps the mtime (0 of 25),
+and `test_a_racily_clean_edit_is_read_not_trusted_from_the_stat_cache`
+fails 6 of 6 against the `copyfile` draft.
+
+### Added - a checker's own output, mapped to the symbol it names (`import-trace --diagnostics`)
+
+The index has always known where every symbol begins and ends and has
+never seen a compiler error. An agent asking "is the function I am about
+to edit already broken" ran the type checker itself, read the raw output
+and grepped for the name, or skipped the question. What exists now:
+`jcodemunch-mcp import-trace --diagnostics <file>` and
+`import_runtime_signal(source="diagnostics")` read the file a checker
+already wrote (`mypy --output json`, `pyright --outputjson`, `tsc --noEmit
+--pretty false`, `ruff check --output-format json`, or a generic JSON-Lines
+`{file, line, severity, message, code?, tool?}`), detect the format from
+the CONTENT rather than the extension, and attach each finding to the
+innermost indexed symbol containing its line: a `return 42` inside an inner
+`def` lands on the inner function, not its parent or its class. Nothing runs
+a checker; the file comes from the user's CI or pre-commit hook, so there is
+no new process and no new trust boundary. Four existing tools read the
+result and no tool was added (the catalog moratorium holds):
+`check_edit_safe` gains a `pre_existing_diagnostics` blocker that names the
+checker and rule (`mypy arg-type`) and says so in `recommended_action`;
+`get_changed_symbols` annotates each added or changed entry;
+`get_pr_risk_profile` carries a `diagnostics` block over the changed set
+that is REPORTED, NOT SCORED (`basis: reported_not_scored`), because a
+seventh weight moves every published grade and needs its own measurement;
+`get_symbol_provenance` adds a section beside `stack_frequency`. Two rules
+hold everywhere. The `diagnostics` table is a SNAPSHOT: an ingest REPLACES
+every row for the same tool, because a fixed type error must disappear or
+the table lies forever about a symbol that is now clean, which is the one
+place the `runtime_*` upsert-and-add semantics are wrong and why the table
+is not named `runtime_*`. And no data is never zero: a consumer omits its
+block when nothing was ingested and states `diagnostics_data_present:
+false`; a real zero appears only where the checker ran and found nothing.
+Every block reports `as_of` (the HEAD at ingest, `None` when it could not
+be read) and a tri-state `current` against the live HEAD. No
+`INDEX_VERSION` bump: the table is in the schema for new databases and
+created at ingest for old ones, so no user's index is invalidated for a
+table that stays empty until they use it. Fixtures are the real tools'
+output over one deliberately broken sample module
+(`tests/fixtures/diagnostics/REGENERATE.md`), not authored from their
+documentation. Building it found that
+`runtime/resolve.py` capped its path-suffix walk at eight segments, so the
+absolute paths pyright and tsc emit on Windows
+(`C:/Users/<u>/AppData/Local/Temp/...`) never resolved and every such
+finding was unmapped; `resolve.suffix_candidates` is the one walk now,
+bounded by the path itself, and the fix reaches the OTel, stack-log and SCIP
+ingests that share `resolve_to_symbol_id`, and the ingest's own "is this
+file indexed" question, which had grown a second copy of the cap. The
+`import_runtime_signal` description and `source` enum changed and it gains
+an optional `format` argument; `benchmarks/schema_baseline.json` moved
+`full_full` 23682 -> 23848 tokens (the tool is in neither `core` nor the
+Counter, so `core_compact` and the byte-pinned front door did not move).
+PRD: `docs/prd-compiler-diagnostics.md`. Provenance: trace-mcp shipped a
+`get_diagnostics` tool on 2026-09-09 that RUNS the checkers inside its
+server; the shape here is the one this project's read-only charter allows.
+
+### Fixed - `classify_intent`'s docstring named a fallback it never ran (#669)
+
+`counter.classify_intent` documented a catalog-search fallback. Its body runs
+the 35-rule regex loop and nothing else; the lexical fallback lives one level up
+in `_handle_route`. Nothing behaved wrongly -- the description did, which is the
+harder kind to notice, because a reader has no reason to check it.
+
+## [1.108.318] - 2026-09-11 - the process is code that cannot skip a step, and the field is measured from result files
+
+Three layers ship in this block, every one off by default where it can act: the workflows layer (seven Claude Code commands and the hooks that refuse a commit without the fast tier, a PR without a full-tier run on the tree it describes, and every irreversible verb), the inbound layer (nine headless jobs that draft and never post, the model never holding a token that can write) and the competitive tier (the null alternatives, jCodeMunch and nine competitors over pinned corpora in a sandbox, every recorded number written by a script from a result file). Beside them: the usage-site question reaches the tool that answers it (CF-63), a failed embedding batch names its cause (CF-66), the watcher's startup and its deletion reconciliation (#641, #629, @marcelruhf), a notice for installs on tree-sitter-language-pack 1.x (#608, @kecsap), the CodeQL triage's fixes (#628) and an sdist without `.github/`.
+
+### Added - an install on tree-sitter-language-pack 1.x says so, and says what it costs (#608, @kecsap)
+
+The dependency is pinned `<1.0.0` and @kecsap asked for a way to opt into 1.x
+without a fork. An extra cannot do it (an extra adds a requirement, it cannot
+loosen one), but the override already worked and nothing checked it: `pip
+install -U tree-sitter-language-pack`, and the server ran on a pack that
+bundles no grammars and fetches each one over the network into a cache
+directory at first parse, with the extractor's `except Exception: return []`
+turning every grammar it could not load into a file "indexed for text search
+only". No warning anywhere, so an airgapped install on 1.x parsed nothing and
+said nothing, and a user who took the override was left to find the gap
+themselves. What exists now: `parser/grammar_pack.py` derives the pack's
+GENERATION from its version (bundled 0.x, download 1.x, absent) and wraps the
+pack's `get_parser` so a load failure is recorded per grammar, once, before it
+re-raises; the extractor's forty-odd loader sites and `search_ast` all import
+the wrapper (the first draft wired four sites by hand and the review found nim,
+the one language that matters, among the unwired), and a test fails on a bare
+import of the pack's loader anywhere else under `src/`;
+every `index_folder` result on a download or absent pack carries a
+`grammar_pack` block and a warning naming the version, the cache directory and
+each language whose grammar failed; the capability certificate carries
+`grammar_source`; `install-status` prints a `Grammar pack` section. On a 0.x
+pack a result is byte-identical to before. The override and its costs are in
+README under Security and in SECURITY.md's enumeration, before it ships, which
+is the standing rule for a network behaviour a user can opt into. Measured
+against 1.17.0 on 2026-09-11 (the probe is in the PR): 68 grammars fetched in
+16.3 s, no offline switch in the pack's config, `test_nim_parsing` failing as
+#382 recorded it failing on 1.13.3. And a correction to #382's record, found only by exercising the
+new notice on the live pack: `autohotkey`, `ejs` and `verse` are absent from
+the 1.x manifest, but all three are parsed by our own regex extractors and never
+ask tree-sitter for a grammar, so "bumping drops three languages" was a fact
+about the manifest, not about this parser. nim is the one registered language
+1.x loses; the pin's comment in `pyproject.toml` says so now. The pin itself is
+unchanged: dropping it needs the offline story first, which the issue rules out
+of scope.
+
+### Fixed - the question "where is this name used" reaches `check_references` on every surface that steers it, and `find_references` says what it is (FINDINGS CF-51, CF-63)
+
+Our own competitive adapter scored 0 on every reference-finding task of
+the tier's third-party corpora, and it did nothing wrong by the product's
+lights: it asked `find_references` where a name is used, which is what the
+tool's name says, what its description implied, and what the CLAUDE.md
+policy block `jcodemunch-mcp init` writes, the installed skill, the
+PreToolUse steering hook and the Counter's `route` rule all told it to do.
+`find_references` walks the IMPORT graph; a call site is invisible to it,
+and a single-file library has no importers of `map`, so the answer was
+`reference_count 0` with a tip pointing at the tool that would have
+answered. A user reaching for the same tool for the same question got the
+same 0, and the seven surfaces that had sent them there are the defect.
+Names are unchanged (a rename is a wire change with every client's
+transcript behind it). `find_references`' description now leads with who
+imports and hands the usage question to `check_references` or
+`search_text` in the same breath; `check_references` leads with where an
+identifier is used; the policy block, the skill, the steering hook and the
+route rule pair the usage question with `check_references`, and `route`
+gains a who-imports rule so `find_references` stays reachable by the
+question it does answer. What is impossible now: a product surface that
+pairs "used" with `find_references` alone, by any spelling, since the new
+test scans `src/` for the pattern beside the per-surface assertions; the
+scan found the seventh surface (`cli/skills.py`) the spec had listed six
+for. `find_references` is a core-tier tool under the `core_compact`
+ceiling, so its description shrank rather than grew (99 to 97 cl100k
+tokens, `evidence/tokens.txt`); `check_references` is standard-tier.
+`schema_baseline.json` is regenerated, and most of its movement predates
+this change: re-capturing `origin/main`'s own tree on the same box gave
+`core_compact` 3972 against the committed 3885, so the committed baseline
+had been stale within the `schema.drift_tolerance` Floor, and this change is the
+3972 to 3967 of it. The route-recall artifact moved with the rule
+(`route@1` 71.2 to 72.9 on the human corpus; the holdout corpus that
+carries the `route.control_at1` Floor names neither tool and did not move).
+
+### Fixed - a failed embedding batch names its cause in the response, at both loops that had been swallowing it (FINDINGS CF-66)
+
+A provider failure reached the caller as `symbols_skipped_error: N` and
+nothing else: the exception went to the log, so a rejected key, a network
+outage and a model the endpoint does not serve all read as the same count,
+and a run in which every batch failed came back in the success shape with
+`symbols_embedded: 0`. The response carries `error_causes` now, one row per
+distinct exception type and message with the number of batches it explains
+(the message scrubbed before it is shortened, since a provider echoes the
+request into it, and a cut list says `causes_omitted`), and
+`all_batches_failed` when nothing was embedded; a clean run carries neither
+field. The review found the same swallow one tool over: `search_symbols`'
+lazy top-up embeds the symbols a store does not hold yet, and a failed
+batch there left them scored lexically only, inside a response labelled
+`hybrid`, with nothing at all reaching the caller. Both loops share one
+ledger now (`embeddings/failures.py`), and `search_symbols` reports a body
+field `semantic_topup` (symbols unscored, batches failed, the causes),
+declared in its compact encoder so it survives compaction. In the body,
+because `meta_fields: []` is the shipped default and the dispatcher deletes
+`_meta` under it: the first draft put it there, and the review read the
+Standing lesson back to us. Found by the
+probe a competitor's fix title asked for (zvec-grep #81, `surface embedding
+failures and avoid redundant retries`, recorded in
+`docs/competitive/FINDINGS.md` CF-66): the retry half does not apply here,
+the cause half did, twice. What is not changed: each loop still tries every
+batch after a shared failure, which the `batches` count now makes visible
+instead of hiding.
+
+### Fixed - the watcher's startup cost is one recursive registration where the platform gives one, and a moved subtree, a renamed root and an edit under `.github/` all reach the index (#641, @marcelruhf)
+
+What was wrong: #629 stopped `awatch(recursive=True)` from following a
+workspace's directory-symlink graph (a symlink-heavy tree had grown the
+watcher past 30 GB) by enumerating the real directory tree and registering
+every directory itself, and that made startup cost proportional to the
+directory count on EVERY platform, when only Linux and the polling backend
+needed it: macOS and Windows native watching takes one recursive
+registration and does not walk links the way notify on Linux does. Three
+smaller defects sat beside it. A subtree moved outside the root left its
+descendants indexed, because a native recursive backend reports the
+directory event alone and nothing mapped that to the files under it. A root
+renamed and replaced on Windows kept the watch on the old inode, so the
+replacement was never watched. And an edit under an indexed dot-directory
+such as `.github/` was discarded by a second hidden-path filter in the
+watcher, after discovery had already admitted the file: two authorities for
+one rule, the shape the Standing lessons name. @marcelruhf found all four,
+measured the startup cost on a large directory tree, and fixed them.
+What the fix does: `_safe_awatch` selects the backend (recursive on
+macOS/Windows native, per-directory on Linux and under polling), re-arms
+when the root's identity changes (the root only, never the tree), maps a
+moved-out directory to its indexed descendants through the hash cache (one
+lazy sort per batch, a bisect per unknown deletion, full discovery only when
+that fails), and leaves hidden-path admission to discovery. Linux/polling
+registration re-verifies the directory set before it reconciles the edits
+that arrived during registration. What is impossible now: a startup that
+pays per directory on a platform that offers recursion; a moved-out tree
+whose files stay indexed; a watcher that keeps a renamed root; a filter in
+the watcher that overrules discovery. The two watcher test files were
+reorganised in the process, and `docs/harness/ARCHAEOLOGY.md` records where
+each property went, including the one deliberately inverted (`native
+registration is always non-recursive` was #629's rule and is now false by
+design on macOS/Windows). Symlink configuration is documented in
+[CONFIGURATION.md](CONFIGURATION.md#watcher).
+
+### Fixed - an empty full incremental scan over an existing index reconciles deletions instead of refusing, says so when it removed everything, and never mistakes a read failure for an empty tree (#641, @marcelruhf)
+
+What was wrong: an incremental `index_folder` whose discovery found no
+source files returned `No source files found` and touched nothing, so a
+tree whose files had all moved out kept every stale symbol in the index
+forever, and the watcher's root reconciliation (the unattended caller of
+exactly this shape) could never clear it. Reported and fixed by
+@marcelruhf (#641). What the fix does: a full incremental scan of an
+existing index that finds no eligible file reconciles deletions, including
+the removal of every indexed file; an initial or non-incremental scan of an
+empty folder is still an error. The empty scan is refused, and the index
+preserved, when the emptiness has a cause that is not the tree: an
+unreadable file or directory (now counted as `unreadable`, named in
+`warnings`, and classified as WITHHELD coverage, so a save after it marks
+`complete: false` and absence claims are refused where those trees used to
+claim completeness over files they never read), a `file_limit` truncation
+or a `too_large` exclusion. Binary exclusions are legitimate and still allow
+the reconciliation. Our review added the disclosure: the same empty root is
+also a bare mount point, a checkout mid-switch or a restore in progress,
+and the watcher reaches it unattended, so a scan that removed every indexed
+file now carries `full_deletion: true` and a `full_deletion:` warning naming
+the count and the remedy. The deletion itself stands, deliberately: unlike
+`refresh`'s generation stamp, which cannot be repaired and therefore refuses
+an empty corpus, an index emptied by a transient root is rebuilt in full by
+the next scan over the repopulated root, and the test pins that round trip
+(`tests/test_index_folder_empty_discovery.py`). Also from the review: the
+watcher imported `watchfiles.main._default_force_polling`, a private name of
+a pinned dependency, so a rename in a watchfiles release would have failed
+the watcher at its first `_safe_awatch`; `_force_polling_default` asks
+watchfiles when the name exists and applies its documented rule itself when
+it does not, and `tests/test_watcher_polling_default.py` pins both halves
+against the installed watchfiles for every spelling of
+`WATCHFILES_FORCE_POLLING`. The contract, failure conditions and the
+recovery steps are in [SPEC.md](SPEC.md#expected-error-behaviors).
+
+### Fixed - a `<script >` closed with a space before the bracket swallowed the markup after it (Razor and Astro)
+
+The Razor and Astro extractors cut `<script>` and `<style>` blocks out of
+the template with a regex that ended at a bare `</script>`. An end tag may
+carry whitespace before its bracket, which is valid HTML and which some
+formatters emit, and a block closed that way did not end there: the match
+ran on to the NEXT close tag, so the elements between two script blocks
+were parsed as JavaScript and their ids went unreported. The end tag now
+admits whatever a browser admits between `</script` and `>`: whitespace,
+or the junk attributes CodeQL named on the PR after a first fix that
+admitted whitespace only. Found by CodeQL (`py/bad-tag-filter`) in the
+code-scanning triage recorded as `docs/cicd/FINDINGS.md` C-16, with the
+process-lock file now created readable by its owner only (it was
+world-readable; its metadata is a pid, a client id and a start time, and
+every reader is the same user's process), the munch-bench leaderboard
+escaping model and provider names it renders into HTML, and the
+speedreview action passing its inputs to the shell as environment
+variables instead of interpolating them into the script text.
+
+### Added - the ninth competitor row, a ripgrep-plus-vector CLI in its in-process mode, with the schema weight of its one-tool MCP surface captured uncharged (FINDINGS CF-66)
+
+zvec-grep entered the comparison set on 2026-09-07 (FIELD.md, set row
+9; #638) on the adoption trigger, two months after its first release,
+and it is the first member whose own benchmark has the shape of our
+Baseline B: an agent's built-in tools against the tool, run by them on
+Claude Code with Opus 5, scored by a model judge, on a remote embedding
+model. The adapter runs its CLI in the mode its docs call `direct`
+(in-process, no daemon, no port), the corpus copied to the container's
+tmpfs because the index lives inside the workspace; P1 and T go through
+its indexed hybrid route, P2 and P4 through its ripgrep route, the one
+its agent guidance names for exact identifiers, and the note says so
+where the number will be read. The model in the image is the one its
+README recommends for code, warmed at build so the run stays offline,
+and it is not the remote model its published run used; the fairness
+note records the difference before the first number. Its MCP server is
+HTTP behind a daemon, so its one-tool surface is measured uncharged by
+starting the server on the container's loopback after the last charged
+call: one tool, 1,531 tokens of schema, where the Counter's three tools
+are 939. The smoke run over the self corpus (one run, never recorded)
+found the definition as hit #1 of ten on P1 and a fixed-string grep
+matching comments on P4; both are the tool's answers, cited as returned.
+One defect was ours: the token file the server reads was passed without
+being written, and the first capture's connection was refused.
+
+A session that changed retrieval can ask how the change moved every
+competitive row before opening a PR: the tier runs on the working tree
+and in a worktree of a ref (one adapter or all, three repetitions, in the
+container, the corpus and task checks refusing before scoring), and one
+table shows each row's ref and current values, the band, and the
+movement between them, with our own rows first. Drafts go to a state
+directory the ledger never reads, nothing is recorded into the tree's
+results, and nothing here types a number.
+
+### Added - the competitive tier's scheduled jobs, switched off until a human turns them on (FINDINGS CF-57, CF-58)
+
+Three workflows in the inbound layer's shape: a monthly run of every
+adapter over the pinned set in the container, its result and drafts
+pushed to the ledger branch by the App; a weekly release feed that reads
+registries on a read-only token, drafts an idea when a release title
+names a capability (the title quoted as data under the inbound preamble,
+the body matched and discarded) and dispatches a re-run when a release
+names a measured axis; and a daily post job that turns a draft a human
+marked approved into one labelled issue and writes the number back.
+Every write follows a kill-switch read with the App token in the same
+job; the job that runs competitor code holds no App token and writes
+nothing; the only push target is the ledger branch; each job has a
+budget row (model-free, zero cost) and the policy table names them.
+The post job needs a second variable that does not exist, so nothing can
+post; the labels do not exist either. A test file holds the workflows to
+those properties, the inbound workflow tests being the template.
+
+### Added - the competitive tier drafts its findings as issues, and posts none of them (FINDINGS CF-56)
+
+`benchmarks/competitive/findings.py` reads a recorded result file and
+the history and writes one draft per finding to a scratch directory, in
+the issue-template shape with a fingerprint line, `approved: false` and
+the `needs-human` label: a gap where a competitor is meaningfully ahead
+(with our median and spread, theirs, the band, the competitor's pinned
+release and image digest, the run file, and a first hypothesis from a
+fixed list chosen by rule, never a fix); a watch where we are ahead and
+the gap narrowed on two consecutive recorded runs; a standard proposal
+where a competitor beat a STANDARD.md Target on two runs, quoting the
+Target verbatim and proposing a Target in the same units, never a Floor,
+and saying in its first line that the standard is edited only by a
+human. Duplicates are ruled out by reading the tracker's `competitive-*`
+issues for the fingerprint: an open one is updated in place, a closed one
+is named, and a tracker that cannot be read refuses the whole run rather
+than risk a second issue. The module's only tracker verb is `issue list`,
+asserted by a test. The first run over three corpora drafts more than
+eighty gaps, and the ones worth reading first are those where a null
+baseline is ahead of us (CF-56); the release-feed drafts wait for the
+scheduled job.
+
+### Added - the competitive tier's trend tracking: the summary says how every gap moved, and whose release was beside it (FINDINGS CF-54, CF-55)
+
+A recorded run used to leave one line of medians in the history file
+and nothing read it back. `benchmarks/competitive/trend.py` now writes
+the line with the band and the gap per row and renders a *Movement*
+section at the end of every summary: per row, the delta on this run,
+the previous recorded run and the first, the movement judged against
+this run's band (`unchanged` inside it, `flipped` on a sign change,
+`widened` or `narrowed` on magnitude, `no band recorded` rather than a
+band invented for an older line), and the competitor's release on each
+of the three runs beside it, stated as a fact on the same line and
+never as a cause. A row where our own value moved past the band while
+their release did not is named our regression or our improvement, by
+the axis's direction. The self corpus's history key is normalised to
+`self` because its id carries the running commit, which made every self
+row a first run forever on the first render (CF-55). The summary also
+lists the tools-not-called rows and labels a variant adapter under its
+default; the jcm `counter` variant the design asks for has no producer
+yet and is recorded as open (CF-54).
+
+### Added - the competitive tier's corpus and task fairness checks, and the corpus set it needed to pass them (FINDINGS CF-46 to CF-48)
+
+A comparison over one language, one domain and small modular repositories
+flatters symbol search, so `benchmarks/competitive/corpus_check.py` now
+judges the SET of corpora before anything is scored, criterion by
+criterion, with every threshold read from `corpus_policy.json` and the
+verdict recorded in the result header; a failing set stops the run (exit
+5) instead of producing a table. The three corpora pinned by
+`benchmarks/tasks.json` plus this tree's own `src/` fail it on two
+criteria (the language count and one language's share), not the four the
+design predicted (CF-46), so `corpora.json` pins five more by full SHA
+(a utility library, an HTTP client library, a TypeScript monorepo and two
+repositories over 10,000 files in different languages; one alone puts its
+language over the cap, which is why there are two) and `corpora.py`
+fetches them by SHA into a cache OUTSIDE the tree, because `benchmarks/`
+ships in the sdist. `task_check.py` refuses a malformed or unanswerable
+task and keeps a task only one side can answer out of every head-to-head
+table, symmetrically; after a run it names a tool that cited nothing on
+every P task of a corpus, the shape of an adapter silently not called.
+The tasks themselves: for three corpora a third party's rules
+(sverklo-bench, CC-BY-4.0, pinned by commit) reproduced by
+`tasks/from_sverklo.py`, each hand-verified definition line re-verified
+at our SHA so a moved line refuses the generator and the three tasks that
+do not exist at our SHAs are dropped with the reason (CF-48); for the
+other three, symbols chosen by one author with expected sets computed by
+the same rules, never typed. One author wrote every adapter and every
+task, which the design's independence rule forbids and one agent cannot
+meet; it is recorded, not softened (CF-47). `run.py` takes `--set`,
+`--only`, a `--tasks` directory, and `--corpus ID=PATH|DOMAIN`.
+The first run over the whole set found a harness defect: the sandbox's
+timeout killed the docker client and not the container, so a "timed
+out" container kept running beside the next one and the host's memory
+guard killed the runner, discarding everything measured (CF-49).
+Containers are named and killed on timeout now, with a test that leaks
+one against the pre-fix code, and a checkpoint of finished runs is
+written after every run.
+The recorded run of this PR covers the self corpus and the two corpora
+with third-party tasks; the whole set does not fit the design's
+four-hour budget on a workstation (one pass alone ran past two hours,
+CF-53), which sizes the scheduled job rather than trimming the set. The
+run found two things worth more than its rows: our own adapter answers
+the reference-finding category with the import-graph tool, and that
+tool's reply says which tool to use instead, so our row there is zero on
+every corpus until the adapter is corrected (CF-51, a loss recorded as
+one); and one competitor's image lacks the runtime its JavaScript
+language server needs, so its rows on that corpus are not comparable
+rather than lost (CF-52). Neither is fixed here: adapters change one per
+PR.
+
+### Added - the eighth competitor row, the embedding representative over MCP stdio with a local model (FINDINGS CF-43 to CF-45)
+
+The last adapter of the set is the one whose retrieval is a vector
+search over AST chunks with a sentence-embedding model run locally on
+the CPU (FIELD.md, set row 8; it replaces the home-made RAG baseline
+as the embedding representative). Installed with pip from a lockfile
+that pins the package with its documented local-model extra and every
+dependency by hash; the default model is downloaded once at image
+build into a cache the offline run reads. Its daemon, which its own
+client starts on first use and talks to over a Unix socket, does not
+trip the sandbox rule: it is spawned inside the container, listens on
+the container's tmpfs and dies with it, and every row pays its start
+inside the index time, which is the tool's own design.
+
+Two things shape the rows and are recorded rather than worked around:
+its search refreshes the index before every answer by default, which is
+most of each call's latency and is charged as an agent pays it; and an
+embedding model asked an identifier ranks by meaning, so the
+definition-lookup row measures a lexical question put to a semantic
+tool, which the fairness note names as the harness's choice of task,
+not the tool's failing. Its docs describe no references or dependents
+tool, so those rows are NOT COMPARABLE by scope, not zero. The probe
+ran over the pinned corpus (CF-32's rule). The rows and their caveats
+are FINDINGS CF-43 to CF-45 beside the result file.
+
+### Added - the seventh competitor row, a repo-map tool on the token axis only (FINDINGS CF-40 to CF-42)
+
+The map-shaped approach in the lane (FIELD.md, set row 6; the one a
+third-party review says beats us on cross-file awareness, and the one
+our own whitepaper calls complementary) is a measured row for the first
+time, on the only axis a map can be measured on: what the text it sends
+with every change request costs at the tool's default budget. It is not
+an answer to a question, so no F1 row exists for it and none is
+invented; the adapter answers token tasks only, passes the query
+nowhere because the tool takes none, and cites nothing. Installed with
+pip from a lockfile that pins the package and every dependency by hash,
+on the Python the package declares, with the tokenizer assets cached at
+image build so the offline run fetches nothing.
+
+Two of its behaviours shape the row and are recorded rather than worked
+around: its default budget is not the figure its docs give but a clamp
+on the model's context window, read from its own banner line; and its
+stdout carries a human-facing announce block ahead of the map, so the
+payload is the map after the tool's own preface and the block is kept
+aside. The probe ran over the pinned corpus, and its banner is what
+exposed CF-39. The rows and their caveats are FINDINGS CF-40 to CF-42
+beside the result file.
+
+### Fixed - the competitive self corpus carried this tree's bytecode, and every recorded row was measured over it (FINDINGS CF-39)
+
+The pinned self corpus is `src/` copied and git-inited, and the copy
+was a plain `copytree`: every `__pycache__` the host interpreter had
+left behind rode along and was committed, so the repository each tool
+was told to index held three compiled files for every source file. The
+shared file set the scorer uses was never touched (it is text files off
+`git ls-files`), so no F1 or token row read them; what did is every
+tool's own index step, which saw a repository three times the size it
+should have, and one tool's own banner printed the count. The copy now
+excludes bytecode by directory name and by suffix, the property is
+asserted over `git ls-files` of a built corpus, and the whole set was
+re-recorded on the corrected corpus; what moved per tool, and what did
+not, is CF-39 beside the two result files.
+
+### Added - the sixth competitor row, a pre-written-cards tool over MCP stdio on its deterministic path (FINDINGS CF-35 to CF-38)
+
+The structurally different approach in the lane (FIELD.md, set row 5) is
+a measured row, on the path its docs describe as needing no key and no
+network: the tree-sitter wiring graph and per-file cards its build writes
+to disk, served by its MCP server. Its npm package and every dependency
+are pinned by integrity hash in a lockfile the image installs with `npm
+ci`; the native grammar addons are built at image build; nothing is
+fetched at run. Its graph is written to a context directory outside the
+read-only corpus through the documented global option, with the two files
+it would otherwise write into the repo switched off by its documented
+flags. The LLM layer its headline claims are made for is not built (no
+key), and the fairness note records that as the first disadvantage.
+
+Two of its behaviours shape the rows and are recorded rather than worked
+around: its file-level import edges are unresolved on this corpus, so the
+documented file-dependents route answers with none and points, in its own
+text, at its regex search; the adapter follows that instruction only when
+the tool gives it, in a second container, and cites what the search lists.
+And every answer opens with a token-savings estimate addressed to the
+agent, which is part of what an agent receives and is charged like the
+rest; no row reads the estimate. The probe ran over the pinned corpus
+(the rule CF-32 set). The rows and their caveats are FINDINGS CF-35 to
+CF-38 beside the result file.
+
+### Added - the fifth competitor row, a knowledge-graph tool over MCP stdio with a one-tool default surface (FINDINGS CF-31 to CF-34)
+
+The lane's largest adoption (FIELD.md, set row 4) is a measured row. Its
+release bundle for linux-x64 is verified against the release's published
+checksums and installed the way its install script installs it, without
+running the script; nothing is compiled and nothing is fetched at run.
+The tool keeps its index inside the project root and the corpus mount is
+read-only, so each container indexes a copy on the sandbox's private
+tmpfs, a harness cost timed by nobody and a read path faster than the
+bind mount every other adapter reads through, which the fairness note
+records under advantages. Its documented sandboxed-environment setting
+and its documented off-switch for telemetry and the update check are set;
+its documented watcher-off flag is passed, because nothing changes under
+a measurement.
+
+Two things the probes found shape the adapter and are recorded rather
+than smoothed over: the tool's primary answer tool elides lines it sent
+earlier in a session, so a shared session would make a task's token
+count depend on the tasks before it, and every T task runs in its own
+session; and its file-dependents answer names eight files and a count,
+so its P4 recall is capped by its output shape and the citations are the
+eight it names, never the count. A probe over the full checkout rather
+than the pinned corpus produced a draft finding about the task set that
+the recorded run did not support; it is recorded as a method finding
+with the rule that closes it. The rows, their caveats and the schema
+weight of both surfaces are FINDINGS CF-31 to CF-34 beside the result
+file.
+
+### Added - the fourth competitor row, an LSP-backed tool over MCP stdio (FINDINGS CF-27 to CF-30)
+
+The alternative the field survey lists first (FIELD.md, set row 1) is
+a measured row. Its wheel, the language-server package it pins and
+every dependency are pinned by version and hash in a lockfile the image
+installs with `--require-hashes`; the language server is launched from
+the image through the tool's documented `ls_path` setting, so no `uvx`
+download happens at run time, and the Node runtime its Python wrapper fetches
+on first use is fetched once at build. The tool's global configuration is
+pinned in the tree: the template's values, with the dashboard and GUI log
+window off and per-project data pointed outside the read-only corpus
+mount.
+
+Two harness defects fell out of the first probes and both are fixed
+where the next tool inherits the fix: the wrapper's pinned Node-version
+variable makes it re-run its installer on every start (a download that
+killed the server under `--network none`), so the image unsets it for the
+run; and the MCP driver read a server's stderr only at exit, so a server
+that logs every tool result there filled the pipe mid-call and read as a
+hang. The driver drains stderr continuously now, and the two earlier MCP
+rows are re-measured with it in this PR's recorded run. The rows
+themselves and their caveats are FINDINGS CF-27 to CF-30 beside the
+result file (`results/2026-09-05-76e75398.json`): a per-call latency
+dominated by the Windows bind mount, a token row dominated by a pattern
+search that returns every match, and a second instance of a server
+reporting its framework's version rather than its own.
+
+### Added - the third competitor row, over MCP stdio (FINDINGS CF-23 to CF-26)
+
+The tool's own published token-reduction claim (FIELD.md) is now a
+measured row instead of a quoted one. The PyPI wheel
+and every one of its dependencies are pinned by version and hash in a
+lockfile the image installs with `--require-hashes`; the base install
+only, because the README makes embeddings, communities and Python
+call-resolution optional extras. The same `mcp_driver.py` that drove
+the second row drives this tool's `serve` command; the tool's default
+data dir is inside the repository, which the sandbox mounts read-only, so
+its documented `CRG_DATA_DIR` knob points it at the writable mount.
+
+The three-run rows of this configuration are FINDINGS CF-23 to CF-26
+beside the result file (`results/2026-09-05-95eb4a00.json`): an answer
+that is the tool's own at its documented default and not an adapter
+defect (CF-23), a token row that is not like-for-like (the tool returns no
+source bodies, so the agent's own reads are uncharged) and must carry
+that caveat wherever it is quoted (CF-24), a second witness for a candidate
+CF-20 already raised (CF-25), and a `serverInfo` field that reports the
+framework's version rather than the tool's, the defect our own server
+shipped until 1.108.292 (CF-26).
+
+### Added - the second competitor row, over MCP stdio (FINDINGS CF-19 to CF-22)
+
+`benchmarks/competitive/sandbox/mcp_driver.py` is a minimal MCP client
+that runs inside a competitor's container: initialize, `tools/list` (the
+schema weight every MCP server pays, counted in the shape the field's
+tool-definition benchmark uses), then each task's `tools/call`, every
+round trip timed. The tool is driven through it the way its own
+`mcpServers` entry drives it, from the release's portable archive
+verified against its published checksum (the PyPI wheel is a
+launcher that fetches the runtime on first run, a network step the sandbox
+forbids after build). The tool refuses a cache it does not own, so the
+sandbox gained one more mount, a uid-owned 0700 tmpfs, pinned in the test
+like every other flag; it refuses the corpus root as "too broad", so the
+adapter indexes each top-level directory as its message asks.
+
+The P4 ground truth is the union of textual and re-export-resolved
+importers now, computed from source by AST (FINDINGS CF-19), because a
+truth only one definition satisfies grades the tool holding the other
+definition down. The three-run rows of this configuration, and the
+`competitive-gap` candidates they raise for item 5, are FINDINGS CF-19 to
+CF-22 beside the result file (`results/2026-09-05-73fbd7cf.json`); the latency and cold-index rows of that run
+were unstable under the 10% rule and are not claimed. None is an issue
+until item 5 exists and the pinned corpora agree; none touches product
+source.
+
+### Added - the competitive tier's sandbox and its first competitor row (FINDINGS CF-12 to CF-18)
+
+Every measured tool, jCodeMunch included, now runs inside a container the
+tier builds from a pinned Dockerfile (base image by digest, the tool by
+release checksum) and runs with the network removed, a read-only root, no
+capabilities, an unprivileged user and memory and pid ceilings
+(`benchmarks/competitive/sandbox.py`; `tests/test_competitive_sandbox.py`
+pins every flag and that no host variable reaches the tool). jCodeMunch's
+own row moved into the same shape (`sandbox/jcodemunch.Dockerfile`, built
+from what a commit of the working tree would contain, with one worker file
+run identically on the host when there is no Docker), so the sandbox's
+cost is paid on every row and a result file says which sandbox, whether
+the tree was dirty and which scorer wrote it. The tool is driven per its
+README's agent policy (`investigate`, `search` then `show` on the top 3,
+`refs`, `importers`), with its default output as the payload and an
+uncharged `--json` twin for citations; its fairness note under
+`docs/competitive/fairness/` was written before its first number.
+
+The first three-run result with a competitor on the table is recorded
+in `docs/competitive/FINDINGS.md` (CF-12 to CF-18) beside the result file
+it came from. Those rows are one 277-file corpus, ten tasks and the
+loop's first week of methodology, not a product comparison, and each
+entry says what it is evidence of and what it is not. Review round 1
+corrected two places where the first draft favoured the home team (the
+shared file set, CF-5; the P4 ground truth, CF-18). A timed-out or failed competitor is a
+`not_runnable` row now, never partial means; the jcodemunch image is
+two-stage with dependencies pinned from `uv.lock`; a `show` miss is
+charged what the agent sees, like every other miss.
+
+### Added - the competitive tier: the null alternatives and jCodeMunch through one interface
+
+`benchmarks/competitive/` is the first piece of the competitive feedback
+loop (`docs/competitive/FIELD.md`, `DESIGN.md`): one adapter interface that
+jCodeMunch, read-all and grep-top-3 all implement, a runner that puts every
+row through the same corpus, the same tasks and the same tokenizer three
+times, and a result file that carries the raw triple, the median, the
+spread, the band and whether a gap is meaningful. The point of shipping the
+nulls first is that every later competitor row is measured against a
+table that already shows what "no tool" costs on the same line. No competitor is
+measured yet; nothing here reads a README, and a result file has no field
+a self-reported figure could be typed into.
+
+The first three-run result on the self corpus caught the scoring rule
+mis-stated in DESIGN s5.1: the band was built from three times the larger
+of the two spreads and THEN each row was judged stable against it, so an
+unstable competitor triple (50, 100, 300) widened its own band to 750 and
+read as stable. Stability is judged first now, against the row's own
+median, and an unstable row is never a meaningful gap in either direction.
+The reviewer then found two more places the first draft leaned our way
+without saying so: our own adapter indexed with context providers OFF
+while its header said "shipped defaults" (they ship ON; the adapter runs
+them now), and F1 matched cited lines to expected lines many-to-many, so a
+tool that cites every matching line, which grep does by construction, was
+paid once per citation for a single hit. Matching is one-to-one now and the
+read-all row scores a real precision (expected over corpus lines) instead
+of a floor typed as 0.0.
+`tests/test_competitive_tier.py` pins that pair, the F1 tolerance rule, the
+grep baseline's ranking and whole-file reads (ARCHAEOLOGY R24-R26), and the
+end-to-end result file.
+
+### Added - the inbound layer: headless triage of issues and PRs, off by default
+
+`docs/inbound/` (AUDIT, POLICY, DESIGN, FINDINGS, VERIFICATION) and the
+jobs under `.github/workflows/inbound-*.yml` let Claude Code, running from
+GitHub Actions, label and draft responses to inbound issues, evaluate
+Dependabot PRs, and attempt a fix on an issue a maintainer labels
+`agent-fix`, so the human's role narrows to reviewing PRs. One repository
+variable, `INBOUND_ENABLED`, is the switch, and only the exact string
+`true` turns anything on; every job with no model reads it before its
+first step and again before its first write, and a job that runs the
+model or PR code starts only from that read. Nothing headless merges, tags,
+publishes, closes, deletes, edits another account's text, or touches the
+standard, the thresholds, ARCHAEOLOGY, the workflows, or `.claude/`;
+`tests/test_inbound_workflows.py` asserts the structural half over every
+workflow file and the self-check enforces the never-touch list on every
+agent-authored PR. The App that writes on the jobs' behalf holds Contents,
+Issues and Pull requests, plus Variables read, and no job that runs a model
+holds any write scope. Details, per job, in `docs/inbound/DESIGN.md`.
+
+The first live run (2026-09-05) found two defects before anything ran.
+The switch was read with `GITHUB_TOKEN`, which cannot read a repository
+variable at all (`403 Resource not accessible by integration`; no
+`permissions:` scope covers variables), and the reader hid the 403 as
+"absent", so every job declined while reporting the switch off; the
+`vars` context is no substitute, measured as a queue-time snapshot (`true`
+two minutes after the flip to `false`). The switch is read with the App
+token now, the only token that can, in the jobs that hold no model; the
+reader prints its error; depeval and bench-full gained a gate job so a
+model or PR-code job is never first. And the daily budget counted the run
+that was asking, so a job allowed one run a day always declined itself.
+VERIFICATION section 7.
+
+The second live run, the same day, found the rest of that budget defect
+and one of the setup's: a run that had declined at its gate still spent
+the day's one slot, so the fixed sweep was declined for the broken one
+(the budget now reads each run's steps and counts only a run in which
+something beyond the gate ran); and the ruleset written to confine
+the App applied its update rule to `main` too, so every human merge needed
+an admin bypass and auto-merge could not fire. `main` is out of the ruleset
+and under branch protection; the App never merging is by construction.
+FINDINGS IN-17, IN-19. The third run got through every step of the sweep
+and failed on the last line, writing its summary into a directory that
+only a declined run had ever created; the directory is created first now.
+
+### Changed - the sdist no longer carries `.github/`
+
+Workflows, the Dependabot config and, from this release, the inbound
+layer's headless prompts and helper scripts under `.github/inbound/` are
+repository plumbing; nothing an installed package reads. `.github/` joins
+`.claude/` in `[tool.hatch.build.targets.sdist] exclude`, asserted by
+`tests/test_inbound_plumbing.py` (docs/inbound/FINDINGS.md IN-10). Wheels
+were never affected.
+
+### Fixed - the test suite rewrote the developer's real `~/.claude/settings.json` (workflows W-34)
+
+Five `run_init(yes=True, no_backup=True)` tests in `tests/test_init.py`
+never redirected `_settings_json_path`, so every full-tier run executed
+`install_enforcement_hooks` against the real Claude Code settings file, and
+`_converge_rule` rewrote all six jcodemunch hook commands to whatever
+`shutil.which("jcodemunch-mcp")` resolved to in that run. Inside a git
+worktree that is the worktree's own `.venv`; the workflows-layer probe
+deleted the worktree minutes later and the next session start failed with
+`No such file` on every product hook. `no_backup=True` is why the June
+`settings.json.bak` sat beside a September `settings.json`, and why the
+finding was first blamed on `uv sync`. On CI the runner has no settings
+file, so the write created one and nothing failed; on a developer box it
+silently repointed hooks. This is Practice 8 (#437) in a new costume: that
+guard is written against `load_config` by name and never saw this path.
+The fix is one layer down, not at the five call sites: an autouse fixture
+in `tests/conftest.py` redirects the four home-derived `cli.init` path
+helpers to a per-test directory, and a tripwire fails the test that changes
+the real `settings.json` or `CLAUDE.md` by any other route. The
+reproduction (`tests/test_init_home_isolation.py`) reruns the offending
+tests in a subprocess whose home it owns and asserts a sentinel settings
+file is byte-identical; against the pre-fix conftest it is rewritten.
+
+### Fixed - the index-cache TTL tests keep a real clock out of the loop (harness F-22)
+
+`tests/test_v1_108_172.py`'s four TTL tests slept wall-clock time against
+TTLs of 0.1 to 0.3 s, so `test_active_use_keeps_an_entry_alive` had a 0.2 s
+margin between "touched every 0.1 s" and "idle past 0.3 s". On the PR gate's
+`windows-latest, 3.13` job for #593, a docs-only change, one gap under xdist
+ran past it and a hot entry read as evicted: `1 failed, 9329 passed`, seven
+sibling jobs green, and the re-run green. That is the shape of every timing
+flake, and the first one the gate has produced. The cache reads
+`time.monotonic()` through its module's `time` name, so the tests now inject
+a clock they advance by hand: 54 simulated seconds against a 10 s TTL with a
+touch every 9, then 10.5 idle to prove it still evicts. No sleeps remain in
+the TTL section. The non-vacuity pass still holds: deleting the refresh-on-hit line in
+`_cache_get` turns the test red.
+
+### Added - `scripts/surface_diff.py --descriptions`: a reworded tool description is a surface change the script can now see
+
+The stage-5 surface gate compared tool NAMES between the base ref and the
+working tree and nothing else (`docs/workflows/FINDINGS.md` W-1), so the one
+class of surface change that moves a byte-pinned prefix and the
+`core_compact` ceiling -- a description edit -- passed it as `no surface
+change`. `--descriptions` diffs each tool's description from the same
+`_build_tools_list()` call that already lists the names (one subprocess per
+tree, no second worktree), prints `description changed: <name>` per tool,
+and appends a `## done: tool descriptions` block under `--summary`. It is
+LISTED, never a failure: the exit code still belongs to the name rule alone,
+so `dod_checklist.py` and `surface_guard.py`, which parse the old stdout,
+read it unchanged. `tests/test_surface_diff.py` exercises `verdict()` and
+the description diff on synthetic inputs with a red arm for each and no
+subprocess. No `src/` change.
+
+## [1.108.317] - 2026-09-04 - CI runs the harness on every change; publishing is a dispatched workflow
+
+### Changed - CI runs the harness on every change; publishing is a dispatched workflow
+
+The eight workflows are five: `pr-gate.yml` (five staged jobs, every one a
+required check on `main` by name), `main.yml` (full witness + online bench
+after a merge, a `regression` issue per failing Floor, a weekly results PR),
+`nightly.yml` (the matrix with fresh corpora, `drift` issues),
+`security.yml` (CodeQL) and `release.yml` (dispatch with a version: pre-flight,
+build once, Test PyPI, clean-venv smoke on both OSes, tag, PyPI via trusted
+publishing, post-publish smoke with the tool count recomputed, GitHub release
+from the CHANGELOG block, MCP registry; `dry_run` defaults true). `test.yml`,
+`replay.yml`, `harness.yml`, `handshake.yml` and `sign-release.yml` are
+retired into those. Two new Floors: `types.error_max` (pyright ratchet) and
+`deps.vuln_max` (pip-audit, zero; `click` bumped for PYSEC-2026-2132), plus a
+platform-scoped `suite.full_seconds_ci_windows`. `enforce_admins` and
+`strict` are on; the emergency path is `docs/cicd/RUNBOOK.md` §6.
+`SECURITY.md` gains a reporting policy. Design, audit, findings and the
+verification of every probe: `docs/cicd/`.
+
+### Fixed - tied `search_symbols` scores ranked by the order the disk was walked
+
+The bounded ranking heap broke equal scores by encounter order, which is
+`os.walk` order: directory order on NTFS, hash order on ext4. gin's "context
+bind" has five candidates at exactly 10.202, so which three a caller got
+depended on the filesystem, and the same pinned corpora gave the token
+benchmark 24,044 tokens on Windows and 23,440 on CI (harness F-13). Ties now
+rank by symbol id, byte order, on every platform; nothing else in the ranking
+moved. `tests/test_search_symbols_tie_order.py` reverses the index order and
+expects the same answer, and it is red against the old key.
+
+⚠ The investigation found two more contributors, each documented rather than
+papered over. A CRLF checkout serves `
+
+` inside every fetched symbol
+(+603 tokens on the same pins), so `benchmarks/REPRODUCING.md` now says clone
+LF. And `_meta.total_tokens_saved` is read from `~/.code-index/_savings.json`
+in HOME regardless of `CODE_INDEX_PATH`, so the published count carries the
+width of the measuring box's lifetime ledger (+1 search / +3 fetch tokens per
+query on a nine-digit ledger) and every benchmark run grows it; that one is
+open as harness F-17 because fixing it is a basis change.
+
+### Changed - the token benchmark's reference is captured on CI
+
+`benchmark.yml` dispatched with `reference=true` runs `--reference` on the
+ubuntu runner and uploads `jcm_reference.json`, `results.md` and
+`provenance/measured.json`; those are committed, so the number the weekly
+gate compares against was measured where the gate runs. Re-measured
+2026-09-03 on the same pins: **96.5% / 28.3x** against grep-top-3 (664,975
+-> 23,467), 99.6% / 241.1x against read-all, per-query 7.6x to 81.2x
+(median 26.1x). The six prose mirrors are re-synced.
+
+## [1.108.316] - 2026-09-02 - A display preference edited the data it was displaying
+
+### Fixed - the result cache handed out the object it was holding (#572, #570)
+
+Reported by @rknighton, twice: #570 for the crash and #572 for the cause, with a
+standard-library reproduction that builds its own repo and needs no fixtures.
+`cache_put` stored the caller's dict and `cache_get` returned that same dict, so
+the dispatcher's metadata step — a DISPLAY preference — reached into the session
+cache and changed what every later caller was served. `_isolate` in
+`storage/token_tracker.py` now clones every container on the way in and on the
+way out.
+
+⚠⚠ **The crash was the loud case and the quiet ones needed no unusual config.**
+`meta_fields: []` is the shipped default, so out of the box the second call to
+`find_references` or `get_blast_radius` came back `KeyError: '_meta'`. But
+`suppress_meta` is a per-CALL argument: on a machine with ordinary
+`meta_fields`, one call passing it emptied the shared entry, and the next caller
+— who had asked for metadata — was served the damage. Measured pre-fix on that
+sequence: an empty `_meta`. A partial `meta_fields` does the same by
+replacement.
+
+⚠⚠ **The window is the MISS path, which is why a two-call reproduction shows
+the crash and shows neither quiet case.** Both cached tools already rebuild
+`_meta` from `dict(cached)` on a hit, so a repeat call survives; it is the call
+that FILLS the cache that returns the stored object to a dispatcher that then
+edits it.
+
+⚠⚠ **Fixed in the cache, not at the two call sites, and that is @rknighton's
+argument rather than ours.** `search_symbols` keeps its own cache and had
+already paid for this twice — #377 item 3 for `_meta.verdict`, then #404 (also
+@rknighton) for the rows — and neither fix reached the shared cache. A third
+per-consumer patch clears both tools today and leaves the trap armed for the
+tool written next. Standing lesson: **we fix the reported call site and leave
+the mechanism.**
+
+⚠ **Containers only, and the depth is unbounded on purpose.** Leaves in a tool
+result are JSON-serialisable immutables by the time they reach the cache, so
+cloning them buys nothing: measured on an 800 KB response, **4.15 ms
+container-only vs 16.58 ms `copy.deepcopy`** (0.42 vs 1.67 at 80 KB). A rule
+shaped to the containers the two current callers happen to use would be a guard
+written against a spelling.
+
+⚠ **The price is seven assertions.** `tests/test_result_cache.py` asserted
+`cache_get(...) is cache_put(...)` in seven places; they are `==` now. Identity
+was never a contract anyone wanted — it was the defect written down — and the
+values are untouched.
+
+⚠ #570's `cached.get("_meta", {})` guard is merged and kept. It covers one tool
+and cannot see either quiet case; on the non-vacuity pass it is why the
+`get_blast_radius` arm stays green while `find_references` goes red.
+
+### Added - the receipt's dollar figure states what it prices
+
+`savings_usd_basis` / `savings_usd_note` on `receipt --export json` and on
+`--rates`, plus a line on both human surfaces. Fourth instance of a family
+already fixed three times — `hit_rate_basis`, `schema_tokens_basis`,
+`basis: excess_calls` — and the rule holds: **a figure whose basis is unstated
+gets a wrong one supplied for free.**
+
+⚠⚠ **A LABEL, NEVER A SCALED NUMBER, and the arithmetic is unchanged.**
+Prompted by a competitor (Graft) converting claimed savings to a *blended
+session rate*. **That is the right correction for tokens CONSUMED and the wrong
+one for tokens AVOIDED.** Measured here across 25 transcripts: **98.6% of input
+is cache reads**, a **0.1166x** blended multiplier — dividing by it would cut
+the figure ~8.6x and would price an avoided token as though it sat in the cache
+being re-read. It was never written, so it is never read. `dollar_savings` is
+pinned at exactly `$5.00` per avoided MTok at Opus, because a number quietly
+scaled by 0.1166 would answer neither question and nothing on the wire would
+show it happened (the `analyze_perf` raw `hit_rate` rule).
+
+⚠ **The honest direction is that the figure is a FLOOR.** An avoided token would
+have cost once at the fresh-input or cache-write rate — the latter carries a
+premium — and again at the cache-read rate on every later turn it sat in the
+prefix. In a session that is 98.6% cache reads, that sum exceeds one list-price
+charge. Same inversion `tier_switch_cost.py` documents: the intuition flips once
+the block is cached.
+
+⚠⚠ **The code already knew and the shipped field did not.** A comment above
+`_MODEL_PRICES_USD_PER_MTOK` has explained this counterfactual since the table
+was written — one field over from what v1.108.312 fixed, where the benchmark
+artifact knew the basis and the response omitted it.
+
+⚠ Both surfaces, not just the JSON: a machine-readable field the CLI does not
+print leaves a human to supply the missing basis, and a human is exactly who
+does. `--rates` carries it too, since it exists so consumers price their own
+counts off one table and would otherwise reproduce the omission downstream.
+
+### Changed - trimmed `get_ranked_context`'s description to recover schema headroom
+
+Live `core_compact` measured **3,998 of a hard 4,000**: two tokens, so the next
+core-tier description edit would have breached the ceiling and done it in CI
+rather than locally. Now **3,972** — 26 tokens back.
+
+⚠⚠ **The tool trimmed was chosen for WHICH PREFIX IT MOVES, not for its size.**
+The three fattest core descriptions — `jcodemunch_guide` (118), `announce_model`
+(92), `set_tool_tier` (78) — are all in the six byte-pinned `counter` tools, and
+`counter` is the default surface for new installs. Trimming `jcodemunch_guide`
+was written first and `tests/test_counter_surface_stability.py` caught it at
+**-203 B**, which is the pin doing its job: a description reword is a full-rate
+cache write for every user on that surface. `get_ranked_context` (103 -> 77)
+buys the headroom while leaving the counter prefix byte-identical. One prefix
+moves; two was avoidable.
+
+⚠ What went: `"Truncates at token_budget."`, which restated *"packs greedily
+until token_budget is exhausted"* in the same paragraph; the algorithm names,
+which no caller chooses on (`sort_by`'s own description carries them); and the
+casing list, which the pinning rule implies. Purpose and Length still pass the
+`benchmarks/description_smells/` rubric.
+
+⚠ **Routing recall is unchanged, and that was measured rather than assumed** —
+`route@1 71.2 / @3 86.4` on the human corpus and `65.9 / 72.7` on the holdout,
+identical on the pre-trim tree. Descriptions are the router's input, so a trim
+is exactly the change that could have moved them.
+
+### Fixed - `holdout_results.json` published a recall it no longer measured
+
+Found while re-running the gated artifact after the trim above.
+`benchmarks/route_recall/holdout_results.json` reported **route@3 75.0** where
+the harness measures **72.7**, and carried `null` for `blind_floor_kset` and
+`route_vs_floor_pts` — fields the harness had since started emitting. Stale by
+2.3 points **in our own favour**, on the corpus that is frozen before the
+routing fixes and is therefore the honest one.
+
+⚠⚠ **Pre-existing, and proven so rather than assumed**: the pre-trim tree
+measures 72.7 as well, so the trim did not cause it and could not have. Without
+that check the drift would have been attributed to the description change and
+"fixed" by reverting something that was correct.
+
+⚠⚠ **Three artifacts, two ratchets.** `test_route_recall_artifacts_are_fresh.py`
+gated `results.json` and `emitted_task_results.json`; `holdout_results.json`
+comes out of the SAME harness under `--corpus holdout.json` and was covered by
+nothing, so re-running the two with tests is precisely how the third went stale.
+That file's own docstring already argued this case for `results.json` in
+August. It now has a third test, non-vacuity checked against the stale artifact.
+
+### Fixed - `search_symbols(kind="field")` was refused by both gates (#571, @devtomnl)
+
+`field` has been emitted by the Python parser since the dataclass-fields change
+and was in neither gate — **399 of them in this repo's own index**, every one
+unreachable through the `kind` filter. The runtime check
+(`kind_filter not in VALID_KINDS`) refused it, and so did the published enum.
+
+⚠⚠ **The wire enum was a SECOND COPY and had drifted from the set it was meant
+to mirror.** Nothing compared them, and each side looked internally consistent:
+a reader of either sees seven kinds and no reason to doubt it. `KIND_ORDER` is
+now the one authority, `VALID_KINDS` derives from it, and the schema publishes
+it — with `tests/test_kind_enum_is_derived.py` reading the AST, because a
+literal that happens to equal the tuple today passes any value check and drifts
+the moment a kind is added, which is the history being fixed.
+
+⚠ **`KIND_ORDER` is an ordered tuple and that is not cosmetic.** The enum sits
+in the cached prefix, and `frozenset` iteration over strings varies with
+per-process hash randomisation — publishing the set directly would serve a
+different schema on every server start for the same build. Append, never
+reorder: each existing position is bytes a client has already cached.
+
+⚠ Practice 9: `test_search_symbols_tool_schema` asserted the literal seven-kind
+roster, so it could only pass while the defect existed. Rewritten to the
+property — what the parser can emit is what the schema offers — not fixed back.
+
+⚠⚠ **Measured while landing this: live `core_compact` is 3,998 of a hard
+4,000.** Two tokens. The next core-tier description edit breaches the ceiling,
+and the failure arrives in CI rather than locally whenever the tokenizer
+download is unavailable.
+
+Found by @devtomnl in #571, which was closed on the ecosystem boundary
+(markdown section extraction is jdocmunch's half). The finding was right and is
+independent of that call.
 
 ## [1.108.315] - 2026-09-01 - A fix for a false positive can install a false negative
 

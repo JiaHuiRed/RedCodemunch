@@ -219,7 +219,329 @@ INDEX_VERSION = 17
 #   are all stored per symbol. `search_symbols`, `find_references` and
 #   `check_rename_safe` all read them, so an unbumped index keeps answering
 #   `Foo::new` and `Bar::new` as one name forever.
-PARSER_GENERATION = 7
+#
+# gen 8 (#732): KOTLIN PROPERTIES -- a class indexed with its methods and none
+#   of its state.
+#
+#   `property_declaration` was in `KOTLIN_SPEC.constant_patterns` and not in
+#   its `symbol_node_types`, so `val owner`, `var balance`, a `private val` and
+#   a top-level `val` yielded no symbol at all. A data class -- whose entire
+#   surface is properties -- was an empty name in the index.
+#
+#   ⚠⚠ SYMBOLS on UNCHANGED CONTENT, gen 5's case exactly: every `.kt` file in
+#   an existing index was already parsed at gen 7 with the old symbol set, and
+#   incremental never re-reads unchanged content, so without a bump Kotlin
+#   properties stay missing forever for everyone who already has an index.
+#
+#   ⚠⚠ **This bump also repairs #698, which SHIPPED IN 1.108.319 WITHOUT ONE.**
+#   `abstract_class_declaration` was absent from both TypeScript specs, so
+#   every abstract class was missing and its methods lost their owner -- the
+#   same unchanged-content case -- and the released fix reaches only files that
+#   have changed since. The counter is one integer for the whole tree, so the
+#   re-parse this bump forces carries that fix to existing indexes too. It is
+#   named here rather than left as a silent side effect, because a repair
+#   nobody recorded is indistinguishable from one that did not happen.
+#
+#   ⚠⚠ **It carries #821 too, by the same rule and for the same reason.** A
+#   member of a renumbered twin held its owner's PRE-renumbering id -- an id no
+#   symbol carries -- and the fix changes `parent` for content that has NOT
+#   changed, so an existing index keeps the dangling pointers until something
+#   forces a re-parse. Gen 8 was unreleased when #821 merged, so this counter
+#   already covers it; the line is here because the rule is to NAME the
+#   repairs a bump carries, not to rely on one that happened to be open.
+#
+#   ⚠⚠ **And #797: C struct and union members.** New SYMBOLS on unchanged
+#   content, gen 5's and gen 8's Kotlin case in a third language -- every `.c`
+#   file already indexed holds its structs as bare names until re-parsed.
+#
+#   ⚠⚠ **And #823: every name of a C/C++ `typedef int A, B;`**, new symbols on
+#   unchanged content again, plus one MOVED id: a C function-pointer typedef
+#   was named the literal `(*Cb)` and is `Cb` now, so its old id resolves to
+#   nothing until the file is re-parsed.
+#
+#   ⚠⚠ **And #830: a C-family type REFERENCE is no longer a declaration.**
+#   The other direction: symbols DISAPPEAR on unchanged content. Every `.c`,
+#   `.cpp` and `.ino` file already indexed keeps a fabricated `type` for
+#   each `struct S` it merely mentions (a field type, a parameter, a cast, a
+#   forward declaration) until re-parsed, and a consumer asking where `S` is
+#   defined keeps getting that file.
+#
+#   ⚠⚠ **And #826: spans MOVE for every grouped Go `var`/`const`.** Each name
+#   in a `const ( ... )` / `var ( ... )` block recorded the whole block; it
+#   records its own spec now, so an already-indexed `.go` file serves the
+#   block for every one of those names until re-parsed.
+#
+#   ⚠⚠ **And #827: every templated C++/Arduino class and struct gains its
+#   `;`.** `byte_length` and `content_hash` move by one byte on unchanged
+#   content (and `end_line` where the `;` sits on its own line); an
+#   already-indexed template serves the fragment until re-parsed.
+#
+#   ⚠⚠ **And #819/#820: a Dart `extension type` and its members, and an
+#   enum body's data members**, are NEW symbols on unchanged content; an
+#   already-indexed `.dart` file serves a bare `doubled` with no owner and no
+#   `Meters` until re-parsed.
+#
+#   ⚠⚠ **And #809/#811: Zig, PowerShell and MATLAB class members.** New
+#   symbols (every struct field, class property and `properties` entry) and
+#   populated `parent`s on unchanged content, plus one MOVED id: a Zig `fn`
+#   inside a container was `function` and is `method`, so its old id
+#   resolves to nothing until the file is re-parsed.
+#
+#   ⚠⚠ **And #812: Pascal, F# and Nim class members.** Every field, method
+#   and property of a Pascal class or record, an F# type and a Nim object
+#   is a NEW symbol on unchanged content, plus one MOVED id: a Pascal
+#   class-scoped `const` was emitted bare (`LIMIT`) and is `TAudit.LIMIT`
+#   with an owner, so its old id resolves to nothing until re-parsed.
+#
+#   ⚠⚠ **And #824: every type after the first in an F# `type ... and ...`
+#   chain, and every binding after the first in a `let rec ... and ...`
+#   chain, is a NEW symbol** on unchanged content; the FIRST type of a
+#   chain MOVES its span (the whole statement -> its own definition) and
+#   with it its `signature` (`type A() =` -> `A() =`, the keyword dropped)
+#   while its id does not. An already-indexed `.fs` file serves the first
+#   name alone until re-parsed.
+#
+#   ⚠⚠ **And #841: a Zig `packed`/`extern` struct or union (and `opaque`)
+#   MOVES from `constant` to `class`/`type`** on unchanged content, and its
+#   fields and fns are NEW owned symbols; and in the OTHER direction a
+#   constant whose initializer's text merely begins with `struct`, `enum`
+#   or `union` (`const V = struct_like;`) was a fabricated `class`/`type`
+#   and MOVES to `constant`. An already-indexed `.zig` file serves the old
+#   answer for both until re-parsed.
+#
+#   ⚠⚠ **And #837: spans MOVE for every name of a multi-declarator JS/TS/TSX
+#   `let`/`const`/`var`** (and of a `const f = () => ..., g = ...` function
+#   pair): each records its own `variable_declarator` instead of the whole
+#   statement, so `byte_offset`, `byte_length`, `signature` and
+#   `content_hash` change on unchanged content while the id does not; an
+#   already-indexed file serves the whole statement for each name until
+#   re-parsed.
+#
+#   ⚠⚠ **And #835: every C prototype is a NEW `function` symbol** on
+#   unchanged `.c` content (a prototype whose definition is in the same
+#   file yields nothing, so no definition's id moves); an already-indexed
+#   `.c` file answers nothing for a prototype until re-parsed. ⚠ In a `.h`
+#   that resolves to C, one id MOVES: two prototypes of one name were
+#   `f#function~1`/`~2` and are one `f#function` (the second is a mention
+#   of the first). A prototype beside its definition in a `.h` was already
+#   one symbol on the released tree and still is (measured in review).
+#
+#   ⚠⚠ **And #833/#798: every C++/Arduino type, field and method declared
+#   inside a FUNCTION BODY moves.** A local of a free function was a
+#   file-scope symbol (`S`) and is `f.S`; a local of a member function was
+#   qualified under the class (`K.L`) and is `K.m.L`. An already-indexed
+#   file serves the old ids until re-parsed.
+#
+#   ⚠⚠ **And #807: every Kotlin FILE-SCOPE property's id moves.** It was
+#   `name#property` and is `name#constant` for a `val` whose value is its
+#   initializer, `name#variable` for a `var` and for a `val` whose read runs
+#   code (a getter, an extension property, a delegate). Names, spans and
+#   signatures are unchanged; class, object, companion and object-literal
+#   members keep `#property`. ⚠ EVERY symbol whose parent is a file-scope
+#   property keeps its own id, but its `parent` moves with the owner's new id
+#   (`#property` -> `#constant` or `#variable`): an object literal's members
+#   and a local function or class, anywhere in the property's initializer,
+#   delegate or same-line accessor (`val o = object { val b = 2 }`, `var h:
+#   Any = object { ... }`, `val l = run { object : R { ... } }`, `val f = run
+#   { fun g() = 1; g() }`, `val g by lazy { class L }`, `val a: Any get() {
+#   return object { ... } }`).
+#   An already-indexed file serves the old ids until re-parsed.
+#
+#   ⚠⚠ **And #803: a JS/TS/TSX class EXPRESSION is a `class` named by its
+#   binder.** `const C = class {}` moves `C#constant` (or `C#variable` for a
+#   `let`) to `C#class`; its methods move from a bare `m#method` to
+#   `C.m#method` and its fields appear (`C.x#field`). An anonymous `export
+#   default class`, TS `export =` and `module.exports = class` are `default`
+#   (a named one keeps its own name, `module.exports = class S` is `S`);
+#   `obj.P = class` is `P`. A class expression NOTHING binds is unchanged.
+#   The same moves reach every file whose script is re-parsed as JS/TS: Astro
+#   frontmatter, Razor `<script>` blocks and template-underlying JS. Member
+#   spans are unchanged; the new class symbol spans its binder's statement
+#   (a `const C = class` spans exactly what `C#constant` did).
+#
+#   ⚠⚠ **And #802: a TypeScript constructor PARAMETER PROPERTY is a member
+#   of its class.** `constructor(private readonly svc: Svc) {}` adds
+#   `C.svc#constant` (`readonly`) or `C.svc#field`, owned by the class and
+#   spanning the parameter. The symbols are new, in `.ts`/`.tsx`
+#   files and every script re-parsed as TypeScript (Astro frontmatter,
+#   template-underlying TS). A member of a class with no symbol is withheld.
+#   One id moves: a STATIC member sharing the name (`static a` beside
+#   `constructor(public a)`) goes from `C.a#field` to `C.a#field~1` or
+#   `~2`, by source order.
+#
+#   ⚠⚠ **And #754: a Swift `deinit` is a method of its type.** It was declared
+#   and never emitted (the grammar names nothing); `Holder.deinit#method` is
+#   new, spanning the declaration. Nothing moves.
+#
+#   ⚠⚠ **And #759: a PHP enum case is a `constant` of its enum.**
+#   `Suit.Hearts#constant` is new, pure or backed. Nothing moves.
+#
+#   ⚠⚠ **And #843: a Nim routine whose name is wrapped is indexed.** An
+#   exported routine (`proc runIt*`, every routine kind) and an operator
+#   (``proc `+`*``, ``proc `$` ``, named without backticks) were skipped and
+#   are new `function` symbols. One reader, `_declared_name`, now serves
+#   routines, types and object fields, so three kinds of id MOVE: a type
+#   was named by its declaration's TEXT, which holds type parameters and
+#   pragmas (`G*[T]#type`, `Inh {.inheritable.}#type`, and every field id
+#   built on them) and is `G#type` / `Inh#type` (#847); a backticked type or field keeps no backticks
+#   (`` `Weird`#type `` is `Weird#type`, `` Node.`from` `` is `Node.from`), and
+#   an exported backticked field (`` `type`*: string ``), dropped before, is new.
+#
+#   ⚠⚠ **And #844/#846: one reader for a Pascal declared name.** New: a
+#   method body (`function TAudit.RunIt ... begin ... end;`, a `method` of
+#   its class), a generic type (`TBox<T>` is `TBox#class`, parameters in the
+#   signature) and its members, a generic method and a free generic function
+#   (`F<T>`, `Max<T>`), and a helper's members (the helper still `TH#type`).
+#   Ids MOVE for two reasons. SCOPE: a generic type or helper was skipped
+#   but its body walked with the ENCLOSING owner, so what sat there one
+#   scope too high now carries its owner (`C#constant` is `TBox.C#constant`,
+#   `TIn#class` is `TBox.TIn#class`, `TO.P#method` is `TO.TI.P#method`).
+#   ORDINALS: symbols sharing a qualified name and kind are `~1..~N` in
+#   document order, unsuffixed when alone, so every name whose set changed
+#   renumbers: `TAudit.RunIt#method` is `~1` beside its body's `~2`,
+#   `TProc#type` is `~1` beside `TProc<T>`, a twin left alone loses its
+#   suffix, and a `~N` can name a DIFFERENT symbol than before.
+#
+#   ⚠⚠ **And #845 (Pascal): an interface's members are indexed.** `declIntf`
+#   is walked, so `IFoo.Bar#method` and `IFoo.Q#property` are new. The
+#   interface stays `IFoo#type`. Ids MOVE by the same two causes. SCOPE:
+#   the unentered body was walked with the ENCLOSING owner, so whatever it
+#   emitted moves into the interface (nested in a type, its members:
+#   `TOuter.Foo` is `TOuter.IInner.Foo`; with no owner, a grammar-only
+#   `const` or type: `K#constant` is `IFoo.K#constant`). ORDINALS: a name
+#   whose twins changed renumbers (a twin left alone loses its suffix; a
+#   grammar-only `procedure IFoo.Bar` body is `~2`). A top-level interface
+#   of routines and properties moves nothing.
+#
+#   ⚠⚠ **And #845 (F#): abstract slots, `interface ... with` members and
+#   `new()` constructors are indexed** (`IShape.Area#property`,
+#   `C.Dispose#method`, `C.C#method`), and so are `interface ... end` and
+#   `delegate of` types (`I#type`, `D#type`) and a `struct ... end` body.
+#   A type chained by `and` to one of those spans its own definition now. The old walk emitted nothing from
+#   them, so nothing moves by scope; ids MOVE by ORDINALS where a concrete
+#   member gains a twin (`default this.Name` beside `abstract Name`:
+#   `C.Name#property` is `~1`/`~2`).
+#
+#   ⚠⚠ **And #848: F# is parsed by the pinned `tree-sitter-fsharp` wheel,
+#   not the pack's grammar**, which failed to parse nearly half of real F#
+#   files and error-recovered the rest into the shapes the old ids record.
+#   Nearly every F# id in a file the pack could not parse MOVES. SCOPE: a
+#   module the pack flattened nests again (`DisallowedAssignmentArgs#type`
+#   is `LegacyValidations.DisallowedAssignmentArgs#type`), and a `let`
+#   inside a body the pack hoisted to the top is not indexed, as it never
+#   was on a clean parse. NEW: members after `static member val ... with
+#   get, set`, whole functions and types the pack dropped, and a bodiless
+#   `type X`. NAMES: an annotated function (`let g (y: int) : int`) is `g`
+#   under the new grammar, and a type's access modifier left its name
+#   (`internal X#type` is `X#type`). ORDINALS renumber wherever a name's
+#   set changed.
+#
+#   ⚠⚠ **And #850: a C-family variable with a function-shaped declarator
+#   or a lambda initializer is not a function.** LEAVE: a block-scope
+#   `fp#function` or `l#function` (a local emits nothing), and, in C++ and
+#   Arduino, any variable initialised with a lambda holding a function
+#   declarator (Arduino: every lambda), at any scope. RENAME: a declaration
+#   naming a variable then a prototype is the prototype (`void (*ga)(int),
+#   gb(int);` in C++ and Arduino: `ga#function` is `gb#function`, and
+#   `N.ga` is `N.gb` in a namespace). NEW: anywhere outside a class body
+#   (file, namespace, `extern "C"`, template and block scope), in C, C++ and
+#   Arduino alike, `int x, y(int);` gives
+#   `y#function` and `void (*ga)(int), gb(int);` in C gives `gb#function`,
+#   where all three gave nothing. ORDINALS renumber wherever a
+#   name's set changed. A file-scope `int (*gfp)(int);` stays (#755).
+#
+#   ⚠⚠ **And #852: a C-family prototype list binds every name.** NEW: `g#function`
+#   beside `f#function` for `int f(int), g(int);`, at every scope a
+#   `declaration` reaches, in C, C++ and Arduino. ORDINALS: a C++ overload
+#   pair `int f(int), f(double);` is `f#function~1`/`~2` where it was
+#   `f#function`. In C++, Arduino and any `.h` (never a `.c`), a later
+#   declarator whose parameter could be a constructor argument (a type name
+#   with no declared parameter name) binds nothing extra (LEDGER L-25).
+#
+#   ⚠⚠ **And #856: an F# non-`rec` `let ... and ...` chain binds every
+#   name.** NEW: `b#constant` for `let a = 1 / and b = 2` at module level,
+#   and in a type body `T.b` PLUS every member after the chain (`T.M`),
+#   which the grammar's error recovery had swallowed. Each binding records
+#   its own bytes. A `#if` branch pair binds `~1`/`~2` twins. MOVES: in a
+#   named module every member after the chain returns to the module
+#   (`c#constant` -> `M.c#constant`). No id moves on #848's four-project
+#   corpus.
+#
+#   ⚠⚠ **And #858: a Kotlin accessor on its own line owns its body.** SPANS
+#   widen: a property whose getter/setter the grammar spilled into a sibling
+#   (or an own-line `by` delegate) now covers it, as the one-line form always
+#   has (203 properties on four
+#   projects, none narrowed). MOVES: what the accessor declares gets the
+#   property as owner (`FakeFileSystem.now#method` ->
+#   `FakeFileSystem.clock.now#function`; at file scope `gg` -> `g.gg`).
+#
+#   ⚠⚠ **And #861: a class in a Vue or Svelte `<script>` owns its members.**
+#   NEW: every member a `.ts`/`.js` file of the same script publishes
+#   (`Svc.m#method`, `Svc.x#field`, `Svc.a#field`). MOVES: a class-valued
+#   binding is a class (`C#constant` -> `C#class`); abstract, anonymous-default
+#   (`default#class`), `module.exports =` and `X.P =` classes are new; a class
+#   in a method body loses its bare `Inner#class` duplicate. The class symbol keeps
+#   its id and gains real bytes, a hash and the generic signature. No id
+#   moves on 2,020 `.vue`/`.svelte` files of two projects (none has a
+#   script class; re-measured on the final extractor).
+#
+#   ⚠⚠ **And L-37: a class in an Astro frontmatter or `<script>`, or a Razor
+#   `<script>` or `@code` block, owns its members.** No id moves; only
+#   `parent` changes (`Comp.K.k` was owned by `Comp`, now by `Comp.K`).
+#
+#   ⚠⚠ **And L-40: a Vue/Svelte class expression bound to nothing publishes
+#   its members.** NEW: `m#method` (and fields) for
+#   `new (class { m() {} })()`, `register(class {...})`, `[class {...}]`,
+#   owned by the component, as a `.js` file publishes them bare. MOVES: a
+#   same-named symbol already published is numbered beside it (an Options
+#   `methods: { m() {} }` goes `m#method` -> `m#method~1`).
+#
+#   ⚠⚠ **And L-38: a Vue/Svelte hand walk stops at a method or generator
+#   body.** GONE: a bare `K#class` for a class inside an object method,
+#   getter, generator method or `function*` (a `.js` file names it
+#   `setup.K`), and a helper function declared inside a method or a
+#   function/generator EXPRESSION (`inc#function` for
+#   `setup() { function inc() {} }`; `inner` in `function () {...}`).
+#
+#   ⚠⚠ **And L-39: a Vue or Svelte `lang="tsx"` script is read as TSX.**
+#   NEW: what JSX used to hide (`g#function`, `f#function` beside a
+#   `return <b/>`). GONE: a stray `K#class` that error recovery published
+#   from inside a function, and what follows an old-style `<T>x` cast (not
+#   valid TSX; a `.tsx` file already drops it). Other scripts are unchanged.
+#
+#   ⚠⚠ **And L-42: a Vue/Svelte function-valued binding is a function.**
+#   NEW: `f#function` for `const f = () => 1` / `= function () {}`, owned by
+#   the component, as a `.js` file publishes it. MOVES: a same-named
+#   `function h` is numbered beside the binding (`h#function` ->
+#   `h#function~1`), as in a `.js` file; the corpora hold no such pair.
+#
+#   ⚠⚠ **And L-36/L-43: a Vue Options script keeps its top-level
+#   declarations, and a `defineComponent({...})` script its options.**
+#   NEW: functions, bindings and types beside an options object; the
+#   options of `defineComponent({...})`, `Vue.extend({...})` and a
+#   default export wrapped in `as`/`satisfies`/parentheses/`!`/`<X>`;
+#   `data()` and
+#   `data: function () {}`. MOVES: an options member (`props`, `data`)
+#   and a same-named top-level declaration are numbered `~1`/`~2`, so
+#   whichever was published alone moves (`props#constant` ->
+#   `props#constant~1`, `data#function` -> `data#function~1`).
+#
+#   ⚠⚠ **And L-44: a Vue component reads every `<script>` block.** NEW:
+#   everything in the second block (usually `<script setup>`), and a
+#   component whose first block is a bodiless `<script src>`. MOVES: a
+#   name declared in both blocks is numbered `~1`/`~2`.
+#
+#   ⚠⚠ **And L-07: a C++ out-of-class definition is a member.** MOVES:
+#   `run#function` for `int A::run() {}` becomes `A.run#method` (owned by
+#   `A` when `A` is in the file); a body and its in-file declaration are
+#   numbered `~1`/`~2`; a declaration numbered only because its body shared
+#   its bare name loses the suffix. `ns::f` bodies gain their namespace.
+#   Members of `namespace a::b { }` move from `a::b.A` to `a.b.A`.
+#
+#   ⚠⚠ **And L-45: a C-family class behind an export macro is a class.**
+#   MOVES: `Status#function` for `class LEVELDB_EXPORT Status {}` becomes
+#   `Status#class`, and its members gain their owner.
+PARSER_GENERATION = 8
 
 
 @dataclass(frozen=True)

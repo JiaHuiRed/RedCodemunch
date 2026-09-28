@@ -672,18 +672,21 @@ def test_parse_csharp():
     assert record is not None
     assert record.kind == "class"
 
-    # Properties, Fields, Constants, Events, Destructors
+    # Properties, Fields, Constants, Events, Destructors. ⚠ This block named
+    # four different member kinds and asserted `constant` for all of them, which
+    # is #770 stated in its own section heading: CSHARP_SPEC mapped every one of
+    # the four node types to the literal `constant`.
     prop = next((s for s in symbols if s.name == "Id"), None)
     assert prop is not None
-    assert prop.kind == "constant"
+    assert prop.kind == "property"
     
     field = next((s for s in symbols if s.name == "Username"), None)
     assert field is not None
-    assert field.kind == "constant"
+    assert field.kind == "field"
     
     multi_field = next((s for s in symbols if s.name == "MultiA"), None)
     assert multi_field is not None
-    assert multi_field.kind == "constant"
+    assert multi_field.kind == "field"
     # Note: jcodemunch implements a 1:1 mapping between AST nodes and symbols. 
     # Therefore, a single field_declaration node with multiple variable_declarators 
     # will only be indexed under the name of the first declarator (MultiA).
@@ -695,7 +698,7 @@ def test_parse_csharp():
     
     evt = next((s for s in symbols if s.name == "OnLogin"), None)
     assert evt is not None
-    assert evt.kind == "constant"
+    assert evt.kind == "field"
     
     dtor = next((s for s in symbols if s.name == "ComplexEntity" and s.kind == "method"), None)
     assert dtor is not None
@@ -1039,7 +1042,11 @@ def test_parse_cpp_declaration_filter_ignores_variables():
     """Variable declarations should not be indexed as functions in C++."""
     symbols = parse_file(CPP_EDGE_SOURCE, "edge.cpp", "cpp")
     variable_names = {"value"}
-    assert all(s.name not in variable_names for s in symbols)
+    # ⚠ This asserted the name was ABSENT, which is more than the sentence above
+    # says and was only true while a data member had no channel (#755). The
+    # property is the kind: never a function or a method.
+    kinds = {s.name: s.kind for s in symbols if s.name in variable_names}
+    assert kinds == {"value": "field"}
 
 
 def test_parse_cpp_mixed_header_deterministic_selection():

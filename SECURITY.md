@@ -315,6 +315,55 @@ The performance and ranking telemetry introduced in v1.74.0–v1.80.0 is
 
 ---
 
+## Headless automation on issues and pull requests
+
+Nine GitHub Actions workflows (`.github/workflows/inbound-*.yml`) read
+public issues and pull requests and, when the repository variable
+`INBOUND_ENABLED` is exactly `true`, label them, draft replies for a
+human to approve, evaluate dependency updates, self-check agent-authored
+pull requests, attempt a fix when a maintainer applies `agent-fix`, and
+post a weekly digest. `docs/inbound/POLICY.md` is the full contract. The
+controls that matter to a reporter or a contributor:
+
+* **Your text is data.** Every job treats issue and PR content as input to
+  analyse, never as an instruction; a pre-model scan escalates anything
+  that looks like one (hidden text, authority claims, requests to fetch or
+  post). Nothing from an item is executed, fetched, or pasted into a shell.
+* **The model cannot write to this repository.** The job that runs a
+  model holds a read-only token and writes one file; a separate job with
+  no model verifies that file and writes with a GitHub App that a
+  repository ruleset (part of the layer's setup, `docs/cicd/RUNBOOK.md`
+  section 9) confines to `inbound/**` branches and the `inbound-ledger`
+  branch.
+* **No headless job merges, tags, publishes, closes, or edits** workflows,
+  secrets, branch protection, `SECURITY.md`, or the quality gates.
+* **A security report is never summarised.** An issue classified as
+  security is labelled and escalated to a human by number only; no
+  excerpt reaches a comment, a digest, or the audit ledger. Report
+  vulnerabilities privately, below, not in a public issue.
+* **Everything is audited.** Every run writes a record (job, model,
+  prompt version, decision, actions, outcome) to the `inbound-ledger`
+  branch. The switch is off by default and fails closed.
+
+## Reporting a vulnerability
+
+Report privately through GitHub's advisory form:
+<https://github.com/jgravelle/jcodemunch-mcp/security/advisories/new>.
+Do not open a public issue for a suspected vulnerability.
+
+- You will get an acknowledgement within **3 days** and a verdict (confirmed,
+  not a vulnerability, or needs more information) within **14 days**.
+- A confirmed report ships as a fix release under this project's normal
+  cadence, credited to you in `CHANGELOG.md` and the release notes unless you
+  ask otherwise. Policy 2 in `CLAUDE.md` applies: a release is never held
+  for a second finding.
+- Scope: the `jcodemunch-mcp` package on PyPI, this repository's workflows,
+  and the published container of the MCP registry entry. The pinned
+  benchmark corpora and the observatory are out of scope.
+- ⚠ This section is asserted by `tests/test_security_md_policy.py` in the
+  harness fast tier: the advisory URL and both response windows must stay
+  present.
+
 ## Summary of Controls
 
 | Control                   | Location                       | Default                     |
@@ -325,7 +374,7 @@ The performance and ranking telemetry introduced in v1.74.0–v1.80.0 is
 | Response secret redaction | `redact.redact_dict()` in the `call_tool` dispatcher | Enabled; `JCODEMUNCH_REDACT_RESPONSE_SECRETS=0` disables. **Exempt:** `get_file_content`, `get_symbol_source`, `get_context_bundle` |
 | Binary file detection     | `security.is_binary_file()`    | Always enabled              |
 | File size limit           | File discovery pipeline        | 500 KB                      |
-| File count limit          | File discovery pipeline        | 500 files                   |
+| File count limit          | File discovery pipeline        | 10,000 files per `index_repo` (`max_index_files`), 2,000 per `index_folder` (`max_folder_files`); each has an env override |
 | `.gitignore` respect      | Indexing pipeline              | Enabled                     |
 | UTF-8 safe decode         | All file reads                 | `errors="replace"`          |
 | Perf telemetry sink       | `perf_telemetry_enabled`       | **Disabled** (opt-in)       |
@@ -358,6 +407,8 @@ Everything jCodeMunch does beyond answering a tool call is listed here. All of i
   - **Starter-pack download.** `install-pack` fetches the pack catalog and any pre-built index pack you request from `jcodemunch.com` (a premium pack also sends your license key). Each pack indexes third-party open-source repositories and carries their license and attribution files verbatim under `licenses/<owner>-<name>/` in your index directory; `install-pack` prints the terms and the path, and `install-pack --list` names them before you download.
   - **Embedding-model download.** `download-model` — and the first semantic encode when the `[local-embed]` extra is installed — downloads the ONNX model (`all-MiniLM-L6-v2`, ~23 MB, one time) from `huggingface.co`; after that, semantic search needs no network.
   - **Team savings report.** `org-report` (team SKU) sends **only** `org_id`, `seat_id`, `tokens_saved`, `usd`, `calls`, and a date. No code, no file paths, no queries, no repo names. It goes to a host **you** choose, on your own network, never to a jMunch server. With no `--endpoint` or `JCODEMUNCH_ORG_ENDPOINT` set it writes to a local file (`org_savings.db`) and nothing leaves the machine at all. ⚠ **`seat_id` defaults to your machine's hostname**, which often contains a person's name: set `JCODEMUNCH_CLIENT_ID` to send an identifier of your choosing instead. It runs only when you invoke it. There is no scheduler and no background reporting.
+
+- **Grammar download on an overridden dependency pin — never by default.** The shipped `tree-sitter-language-pack` pin is `<1.0.0`, whose wheels bundle every grammar. F# comes from the pinned `tree-sitter-fsharp` wheel instead, compiled in the same way, so it never downloads (#848). If you override it to 1.x (`pip install -U tree-sitter-language-pack`), that pack fetches each grammar over the network into its own cache directory at first parse, the nim grammar there is one our extractor cannot read, and the server reports it: a `grammar_pack` block and warning on every `index_folder` result, and a `Grammar pack` section in `install-status`. Documented in README under Security (#608, #382).
 
 - **Accepting reports from other machines. Off by default, behind explicit gates.** jCodeMunch has **four** routes that accept writes from another computer. All four are off in a default install, all four require the HTTP transport to be running at all (`serve --transport streamable-http` or `--transport sse`), and all four require the request to carry your `JCODEMUNCH_HTTP_TOKEN` bearer.
 

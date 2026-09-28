@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 from .. import config as _config
 from ..parser import cached_parse_file as parse_file, LANGUAGE_EXTENSIONS, get_language_for_path
+from ..parser import grammar_pack
 from ..parser.context import discover_providers, enrich_symbols, collect_metadata, collect_extra_imports
 from ..parser.context._route_utils import iter_source_files
 from ..parser.context.framework_profiles import detect_framework, profile_to_meta
@@ -1306,9 +1307,7 @@ def discover_local_files(
         failed = os.path.relpath(error.filename or root_str, root_str)
         warnings.append(f"Could not read directory {failed}: {error.strerror or error}")
 
-    for dirpath, dirnames, filenames in os.walk(
-        str(root), followlinks=False, onerror=_count_walk_error
-    ):
+    for dirpath, dirnames, filenames in os.walk(str(root), followlinks=False, onerror=_count_walk_error):
         dpath = Path(dirpath)
         # Prune directories that should always be skipped before descending.
         # Nested linked worktrees (`.git` FILE → `.git/worktrees/<name>`,
@@ -2301,10 +2300,6 @@ def index_folder(
             warnings.append(gitignore_warning)
 
         if not source_files:
-            # An empty incremental walk over an existing index is a real
-            # deletion event, not proof that the repository was never indexed.
-            # Keep the old error for a fresh index and for withheld files, where
-            # treating an unreadable/limited tree as deletion would destroy data.
             _deletion_only = (
                 incremental
                 and store.has_index(owner, repo_name)
@@ -2833,6 +2828,14 @@ def index_folder(
                     post_discovery_drops=post_discovery_drops,
                 )
 
+            # An empty discovery over an existing index removed every indexed
+            # file (#641). The deletion stands, because a moved-out tree is the
+            # case it exists for and the next scan over a repopulated root
+            # repairs the index in full (unlike `refresh`'s generation stamp,
+            # which cannot be repaired and therefore refuses). It is DISCLOSED,
+            # because the same shape is a bare mount point, a checkout switch
+            # or a tree mid-restore, and the watcher's root reconciliation
+            # reaches here unattended.
             _full_deletion = not source_files and bool(deleted)
             if _full_deletion:
                 warnings.append(
@@ -2863,6 +2866,7 @@ def index_folder(
                 result["warnings"] = warnings
             _stamp_incremental_outcome(result, _requested_incremental, True)
             _attach_cap_report(result, _cap_status)
+            grammar_pack.attach(result)
             _attach_provider_skips(result, folder_path)
             _maybe_apply_adaptive(folder_path, result)
             return result
@@ -3224,6 +3228,7 @@ def index_folder(
             result, _requested_incremental, False, rebuild_reason
         )
         _attach_cap_report(result, _cap_status)
+        grammar_pack.attach(result)
         _attach_provider_skips(result, folder_path)
 
         _maybe_apply_adaptive(folder_path, result)

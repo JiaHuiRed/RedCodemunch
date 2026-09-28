@@ -1,6 +1,6 @@
 [project]
 name = "jcodemunch-mcp"
-version = "1.108.315"
+version = "1.108.319"
 description = "Token-efficient MCP server for source code exploration via tree-sitter AST parsing"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,7 +35,7 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 dependencies = [
-    "mcp>=1.10.0,<2.0.0",
+    "mcp>=1.10.0,<2.0.0",  # ceiling measured 2026-09-11 against mcp 2.2.0 (#609): the 2.x low-level Server has no decorator registration, so the six @server.<handler>() sites in server.py fail at import and no stdio initialize completes; handlers are constructor kwargs (on_call_tool ...) with a (ctx, params) signature. Moving the pin is a port, not a bump; re-measure and rewrite this reason.
     "httpx>=0.27.0",
     # Ceiling is deliberate, re-verified against 1.13.3 on 2026-07-26 (#382).
     # 1.x stopped bundling grammars: the wheel ships one native module and
@@ -43,14 +43,28 @@ dependencies = [
     # (verified: empty cache -> 67 shared libs while walking our language list).
     # That is undisclosed runtime network + executable-write behavior in a
     # read-only local tool, and it breaks airgapped/offline installs.
-    # Also: autohotkey/ejs/verse do not exist in 1.x at all, and the nim grammar
-    # was swapped for a different upstream (source_file/proc_declaration ->
-    # module/stmt/routine), so our nim extractor yields zero symbols.
-    # Suite on 1.13.3: 5812 passed, 12 skipped, 1 failed (test_nim_parsing).
+    # Also: the nim grammar was swapped for a different upstream
+    # (source_file/proc_declaration -> module/stmt/routine), so our nim
+    # extractor yields zero symbols. (autohotkey/ejs/verse are absent from the
+    # 1.x manifest too, but #608's probe found our own regex extractors parse
+    # those three and never ask tree-sitter, so nim is the one loss.)
+    # Suite on 1.13.3: 5812 passed, 12 skipped, 1 failed (test_nim_parsing);
+    # re-measured 2026-09-11 on 1.17.0: same (#608, parser/grammar_pack.py).
     # We use exactly one symbol from this package (get_parser) -- the blockers
     # are behavioral, not API. Revisit only with grammars vendored or the
     # download made opt-in AND README-disclosed.
     "tree-sitter-language-pack>=0.7.0,<1.0.0",
+    # F# is parsed by its own wheel, not the pack (#848, parser/grammar_pack.py
+    # STANDALONE_GRAMMARS): the pack's newest 0.x F# grammar spills every member
+    # after `static member val ... with get, set` out of the type body, and the
+    # fixed grammar ships only in the 1.x download generation refused above.
+    # Grammar compiled into abi3 wheels, no runtime download. EXACT pin: a new
+    # grammar moves F# symbol ids, so moving it is a PARSER_GENERATION event.
+    "tree-sitter-fsharp==0.3.12",
+    # The F# wheel's grammar is ABI 15, which a tree-sitter runtime older than
+    # 0.25 cannot load: `Language()` raises and F# indexes as empty. The pack
+    # carried that floor only transitively, and its own spec does not promise it.
+    "tree-sitter>=0.25",
     "pathspec>=0.12.0",
     "pyyaml>=6.0",
 ]
@@ -67,7 +81,7 @@ openai = ["openai>=1.0.0"]
 minimax = ["openai>=1.0.0"]
 zhipu = ["openai>=1.0.0"]
 dbt = ["pyyaml>=6.0"]
-http = ["uvicorn>=0.20.0", "starlette>=1.3.1", "anyio>=4.0.0"]
+http = ["uvicorn>=0.20.0", "starlette>=1.3.1", "anyio>=4.14.2"]
 watch = ["watchfiles>=1.0.0"]
 semantic = ["sentence-transformers>=2.2.0"]
 local-embed = ["onnxruntime>=1.16.0"]
@@ -78,7 +92,7 @@ keyring = ["keyring>=24.0"]
 bench = ["openai>=1.0.0", "anthropic>=0.40.0", "pyyaml>=6.0", "rich>=13.0", "jinja2>=3.1"]
 # `all` is a hand-maintained union of every extra above. When you add a new
 # extra or a new dependency to one, mirror it here (there is no auto-union).
-all = ["anthropic>=0.40.0", "google-generativeai>=0.8.0", "openai>=1.0.0", "pyyaml>=6.0", "uvicorn>=0.20.0", "starlette>=1.3.1", "anyio>=4.0.0", "watchfiles>=1.0.0", "sentence-transformers>=2.2.0", "onnxruntime>=1.16.0", "sounddevice>=0.4.6", "numpy>=1.24.0", "Pillow>=10.0.0", "rich>=13.0", "jinja2>=3.1", "keyring>=24.0"]
+all = ["anthropic>=0.40.0", "google-generativeai>=0.8.0", "openai>=1.0.0", "pyyaml>=6.0", "uvicorn>=0.20.0", "starlette>=1.3.1", "anyio>=4.14.2", "watchfiles>=1.0.0", "sentence-transformers>=2.2.0", "onnxruntime>=1.16.0", "sounddevice>=0.4.6", "numpy>=1.24.0", "Pillow>=10.0.0", "rich>=13.0", "jinja2>=3.1", "keyring>=24.0"]
 
 
 [project.scripts]
@@ -104,6 +118,9 @@ packages = ["src/jcodemunch_mcp", "munch-bench/munch_bench"]
 # Nested .gitignore files do not reach hatchling, only the root one does.
 exclude = [
     ".claude/",
+    # Inbound-layer prompts and helper scripts, and every workflow: repository
+    # plumbing, never something an installed package needs (docs/inbound/FINDINGS.md IN-10).
+    ".github/",
     # Per-project index config for THIS source tree: it raises `max_file_size`
     # so `server.py` and `parser/extractor.py` enter this repo's own index
     # (#566). A consumer who installs the package does not have this tree, so
@@ -125,6 +142,13 @@ exclude = [
     # questions. `scripts/unstable_modules_diag.py` DOES ship -- it diagnoses a
     # metric a user can see on their own repo.
     "scripts/repair-munch-installs.ps1",
+    # The competitive feedback loop (docs/competitive/DESIGN.md): fairness
+    # notes, result files and adapters that name the tools they measured.
+    # Tracked because the record must be reproducible; excluded because a
+    # PyPI consumer needs none of it and a shipped artifact names no
+    # competitor (the suite contract's framing rule 1).
+    "docs/competitive/",
+    "benchmarks/competitive/",
 ]
 
 [tool.pytest.ini_options]

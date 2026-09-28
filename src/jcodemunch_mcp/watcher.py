@@ -68,6 +68,12 @@ def _watch_directories(folder_path: str) -> dict[str, tuple[int, int]]:
     Like discovery, directory symlinks are NEVER followed (even when
     follow_symlinks enables symlinked *files*). Inode identity detects a
     directory replaced at the same path, which needs a new native watch.
+
+    The set of directories pruned here is discovery's skip list and NOTHING
+    stricter: a directory discovery indexes must be watched, or an edit there
+    is never seen. A blanket "skip every dot-directory" rule was the first
+    draft (#629) and it would have blinded the watcher to `.github/`,
+    `.claude/` and `.claude-plugin/` on this repository, 51 indexed files.
     """
     skip_dirs = _build_skip_dirs_regex(repo=folder_path)
     directories = {}
@@ -81,15 +87,16 @@ def _watch_directories(folder_path: str) -> dict[str, tuple[int, int]]:
             dirs[:] = []
             continue
         directories[current] = (stat_result.st_dev, stat_result.st_ino)
-        dirs[:] = [
-            name for name in dirs
-            if not skip_dirs.match(name)
-        ]
+        dirs[:] = [name for name in dirs if not skip_dirs.match(name)]
     return directories
 
 
 def _index_key_prefix(folder_path: str, source_root: Optional[str]) -> str:
-    """Prefix a watched-folder path with its index-root-relative directory."""
+    """Prefix that turns a watched-folder-relative path into an index file key.
+
+    ``file_hashes`` is keyed relative to the INDEX root, which is the git root
+    when a subdirectory of a repository is indexed or watched.
+    """
     if not source_root:
         return ""
     try:
@@ -100,36 +107,46 @@ def _index_key_prefix(folder_path: str, source_root: Optional[str]) -> str:
 
 
 def _force_polling_default() -> bool:
-    """Match watchfiles' default polling decision without requiring its private API."""
+    """Whether watchfiles will poll when the caller passes ``force_polling=None``.
+
+    The authority is watchfiles' own ``_default_force_polling``, a PRIVATE name
+    (#641 review, item 4): a watchfiles release may rename it, and the watcher
+    must not fail at its first ``_safe_awatch`` when it does. The fallback is
+    that function's documented rule, in the order it applies it: the
+    ``WATCHFILES_FORCE_POLLING`` environment variable when set (any value but
+    ``false``/``disable``/``disabled`` means poll), else WSL detection.
+    ``tests/test_watcher_polling_default.py`` pins both halves against the
+    installed watchfiles so a divergence shows up as a test, not a hang.
+    """
     try:
         from watchfiles.main import _default_force_polling
     except ImportError:
-        env_value = os.getenv("WATCHFILES_FORCE_POLLING")
-        if env_value:
-            return env_value.lower() not in {"false", "disable", "disabled"}
+        env_var = os.getenv("WATCHFILES_FORCE_POLLING")
+        if env_var:
+            return env_var.lower() not in {"false", "disable", "disabled"}
         import platform
 
         uname = platform.uname()
-        return (
-            uname.system.lower() == "linux"
-            and "microsoft-standard" in uname.release.lower()
-        )
+        return "microsoft-standard" in uname.release.lower() and uname.system.lower() == "linux"
     return bool(_default_force_polling(None))
 
 
 async def _safe_awatch(folder_path: str, debounce_ms: int):
-    """Watch real directories without expanding symlink dependency graphs.
+    """Use native recursion where safe; bound Linux/polling to real directories.
 
-    Linux and polling traverse links before filtering, so they receive an
-    explicit real-directory watch set. Native macOS/Windows recursion avoids
-    installing a separate watcher for every directory.
+    watchfiles 1.1.1 (locked) and 1.2.0 (incident) do not expose notify's
+    follow_symlinks option. Linux and polling traverse links before filtering,
+    retaining a pathname per alias. macOS/Windows native recursion avoids that
+    walk, and avoids installing thousands of separate native watches.
 
-    A post-arm census closes registration gaps before reconciling the index.
-    The periodic census recovers missed directory topology events; ordinary
-    file edits keep the incremental fast path.
+    On Linux/polling, a post-arm census closes registration gaps before the
+    root reconciliation requests an incremental index. The census timer
+    recovers missed directory events; it does not recover lost file-only
+    events when topology is unchanged.
     """
     from watchfiles import awatch, Change
 
+    # Ask watchfiles: e.g. WATCHFILES_FORCE_POLLING=0 means TRUE, and WSL polls.
     force_polling = _force_polling_default()
     recursive = sys.platform != "linux" and not force_polling
     directories = None if recursive else await asyncio.to_thread(_watch_directories, folder_path)
@@ -153,9 +170,9 @@ async def _safe_awatch(folder_path: str, debounce_ms: int):
                     if root_identity is not None:
                         current_root = os.stat(folder_path)
                         if not stat.S_ISDIR(current_root.st_mode):
-                            raise FileNotFoundError(
-                                f"Watched directory disappeared: {folder_path}"
-                            )
+                            raise FileNotFoundError(f"Watched directory disappeared: {folder_path}")
+                        # Windows keeps the old directory handle after a root rename.
+                        # Checking one inode also covers replacement during registration.
                         if not os.path.samestat(root_identity, current_root):
                             break
                     if directories is not None:
@@ -164,15 +181,20 @@ async def _safe_awatch(folder_path: str, debounce_ms: int):
                             and (path in directories or os.path.isdir(path))
                             for change, path in changes
                         )
-                        # Census after registration catches edits in a new
-                        # directory whose watcher was not armed yet.
+                        # First yield proves registration is complete. Re-census
+                        # before reconciling: a new directory in the arm gap has
+                        # no watch, even if a full index would find its files.
+                        # ponytail: one census/minute recovers lost topology events;
+                        # use a native rescan signal if watchfiles exposes one.
                         if rescan or topology_changed or time.monotonic() - checked_at >= 60.0:
                             current = await asyncio.to_thread(_watch_directories, folder_path)
                             checked_at = time.monotonic()
                             if current != directories:
                                 directories = current
+                                # Re-arm before indexing; the root reconciliation
+                                # covers this whole batch and the registration gap.
                                 break
-                            del current
+                            del current  # do not retain a duplicate census while idle
                     if rescan:
                         rescan = False
                         yield {(Change.modified, folder_path)}
@@ -189,7 +211,19 @@ async def _safe_awatch(folder_path: str, debounce_ms: int):
             if folder_path not in current or current == directories:
                 raise
             directories = current
-            rescan = True
+        except Exception as exc:
+            # F-26: the poller can reach a removed root before a batch lets us
+            # stat it, and Windows answers a delete-pending directory with
+            # `Access is denied`, raised as WatchfilesRustInternalError (in an
+            # ExceptionGroup from awatch's task group). Which error escaped
+            # depended on who got there first. Only a GONE root is translated;
+            # with the root present the watcher's own error surfaces unchanged.
+            # ⚠ "Gone" means `isdir` is False, i.e. not stattable as a directory:
+            # a present root whose parent lost its execute bit reads as gone too.
+            # Both errors restart the task, so only the recorded reason differs.
+            if os.path.isdir(folder_path):
+                raise
+            raise FileNotFoundError(f"Watched directory disappeared: {folder_path}") from exc
     raise FileNotFoundError(f"Watched directory disappeared: {folder_path}")
 
 

@@ -150,8 +150,13 @@ def test_kotlin_const_val_is_reachable():
 
 
 def test_kotlin_plain_val_needs_a_constant_shaped_name():
-    """`const val` is a constant by declaration; a bare `val` is just immutable."""
-    source = "val MAX_SPEED = 100\nval userName = \"jjg\"\nvar counter = 0\n"
+    """`const val` is a constant by declaration; a bare `val` is just immutable.
+
+    In a CLASS BODY, where Kotlin uses `val` for ordinary properties. At file
+    scope an initialised `val` is a module constant since #807 (the Swift `let`
+    and Scala `val` rule), so the sample sits where the name rule applies.
+    """
+    source = "class P {\n    val MAX_SPEED = 100\n    val userName = \"jjg\"\n    var counter = 0\n}\n"
     found = [s for s in parse_file(source, "p.kt", "kotlin") if s.kind == "constant"]
     assert [s.name for s in found] == ["MAX_SPEED"]
 
@@ -174,3 +179,70 @@ def test_bash_mutable_declarations_are_not_constants():
     source = 'local scoped=1\ndeclare plain=2\nPLAIN=3\n'
     found = [s for s in parse_file(source, "p.sh", "bash") if s.kind == "constant"]
     assert not found
+
+
+def test_kotlin_class_scoped_constants_are_extracted():
+    """Kotlin joined `_CLASS_SCOPED_CONSTANT_LANGUAGES` in #732.
+
+    The note beside that set says adding a language without a sample here is
+    the failure #428 is about, so this is that sample.
+
+    ⚠⚠ Kotlin was added for a reason the Java entry did not have: once #732
+    declared `property_declaration` in `symbol_node_types`, `_extract_name`
+    began DECLINING constant-shaped properties to the constant channel, and at
+    class or object scope that channel could not run. The declarations were
+    then emitted by neither -- disjoint but not exhaustive. A `const val` in a
+    `companion object` is the idiomatic Kotlin constant, so the hole was over
+    the most common shape.
+    """
+    from jcodemunch_mcp.parser.extractor import parse_file
+
+    source = """class Foo {
+    val MAX_SIZE = 10
+    companion object { const val INNER_CONST = 3 }
+}
+object Registry { const val BAR_CONST = 4 }
+"""
+    symbols = list(parse_file(source, "Foo.kt", "kotlin"))
+    by_name = {s.name: s for s in symbols}
+
+    for name in ("MAX_SIZE", "INNER_CONST", "BAR_CONST"):
+        assert name in by_name, (name, sorted(by_name))
+        assert by_name[name].kind == "constant", (name, by_name[name].kind)
+
+    # And exactly once each: the property channel must not also claim them.
+    names = [s.name for s in symbols]
+    for name in ("MAX_SIZE", "INNER_CONST", "BAR_CONST"):
+        assert names.count(name) == 1, (name, names)
+
+
+def test_gdscript_class_scoped_constants_are_extracted():
+    """GDScript joined `_CLASS_SCOPED_CONSTANT_LANGUAGES` in #777.
+
+    The note beside that set says adding a language without a sample here is
+    the failure #428 is about, so this is that sample.
+
+    ⚠⚠ The cheapest entry the set has taken, and the reason is worth keeping:
+    `const_statement` was ALREADY in `GDSCRIPT_SPEC.constant_patterns` and a
+    file-scope `const` already indexed. The gap read as "GDScript constants are
+    missing" and was really "the gate stops at file scope" -- so the fix is a
+    name in this set, not a second extractor reproducing a rule the channel
+    already had.
+    """
+    from jcodemunch_mcp.parser.extractor import parse_file
+
+    source = "const TOP = 1\nclass Inner:\n\tconst NESTED = 2\n"
+    symbols = list(parse_file(source, "probe.gd", "gdscript"))
+    by_name = {s.name: s for s in symbols}
+
+    for name in ("TOP", "NESTED"):
+        assert name in by_name, (name, sorted(by_name))
+        assert by_name[name].kind == "constant", (name, by_name[name].kind)
+
+    # ⚠ The file-scope one belongs to nobody and the class-scoped one is owned;
+    # widening the gate must not have invented an owner for the first.
+    assert by_name["TOP"].parent is None
+    assert by_name["NESTED"].parent == by_name["Inner"].id
+    names = [s.name for s in symbols]
+    for name in ("TOP", "NESTED"):
+        assert names.count(name) == 1, (name, names)

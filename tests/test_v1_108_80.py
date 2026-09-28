@@ -37,7 +37,14 @@ class TestDataclassFields:
         assert cols.parent.endswith("::TableSpec#class")
         assert cols.line == 7
 
-    def test_classvar_is_not_a_field(self):
+    def test_a_classvar_is_class_state_under_its_names_own_kind(self):
+        """Was `test_classvar_is_not_a_field`, which #355 meant literally: a
+        `ClassVar` is not a DATACLASS field, so it was skipped. Since #784 it is
+        class state and is indexed. ⚠ Review found the old test still passing,
+        for the wrong reason: its one ClassVar was spelled `REGISTRY`, which is
+        now a `constant`, so it graded the name's CASE and said nothing about
+        `ClassVar`. Both spellings are here. Retired in `harness/retired.json`.
+        """
         src = (
             "from dataclasses import dataclass\n"
             "from typing import ClassVar\n\n"
@@ -45,8 +52,12 @@ class TestDataclassFields:
             "class C:\n"
             "    x: int\n"
             "    REGISTRY: ClassVar[dict] = {}\n"
+            "    counter: ClassVar[int] = 0\n"
         )
-        assert [f.name for f in _fields(src)] == ["x"]
+        kinds = {s.name: s.kind for s in parse_file(src, "m.py", "python")}
+        assert kinds == {
+            "C": "class", "x": "field", "REGISTRY": "constant", "counter": "field",
+        }
 
     def test_frozen_dataclass_call_decorator(self):
         src = (
@@ -78,15 +89,23 @@ class TestDataclassFields:
         )
         assert [f.name for f in _fields(src)] == ["n", "m"]
 
-    def test_plain_class_fields_not_extracted(self):
-        """A non-field-centric class's typed attributes are left alone — fields
-        must not be conflated with ordinary class attributes/constants."""
+    def test_a_plain_classs_state_is_indexed_and_a_constant_is_not_a_field(self):
+        """Was `test_plain_class_fields_not_extracted`, which asserted `== []`:
+        #355 left a plain class's attributes alone on purpose. jjg reversed that
+        on 2026-09-19 (#784), so the absence it pinned is the defect now. Retired
+        in `harness/retired.json`.
+
+        ⚠ The half of the old docstring that survives: a field must not be
+        conflated with a CONSTANT. `MAX` is state and is not a `field`.
+        """
         src = (
             "class Plain:\n"
             "    MAX: int = 5\n"
             "    name: str = 'z'\n"
         )
-        assert _fields(src) == []
+        assert [f.name for f in _fields(src)] == ["name"]
+        kinds = {s.name: s.kind for s in parse_file(src, "m.py", "python")}
+        assert kinds == {"Plain": "class", "MAX": "constant", "name": "field"}
 
     def test_methods_still_extracted_once(self):
         src = (
@@ -140,5 +159,12 @@ class TestDataclassFields:
         )
         syms = parse_file(src, "m.py", "python")
         summary = _heuristic_summary("m.py", syms)
-        assert "1 methods" in summary
-        assert "2 fields" in summary
+        # ⚠ "1 methods" until #760. This test's subject is that fields are
+        # counted SEPARATELY, and the plural was incidental to it; naming each
+        # kind in the summary forced a plural rule (`property` -> `properties`
+        # is irregular), and applying it to `method` is the same rule, not a
+        # second one.
+        # ⚠⚠ The whole string, because `"1 method" in "1 methods"` is True --
+        # the first replacement for the old `"1 methods"` assertion passed on
+        # the PRE-change tree too and discriminated nothing.
+        assert summary == "Defines C class (1 method, 2 fields)"
