@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed - the `.windsurfrules` backup is named `.windsurfrules.bak`
+
+`init` and `uninstall` back up a rules file before they change it, and named
+the backup by swapping the file's suffix: `path.with_suffix(".windsurfrules.bak")`.
+`.windsurfrules` is a dotfile with no suffix, so `with_suffix` appended instead
+of replacing, and the backup came out as `.windsurfrules.windsurfrules.bak`.
+Nothing was lost, but a user looking for `.windsurfrules.bak` did not find it.
+Every other backup site guessed the suffix the same way and was right
+only because each guess matched its file. Every one of those backups now goes
+through `cli/backup.backup_path`, which appends `.bak` to the whole name, so the
+other sites write the same names as before. (`policy-refresh` already named its
+timestamped backups from the whole name and is unchanged.) `tests/test_backup_is_named_after_the_file.py`
+checks both Windsurf paths and the helper, and fails on any `with_suffix` call
+that builds a `.bak` name under `cli/`.
+
 ## [1.108.390] - 2026-10-21 - the local embedding model is pinned and checked before it is used
 
 ### Changed - Pillow is no longer installed on Python 3.10
