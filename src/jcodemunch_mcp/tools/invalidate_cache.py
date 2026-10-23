@@ -4,7 +4,7 @@ from typing import Optional
 
 from ..storage import IndexStore
 from .. import config as _cfg
-from ..parser.imports import _alias_map_cache, _ALIAS_MAP_LOCK, _sql_stem_cache, _SQL_STEM_LOCK
+from ..parser.imports import _alias_map_cache, _ALIAS_MAP_LOCK, clear_resolution_caches
 from ._utils import resolve_repo, _bare_name_cache, _BARE_NAME_LOCK
 
 # Repos invalidated since the last index_folder call.  index_folder checks
@@ -60,8 +60,7 @@ def invalidate_cache(
             _cfg._PROJECT_CONFIG_HASHES.pop(source_root, None)
     with _BARE_NAME_LOCK:
         _bare_name_cache.pop(str(store.base_path), None)
-    with _SQL_STEM_LOCK:
-        _sql_stem_cache.clear()
+    clear_resolution_caches()
     if source_root:
         with _ALIAS_MAP_LOCK:
             _alias_map_cache.pop(source_root, None)
