@@ -2,6 +2,7 @@
 
 import fnmatch as _fnmatch
 import itertools
+import logging
 import re
 import time
 from ._enclosing import attach_enclosing_symbols
@@ -9,6 +10,8 @@ from typing import Optional
 
 from ..storage import IndexStore, record_savings, cost_avoided
 from ._utils import index_status_to_tool_error, resolve_repo
+
+logger = logging.getLogger(__name__)
 
 # Detect nested quantifiers that cause catastrophic backtracking in Python's re engine.
 # Matches patterns like (a+)+, (a*)+, (a+)*, (?:a+){2,}, etc.
@@ -64,6 +67,16 @@ MAX_BRACE_ALTERNATIVES = 32
 # count each, so the next search can go straight to them. Capped; the total
 # and whether the list was cut ride beside it.
 MORE_FILES_CAP = 20
+
+# When a page's matches sit inside a few small symbols, the body carries each
+# symbol's source once (`sources`), so the agent can edit from the answer
+# instead of opening the file. Bounded three ways; `sources_total`,
+# `sources_omitted` and `sources_omitted_reason` say what was left out.
+# Seeded values, not calibrated: a short fix's code usually sits in one or two
+# functions of a few dozen lines.
+SOURCE_MAX_SYMBOLS = 3
+SOURCE_MAX_LINES = 60
+SOURCE_MAX_BYTES = 8000
 
 
 def _file_patterns(file_pattern: str) -> list[str]:
@@ -155,6 +168,69 @@ def _count_matches(store, content_dir, files, pattern, query_lower, deadline):
         if not finished:
             return counts, False, unreadable
     return counts, True, unreadable
+
+
+def _read_stored_lines(store, content_dir, file_path: str) -> list[str]:
+    """The index's stored copy of one file, as lines; [] if it cannot be read."""
+    full_path = store._safe_content_path(content_dir, file_path)
+    if not full_path:
+        return []
+    try:
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.readlines()
+    except OSError:
+        logger.debug("search_text: could not re-read %s for its source", file_path, exc_info=True)
+        return []
+
+
+def _attach_sources(body: dict, results: list, read_lines) -> None:
+    """Add the source of the symbols a page's matches sit in, when they are few and small.
+
+    The lines are read from the index's stored copy of each file, the same text
+    the spans were taken from, and only for the at most SOURCE_MAX_SYMBOLS
+    symbols that qualify: the scan keeps no file's lines alive.
+    """
+    order: dict[str, tuple] = {}
+    for group in results:
+        for match in group["matches"]:
+            enclosing = match.get("in")
+            if enclosing and enclosing.get("id") not in order:
+                order[enclosing["id"]] = (group["file"], enclosing["line"], enclosing["end_line"])
+    # A page spread over many symbols is a survey, not a fix; it gets no source
+    # and no keys, so the common broad search pays nothing for this.
+    if not order or len(order) > SOURCE_MAX_SYMBOLS:
+        return
+    sources: list[dict] = []
+    reasons: list[str] = []
+    used = 0
+    for sym_id, (file_path, start, end) in order.items():
+        if end - start + 1 > SOURCE_MAX_LINES:
+            reason = "too_long"
+        else:
+            lines = read_lines(file_path)
+            if len(lines) < end:
+                # The stored copy could not be read, or is shorter than the
+                # span (rewritten since the scan): a partial or empty body
+                # would read as the symbol's whole source, so it is left out.
+                reason = "unreadable"
+                if reason not in reasons:
+                    reasons.append(reason)
+                continue
+            source = "\n".join(v.rstrip("\r\n") for v in lines[start - 1:end])
+            size = len(source.encode("utf-8"))
+            if used + size <= SOURCE_MAX_BYTES:
+                used += size
+                sources.append({"id": sym_id, "source": source})
+                continue
+            reason = "byte_cap"
+        if reason not in reasons:
+            reasons.append(reason)
+    if sources:
+        body["sources"] = sources
+    body["sources_total"] = len(order)
+    body["sources_omitted"] = len(order) - len(sources)
+    if reasons:
+        body["sources_omitted_reason"] = ",".join(reasons)
 
 
 def search_text(
@@ -416,6 +492,7 @@ def search_text(
     }
     if more_files is not None:
         body.update(more_files)
+    _attach_sources(body, results, lambda f: _read_stored_lines(store, content_dir, f))
     if files_eligible == 0 and file_pattern:
         # An empty result over a scope that matched no file is not an absence.
         note = f"file_pattern {file_pattern!r} matched no indexed file, so nothing was searched."
