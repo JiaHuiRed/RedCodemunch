@@ -59,6 +59,60 @@ def wal_db(tmp_path):
 
 
 class TestReadContract:
+    @pytest.mark.parametrize("name", ["c#proj", "percent%20proj", "unicode-项目"])
+    @pytest.mark.parametrize("wal", [False, True])
+    def test_special_path_reads_correct_database(self, tmp_path, name, wal):
+        directory = tmp_path / name
+        directory.mkdir()
+        db = directory / "index.db"
+        writer = sqlite3.connect(str(db), isolation_level=None)
+        try:
+            writer.execute("PRAGMA journal_mode = WAL")
+            writer.execute("CREATE TABLE t (k TEXT PRIMARY KEY)")
+            writer.execute("INSERT INTO t VALUES ('correct')")
+            if not wal:
+                writer.close()
+            before = _sidecars(db)
+            conn = gen.connect_readonly(db)
+            try:
+                assert conn.execute("SELECT k FROM t").fetchall() == [("correct",)]
+                with pytest.raises(sqlite3.OperationalError):
+                    conn.execute("INSERT INTO t VALUES ('wrong')")
+            finally:
+                conn.close()
+            assert _sidecars(db) == before
+        finally:
+            writer.close()
+
+    def test_uri_escapes_query_character(self, tmp_path):
+        assert "%3F" in gen.readonly_uri(tmp_path / "question?mark.db")
+
+    def test_fallback_uses_encoded_path(self, tmp_path, monkeypatch):
+        db = tmp_path / "hash#name.db"
+        writer = sqlite3.connect(str(db), isolation_level=None)
+        writer.execute("CREATE TABLE t (k TEXT)")
+        writer.execute("INSERT INTO t VALUES ('correct')")
+        writer.close()
+        Path(str(db) + "-wal").touch()
+        connect = sqlite3.connect
+        calls = []
+
+        def fail_first(database, **kwargs):
+            calls.append(database)
+            if len(calls) == 1:
+                raise sqlite3.OperationalError("forced WAL open failure")
+            return connect(database, **kwargs)
+
+        monkeypatch.setattr(gen.sqlite3, "connect", fail_first)
+        conn = gen.connect_readonly(db)
+        try:
+            assert conn.execute("SELECT k FROM t").fetchall() == [("correct",)]
+        finally:
+            conn.close()
+        assert len(calls) == 2
+        assert all("%23" in uri for uri in calls)
+        assert calls[1].endswith("immutable=1")
+
     def test_sidecars_present_reads_the_uncheckpointed_wal(self, wal_db):
         db, _writer = wal_db
         assert _sidecars(db) == (True, True)

@@ -28,6 +28,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +86,12 @@ def readonly_uri(db_path: PathLike) -> str:
     missed). The trade-off v1.108.185 accepted disappears rather than being
     balanced.
     """
-    if wal_sidecar_present(db_path):
-        return f"file:{db_path}?mode=ro"
-    return f"file:{db_path}?mode=ro&immutable=1"
+    return _uri(db_path, immutable=not wal_sidecar_present(db_path))
+
+
+def _uri(db_path: PathLike, *, immutable: bool) -> str:
+    path = quote(str(db_path), safe="/:\\")
+    return f"file:{path}?mode=ro" + ("&immutable=1" if immutable else "")
 
 
 def connect_readonly(db_path: PathLike, **kwargs) -> sqlite3.Connection:
@@ -110,9 +114,7 @@ def connect_readonly(db_path: PathLike, **kwargs) -> sqlite3.Connection:
             "WAL-visible read-only open failed for %s; falling back to immutable",
             db_path, exc_info=True,
         )
-        return sqlite3.connect(
-            f"file:{db_path}?mode=ro&immutable=1", uri=True, **kwargs
-        )
+        return sqlite3.connect(_uri(db_path, immutable=True), uri=True, **kwargs)
 
 
 def db_mtime_ns(db_path: PathLike) -> Optional[int]:
