@@ -38,6 +38,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # A runner is not a user: its tool calls must not be reported to the public savings total (cicd C-23).
+  JCODEMUNCH_SHARE_SAVINGS: "0"
   UV_VERSION: "0.9.5"
 
 jobs:
@@ -45,12 +47,29 @@ jobs:
     name: "release: pre-flight"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Read-only: the policy-3b check reads open PRs and their reviews (C-25).
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       version: ${{ steps.v.outputs.version }}
       sha: ${{ steps.v.outputs.sha }}
       tool_count: ${{ steps.v.outputs.tool_count }}
       dry_run: ${{ steps.v.outputs.dry_run }}
     steps:
+      # jjg (DECISIONS 2026-10-18): a release runs only when he triggers it. Every
+      # job needs this one, so a run started by a bot or anyone else stops here,
+      # before a build, a tag or an upload. The actor is read through env, never
+      # interpolated into the script.
+      - name: A release runs only when jgravelle triggers it
+        shell: bash  # a windows-latest leg would otherwise run it under pwsh
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "jgravelle" ]; then
+            echo "::error title=release refused::triggered by '$ACTOR'; only jgravelle may start a release"
+            exit 1
+          fi
       - name: A hand-pushed tag is refused (releases are cut by dispatch)
         if: github.event_name == 'push'
         run: |
@@ -94,6 +113,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Every job checks, not only the pre-flight: a re-run of failed jobs skips the
+      # pre-flight's steps, and its triggering actor is whoever pressed re-run.
+      - name: A release runs only when jgravelle triggers it
+        shell: bash  # a windows-latest leg would otherwise run it under pwsh
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "jgravelle" ]; then
+            echo "::error title=release refused::triggered by '$ACTOR'; only jgravelle may start a release"
+            exit 1
+          fi
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           ref: ${{ needs.preflight.outputs.sha }}
@@ -121,6 +151,17 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # Every job checks, not only the pre-flight: a re-run of failed jobs skips the
+      # pre-flight's steps, and its triggering actor is whoever pressed re-run.
+      - name: A release runs only when jgravelle triggers it
+        shell: bash  # a windows-latest leg would otherwise run it under pwsh
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "jgravelle" ]; then
+            echo "::error title=release refused::triggered by '$ACTOR'; only jgravelle may start a release"
+            exit 1
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: dist
@@ -148,6 +189,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
+      # Every job checks, not only the pre-flight: a re-run of failed jobs skips the
+      # pre-flight's steps, and its triggering actor is whoever pressed re-run.
+      - name: A release runs only when jgravelle triggers it
+        shell: bash  # a windows-latest leg would otherwise run it under pwsh
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "jgravelle" ]; then
+            echo "::error title=release refused::triggered by '$ACTOR'; only jgravelle may start a release"
+            exit 1
+          fi
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           ref: ${{ needs.preflight.outputs.sha }}
@@ -173,7 +225,9 @@ jobs:
             uv pip install --python "$VENV" dist/*.whl
           else
             for i in $(seq 1 20); do
-              if uv pip install --python "$VENV" --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --index-strategy unsafe-best-match "jcodemunch-mcp==$V"; then break; fi
+              # --refresh-package: each attempt asks the index afresh; a cached page from an
+              # attempt before the upload propagated answered all twenty on 1.108.320 (L-93).
+              if uv pip install --python "$VENV" --refresh-package jcodemunch-mcp --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --index-strategy unsafe-best-match "jcodemunch-mcp==$V"; then break; fi
               echo "not on Test PyPI yet ($i)"; sleep 30
             done
             # An exhausted retry must still fail (C-19): the `if` that makes the
@@ -194,6 +248,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Every job checks, not only the pre-flight: a re-run of failed jobs skips the
+      # pre-flight's steps, and its triggering actor is whoever pressed re-run.
+      - name: A release runs only when jgravelle triggers it
+        shell: bash  # a windows-latest leg would otherwise run it under pwsh
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "jgravelle" ]; then
+            echo "::error title=release refused::triggered by '$ACTOR'; only jgravelle may start a release"
+            exit 1
+          fi
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           ref: ${{ needs.preflight.outputs.dry_run == 'true' && needs.preflight.outputs.sha || 'main' }}
@@ -225,6 +290,17 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # Every job checks, not only the pre-flight: a re-run of failed jobs skips the
+      # pre-flight's steps, and its triggering actor is whoever pressed re-run.
+      - name: A release runs only when jgravelle triggers it
+        shell: bash  # a windows-latest leg would otherwise run it under pwsh
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "jgravelle" ]; then
+            echo "::error title=release refused::triggered by '$ACTOR'; only jgravelle may start a release"
+            exit 1
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: dist
@@ -249,6 +325,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
+      # Every job checks, not only the pre-flight: a re-run of failed jobs skips the
+      # pre-flight's steps, and its triggering actor is whoever pressed re-run.
+      - name: A release runs only when jgravelle triggers it
+        shell: bash  # a windows-latest leg would otherwise run it under pwsh
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "jgravelle" ]; then
+            echo "::error title=release refused::triggered by '$ACTOR'; only jgravelle may start a release"
+            exit 1
+          fi
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           ref: ${{ needs.preflight.outputs.sha }}
@@ -281,7 +368,8 @@ jobs:
             # index that had not published the file yet. The `if` is load-bearing
             # twice -- it retries, and it stops `set -e` aborting on attempt one.
             for i in $(seq 1 40); do
-              if uv pip install --python "$VENV" "jcodemunch-mcp==$V"; then break; fi
+              # --refresh-package: each attempt asks the index afresh (L-93).
+              if uv pip install --python "$VENV" --refresh-package jcodemunch-mcp "jcodemunch-mcp==$V"; then break; fi
               echo "not on PyPI yet ($i/40)"; sleep 15
             done
             uv pip show --python "$VENV" jcodemunch-mcp >/dev/null 2>&1 || {
@@ -313,6 +401,17 @@ jobs:
       contents: write
       id-token: write
     steps:
+      # Every job checks, not only the pre-flight: a re-run of failed jobs skips the
+      # pre-flight's steps, and its triggering actor is whoever pressed re-run.
+      - name: A release runs only when jgravelle triggers it
+        shell: bash  # a windows-latest leg would otherwise run it under pwsh
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "jgravelle" ]; then
+            echo "::error title=release refused::triggered by '$ACTOR'; only jgravelle may start a release"
+            exit 1
+          fi
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           ref: ${{ needs.preflight.outputs.sha }}
@@ -327,25 +426,16 @@ jobs:
         uses: sigstore/gh-action-sigstore-python@04cffa1d795717b140764e8b640de88853c92acc  # v3.3.0
         with:
           inputs: dist/*.whl dist/*.tar.gz
-      - name: Notes = the CHANGELOG block verbatim + computed figures
+      - name: Notes = the CHANGELOG block (verbatim when it fits GitHub's limit) + computed figures
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           V="${{ needs.preflight.outputs.version }}"
-          python - "$V" "${{ needs.preflight.outputs.tool_count }}" > "${RUNNER_TEMP}/notes.md" <<'PY'
-          import re, sys, pathlib
-          v, count = sys.argv[1], sys.argv[2]
-          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
-          m = re.search(rf"^## \[{re.escape(v)}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
-          if not m:
-              sys.exit(f"no CHANGELOG block for {v}")
-          py = re.search(r'requires-python\s*=\s*"([^"]+)"', pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
-          print(m.group(1).strip())
-          print()
-          print(f"---\n{count} tools in the `full` surface; Python {py.group(1) if py else 'unknown'}. Published by the Release workflow with PyPI trusted publishing and sigstore-signed artifacts.")
-          PY
+          # (LEDGER L-92) A tested renderer, never an inline script: GitHub refuses a body over
+          # 125,000 characters and this job runs AFTER the PyPI publish.
+          python scripts/release_notes.py "$V" "${{ needs.preflight.outputs.tool_count }}" > "${RUNNER_TEMP}/notes.md"
           TITLE=$(grep -m1 -E "^## \[$V\]" CHANGELOG.md | sed -E 's/^## \[[^]]+\] *-? *[0-9-]* *-? *//')
           if [ "${{ needs.preflight.outputs.dry_run }}" = "true" ]; then
             { echo "## github release (DRY RUN) — v$V — $TITLE"; echo; cat "${RUNNER_TEMP}/notes.md"; } >> "$GITHUB_STEP_SUMMARY"; exit 0
@@ -363,6 +453,17 @@ jobs:
       id-token: write
       issues: write
     steps:
+      # Every job checks, not only the pre-flight: a re-run of failed jobs skips the
+      # pre-flight's steps, and its triggering actor is whoever pressed re-run.
+      - name: A release runs only when jgravelle triggers it
+        shell: bash  # a windows-latest leg would otherwise run it under pwsh
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "jgravelle" ]; then
+            echo "::error title=release refused::triggered by '$ACTOR'; only jgravelle may start a release"
+            exit 1
+          fi
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           ref: ${{ needs.preflight.outputs.sha }}
@@ -386,15 +487,30 @@ jobs:
           fi
           ./mcp-publisher publish
       - name: Verify the registry row (nested shape; a flat read returns 0 rows on a good publish)
+        id: verify
         if: needs.preflight.outputs.dry_run != 'true'
         shell: bash
         run: |
-          python scripts/registry_verify.py --version "${{ needs.preflight.outputs.version }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          # No pipe: the script's exit code names the outcome (1 the row is wrong, 75 no read got an answer).
+          # The code is written before the summary, so a failed append cannot lose it.
+          # `|| code=$?` and not `set +e`: this shell runs with -e, and the step must reach the write below.
+          code=0
+          python scripts/registry_verify.py --version "${{ needs.preflight.outputs.version }}" > verify.txt 2>&1 || code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          cat verify.txt
+          cat verify.txt >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
       - name: Open an issue (PyPI is live; the registry is a follow-up, not a rollback)
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue create --repo "${{ github.repository }}" --label release \
-            --title "registry publish failed for v${{ needs.preflight.outputs.version }}" \
-            --body "Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}. PyPI and the GitHub release are live. Fallback is the cmd.exe line in CLAUDE.md (Registry verification reads a NESTED row)."
+          if [ "${{ steps.verify.outputs.code }}" = "75" ]; then
+            gh issue create --repo "${{ github.repository }}" --label release \
+              --title="registry could not be read after publishing v${{ needs.preflight.outputs.version }}" \
+              --body "Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}. PyPI and the GitHub release are live, and the publish step passed. No read of the registry got an answer, so nothing here says the publish failed. Run scripts/registry_verify.py again (docs/cicd/RUNBOOK.md section 3a); do not re-publish on this issue."
+          else
+            gh issue create --repo "${{ github.repository }}" --label release \
+              --title="registry publish failed for v${{ needs.preflight.outputs.version }}" \
+              --body "Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}. PyPI and the GitHub release are live. Read the failed step first: a verify that answered with the wrong row and a publish step that failed are different. Never re-publish on a zero-row read (docs/cicd/RUNBOOK.md section 3a). Fallback is the cmd.exe line in CLAUDE.md (Registry verification reads a NESTED row)."
+          fi

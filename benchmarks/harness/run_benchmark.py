@@ -54,6 +54,8 @@ from typing import Optional
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+import os  # noqa: E402
+
 try:
     import tiktoken
 except ImportError:
@@ -949,6 +951,11 @@ def render_markdown(results: list[dict], tokenizer: str) -> str:
 # ---------------------------------------------------------------------------
 
 def main():
+    # A measurement run is not a user: its tool calls must not be reported to the
+    # public savings total, whoever runs this and wherever (cicd C-23). In main(),
+    # not at import: a test that imports this module must not inherit it (review,
+    # 2026-10-13). An explicit setting in the environment is kept.
+    os.environ.setdefault("JCODEMUNCH_SHARE_SAVINGS", "0")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("repos", nargs="*", help="owner/repo to benchmark (default: all 3 canonical repos)")
     parser.add_argument("--out", metavar="FILE", help="write markdown results to FILE")
@@ -959,6 +966,15 @@ def main():
         help="exit non-zero when the run violates harness/thresholds.json "
              "token.grand_ratio_vs_grep or token.per_repo_rise_max (STANDARD criterion 2); "
              "a DOWNWARD move stays the re-sync warning",
+    )
+    parser.add_argument(
+        "--accept-rise",
+        action="append",
+        default=[],
+        metavar="OWNER/REPO",
+        help="with --reference only: a repo whose token rise a maintainer approved, so "
+             "--floor prints it instead of failing on it while the reference is replaced. "
+             "Repeat for more than one repo. Every other repo is judged as usual.",
     )
     parser.add_argument(
         "--reference",
@@ -983,6 +999,12 @@ def main():
              "counts are identical (they should be; there is no seed to pin)",
     )
     args = parser.parse_args()
+    if args.accept_rise and not args.reference:
+        # Accepting a rise without replacing the reference would silence the
+        # gate for every later run; it is only meaningful while re-baselining.
+        print("--accept-rise needs --reference: it accepts a rise only while the reference is replaced",
+              file=sys.stderr)
+        return 2
 
     repos = args.repos or DEFAULT_REPOS
 
@@ -1039,7 +1061,7 @@ def main():
 
     if args.floor:
         from token_floor import verdicts as _floor_verdicts
-        _ok, _lines = _floor_verdicts(results, load_reference())
+        _ok, _lines = _floor_verdicts(results, load_reference(), frozenset(args.accept_rise))
         for _line in _lines:
             print(_line)
         if not _ok:

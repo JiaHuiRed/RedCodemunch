@@ -24,6 +24,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # A runner is not a user: its tool calls must not be reported to the public savings total (cicd C-23).
+  JCODEMUNCH_SHARE_SAVINGS: "0"
   UV_VERSION: "0.9.5"
 
 jobs:
@@ -153,6 +155,7 @@ jobs:
           path: |
             harness/results/latest.json
             harness/results/self_latency.json
+            harness/results/self_latency.failed.json
           retention-days: 90
       - name: Open a drift issue per failing Floor
         if: failure()

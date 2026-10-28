@@ -1,10 +1,12 @@
 """Extract import statements from source files using language-specific regex patterns."""
 
+import functools
 import json
 import logging
 import os
 import posixpath
 import re
+import sys
 import threading
 from collections import deque
 from pathlib import Path
@@ -29,6 +31,13 @@ _JS_IMPORT_FROM = re.compile(
 _JS_SIDE_EFFECT = re.compile(r"""(?:^|\n)\s*import\s+['"]([^'"]+)['"]""", re.MULTILINE)
 # JS/TS: require('specifier')
 _JS_REQUIRE = re.compile(r"""require\s*\(\s*['"]([^'"]+)['"]\s*\)""", re.MULTILINE)
+# (L-177) JS/TS: const { a, b: x } = require('specifier'), on one line or several.
+# `[^{}]` refuses a nested pattern (`{ a: { b } }`), which keeps the plain edge.
+_JS_REQUIRE_DESTRUCTURE = re.compile(
+    r"""\b(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)"""
+)
+# One binding: `a`, `a: x`, `a = 1`, `a: x = 1`.
+_JS_BINDING = re.compile(r"""^([A-Za-z_$][\w$]*)(?:\s*:\s*[A-Za-z_$][\w$]*)?(?:\s*=\s*[^,]+)?$""")
 # JS/TS: export { A, B as C } from 'specifier'  (selective re-export)
 # Captures the brace contents so the graph builder can do per-name barrel
 # routing — `import { A } from './barrel'` credits the leaf `A` came from,
@@ -83,7 +92,9 @@ logger = logging.getLogger(__name__)
 _PY_FROM = re.compile(
     r"""^[ \t]*from\s+(\.{0,4}[\w.]*)\s+import\s+(.+)$""", re.MULTILINE
 )
-_PY_IMPORT = re.compile(r"""^[ \t]*import\s+([\w.,][^\n]*)$""", re.MULTILINE)
+# (L-177) The first character may be the backslash of `import \` continued on
+# the next line; `_py_from_clause` reads the rest.
+_PY_IMPORT = re.compile(r"""^[ \t]*import\s+([\w.,\\][^\n]*)$""", re.MULTILINE)
 
 # Go: import "pkg"  or import ( ... )
 _GO_IMPORT_BLOCK = re.compile(r"""import\s*\((.*?)\)""", re.DOTALL)
@@ -91,7 +102,9 @@ _GO_IMPORT_LINE = re.compile(r"""import\s+(?:\w+\s+)?["']([^"']+)["']""")
 _GO_IMPORT_ENTRY = re.compile(r"""(?:\w+\s+)?["']([^"']+)["']""")
 
 # Java/Kotlin: import com.example.Foo
-_JAVA_IMPORT = re.compile(r"""^import\s+(?:static\s+)?([\w.]+)\s*;?$""", re.MULTILINE)
+# (L-177) Kotlin's `import a.b.D as E` names `D`; without the alias clause the
+# line matched nothing and the file had no edge to `a.b.D`. Java has no `as`.
+_JAVA_IMPORT = re.compile(r"""^import\s+(?:static\s+)?([\w.]+)(?:\s+as\s+\w+)?\s*;?$""", re.MULTILINE)
 
 # Rust: use crate::foo::{Bar, Baz}
 _RUST_USE = re.compile(r"""^use\s+([\w::{},\s*]+)\s*;""", re.MULTILINE)
@@ -117,16 +130,32 @@ _CSHARP_USING = re.compile(r"""^using\s+(?:static\s+)?(?:(\w+)\s*=\s*)?([\w.]+)\
 
 # PHP: use App\Foo\Bar;  /  require/include
 _PHP_USE = re.compile(r"""^use\s+([\w\\]+)(?:\s+as\s+\w+)?\s*;""", re.MULTILINE)
+# (L-177) PHP group use: `use App\Models\{User, Post};`, on one line or several.
+# `[^{};]` keeps the body to one statement: a brace that never closes stops at
+# the next `;` or `{` and matches nothing.
+_PHP_GROUP_USE = re.compile(r"""^use\s+([\w\\]+?)\\\{([^{};]*)\}\s*;""", re.MULTILINE)
+_PHP_GROUP_ITEM = re.compile(r"""^(?:(?:function|const)\s+)?([\w\\]+)(?:\s+as\s+\w+)?$""")
 _PHP_REQUIRE = re.compile(r"""(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]""", re.MULTILINE)
 
 # Swift: import Foundation
 _SWIFT_IMPORT = re.compile(r"""^import\s+(\w+)""", re.MULTILINE)
 
-# Scala: import scala.collection.mutable
-_SCALA_IMPORT = re.compile(r"""^import\s+([\w.{}]+)""", re.MULTILINE)
+# Scala: import scala.collection.mutable  /  import a.b.{C, D => E}
+# (L-177) The selector body may span lines; `[^{}]` stops a brace that never
+# closes at the next one, so it matches only the path.
+_SCALA_IMPORT = re.compile(r"""^import\s+([\w.]+)(?:\{([^{}]*)\})?""", re.MULTILINE)
+# One selector: `C`, `C => D`, `C as D` (Scala 3). `C => _` hides C, and `_`,
+# `*` and `given` select no name.
+_SCALA_SELECTOR = re.compile(r"""^(\w+)(?:\s*(?:=>|as)\s*(\w+))?$""")
 
 # Haskell: import Data.Map (fromList)
-_HASKELL_IMPORT = re.compile(r"""^import\s+(?:qualified\s+)?(\S+)""", re.MULTILINE)
+# (L-177) The module stops at `(`: `import A.B(c)` with no space recorded `A.B(c)`.
+_HASKELL_IMPORT = re.compile(r"""^import\s+(?:qualified\s+)?([^\s(]+)""", re.MULTILINE)
+# (L-177) What may sit between the module and its import list.
+_HASKELL_LIST_HEAD = re.compile(
+    r"""\s*(?:qualified\s+)?(?:as\s+[\w.]+\s*)?(hiding\s*)?\("""
+)
+_HASKELL_OPERATOR = re.compile(r"""^[!#$%&*+./<=>?@\\^|~:-]+$""")
 
 # Gleam: import gleam/option.{type Option, None, Some} as opt
 # Module paths are lowercase snake_case segments joined by '/'. The optional
@@ -153,6 +182,29 @@ def _clean_names(raw: str) -> list[str]:
         # Take first token before 'as'
         names.append(part.split()[0])
     return [n for n in names if n]
+
+
+def _js_destructured_names(raw: str) -> list[str]:
+    """The names a destructuring `require` binds, or [] when the pattern is not plain (LEDGER L-177).
+
+    `const {a, b} = require("./m")` recorded the edge with no names, so
+    `find_references("a")` did not see the file. A `...rest` element takes
+    everything the module exports, which is what [] already means, and a
+    pattern this reader cannot read whole (a nested one, a default holding a
+    comma) also records [], as before.
+    """
+    raw = re.sub(r"/\*.*?\*/", " ", raw, flags=re.DOTALL)
+    raw = re.sub(r"//[^\n]*", " ", raw)
+    names: list[str] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        m = _JS_BINDING.match(item)
+        if not m:
+            return []
+        names.append(m.group(1))
+    return names
 
 
 def _extract_js_imports(content: str) -> list[dict]:
@@ -185,6 +237,11 @@ def _extract_js_imports(content: str) -> list[dict]:
         for e in edges:
             if e["specifier"] != specifier:
                 continue
+            # ⚠ A union: [] is "everything" only to `expand_barrel_leaves` and
+            # "nothing" to every other reader (`find_references` indexes a file
+            # under its names), so letting [] win erased real names beside a
+            # type-position `import()` or a commented `require` (L-177 review).
+            # The whole-module fact needs its own field: LEDGER L-201.
             e["names"] = sorted(set(e["names"]) | set(names))
             if not is_re_export:
                 return
@@ -220,7 +277,14 @@ def _extract_js_imports(content: str) -> list[dict]:
     for m in _JS_SIDE_EFFECT.finditer(content):
         add(m.group(1), [])
 
+    destructured: set[int] = set()
+    for m in _JS_REQUIRE_DESTRUCTURE.finditer(content):
+        destructured.add(m.end())
+        add(m.group(2), _js_destructured_names(m.group(1)))
+
     for m in _JS_REQUIRE.finditer(content):
+        if m.end() in destructured:
+            continue  # read above with its bindings; [] here would erase them
         add(m.group(1), [])
 
     for m in _JS_REEXPORT_NAMED.finditer(content):
@@ -253,12 +317,98 @@ def _extract_js_imports(content: str) -> list[dict]:
     return edges
 
 
+# One item of a clause: `name` or `name as alias`.
+_PY_CLAUSE_ITEM = re.compile(r"^\w+(?:\s+as\s+\w+)?$")
+# One item of a plain `import`: a dotted module, `as` an alias (L-177).
+_PY_IMPORT_ITEM = re.compile(r"^\w+(?:\.\w+)*(?:\s+as\s+\w+)?$")
+_BACKSLASH = chr(92)
+
+
+def _py_from_clause(content: str, first: str, pos: int, item: re.Pattern = _PY_CLAUSE_ITEM) -> str:
+    """The whole name clause of a `from ... import`, wherever the statement ends (LEDGER L-176).
+
+    ⚠⚠ `_PY_FROM` matches ONE line. For the form every formatter writes,
+
+        from pkg.utils import (
+            solve,
+        )
+
+    that line holds `(` and nothing else, so the edge was recorded with NO
+    names: `find_references("solve")` answered 0, `check_references` counted
+    no import, and the per-name module edges of #550 were never offered. A
+    backslash continuation kept the names of its first line only.
+
+    *first* is the rest of the matched line and *pos* the offset where that
+    line ends. Comments are dropped before anything is split: a clause holds
+    no string, so `#` always starts one. A trailing backslash joins the next
+    line in either form, and a parenthesis may open on the line after one.
+
+    ⚠⚠ The following lines are believed only when the statement is WHOLE:
+    it closes (a `)`, or a continuation's last line) and every item is
+    `name` or `name as alias`. Otherwise the clause is what the
+    opening line holds, which is what was recorded before. So a parenthesis
+    that never closes (a file cut short, prose in a docstring that reads
+    like an import) adds no name: review of the first draft found it
+    recording the words of the prose that followed.
+    ⚠ The read WALKS to the closing parenthesis, the end of the continuation
+    or the next line that starts `from` or `import`, whichever is first.
+    Every `_PY_FROM` match is such a line, so no line is walked twice and
+    the pass over a file stays linear (a test counts the reader's steps).
+
+    (L-177) A plain `import os, \\` continued on the next line is read the
+    same way, with *item* the dotted shape `_PY_IMPORT_ITEM`: its second
+    line was dropped, and the backslash recorded as a specifier.
+    """
+    head = first.split("#", 1)[0].strip()
+    if not head.startswith("(") and not head.endswith(_BACKSLASH):
+        return head
+    opening = head.lstrip("(").rstrip(_BACKSLASH)
+    if head.startswith("(") and ")" in head:
+        return head[1:].split(")", 1)[0]
+
+    parts: list[str] = []
+    parenthesised = started = closed = False
+    line = head
+    size = len(content)
+    while True:
+        more = line.endswith(_BACKSLASH)
+        if more:
+            line = line[:-1].rstrip()
+        if not started and line.startswith("("):
+            parenthesised = True
+            line = line[1:]
+        if line or parenthesised:
+            started = True
+        body, hit, _ = line.partition(")") if parenthesised else (line, "", "")
+        parts.append(body)
+        if hit or (started and not parenthesised and not more):
+            closed = True
+            break
+        if pos >= size:
+            break
+        nxt = content.find("\n", pos + 1)
+        if nxt == -1:
+            nxt = size
+        line = content[pos + 1:nxt].split("#", 1)[0].strip()
+        pos = nxt
+        if line.split(None, 1)[:1] in (["from"], ["import"]):
+            break  # the next statement: this one never closed
+
+    if not closed:
+        return opening
+    clause = " ".join(parts)
+    items = [part.strip() for part in clause.split(",")]
+    if not all(item.match(part) for part in items if part):
+        return opening
+    return clause
+
+
 def _extract_python_imports(content: str) -> list[dict]:
     edges = []
     seen: set[str] = set()
 
     for m in _PY_FROM.finditer(content):
-        module, names_str = m.group(1), m.group(2)
+        module, names_str = m.group(1), _py_from_clause(content, m.group(2), m.end())
         # Skip 'from __future__ import ...'
         if module.strip() == "__future__":
             continue
@@ -329,7 +479,8 @@ def _extract_python_imports(content: str) -> list[dict]:
                     edges.append({"specifier": _sub, "names": [_name]})
 
     for m in _PY_IMPORT.finditer(content):
-        for mod in m.group(1).split(","):
+        clause = _py_from_clause(content, m.group(1), m.end(), _PY_IMPORT_ITEM)
+        for mod in clause.split(","):
             # ⚠⚠ `[0]` on an empty split raised IndexError, and `extract_imports`
             # swallows it and returns [], so ONE bad line cost the file EVERY
             # import edge it had. Found 2026-08-26 on this repo's own
@@ -349,7 +500,465 @@ def _extract_python_imports(content: str) -> list[dict]:
                 seen.add(mod)
                 edges.append({"specifier": mod, "names": []})
 
+    if "__import__" in content or "import_module" in content:
+        edges.extend(_python_dynamic_imports(content, seen))
+
     return edges
+
+
+# (#876) The marker edge for a dynamic import whose target is not a literal.
+# Its specifier resolves to nothing, so every consumer skips it the way it
+# skips any unresolvable specifier; `get_blast_radius.blast_verdict` reads it:
+# a `package`/`prefix:` scope that reaches the file refuses an empty walk,
+# naming the site; an `opaque` one is disclosed beside it (jjg, 2026-09-29).
+DYNAMIC_IMPORT_UNRESOLVED = "<dynamic-import>"
+
+
+def _is_dynamic_import_call(node) -> bool:
+    import ast
+
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id in ("__import__", "import_module")
+    if isinstance(func, ast.Attribute):
+        return func.attr == "import_module" or func.attr == "__import__"
+    return False
+
+
+def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
+    """Dynamic imports as edges (#876), bounded: no symbolic execution.
+
+    A target becomes edges when it is knowable:
+    - a string literal;
+    - a module-level literal table, indexed along its subscript path
+      (``GRAMMARS[name][1]`` is each value's element 1, never a dict key);
+    - a loop variable over a literal tuple/list (``for m in ("a", "b")``),
+      when EVERY binding of that name in the file is such a loop;
+    - a literal passed ONE step into a parameter of a function in this file
+      that feeds one, by position or keyword -- only while the parameter is
+      never rebound in that function, and only when EVERY use of the function
+      in this file is a direct call (a function passed to ``map``, registered,
+      or called on another object can receive anything).
+    Otherwise the call site is recorded once per scope as a marker edge,
+    ``dynamic_scope`` saying what it can reach: ``package`` (built from this
+    package's own name, the #569 shape, or a leading-dot name anchored on it
+    with ``package=``), ``prefix:<dotted>`` (a literal module prefix, or
+    ``X.__name__`` of an imported module ``X``), or ``opaque``.
+    ``blast_verdict`` refuses an empty walk only for a scope that reaches the
+    file; an opaque site is disclosed, not refused (jjg, 2026-09-29: a
+    registry-driven loader exists in most repos, and a refusal that fires on
+    every empty result teaches people to ignore it).
+    """
+    import ast
+
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        # Unparseable (py2, a template): no edges and no marker. One such file
+        # must not become a boundary for the whole repository (review of #876).
+        logger.debug("dynamic-import scan skipped: file does not parse", exc_info=True)
+        return []
+
+    out: list[dict] = []
+    scopes: set[str] = set()
+
+    def add(spec: str) -> None:
+        if spec and spec not in seen:
+            seen.add(spec)
+            out.append({"specifier": spec, "names": [], "dynamic": True})
+
+    def literal(node) -> Optional[str]:
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+    # THE one walk of the file (LEDGER L-147). `all_nodes` is every node in
+    # `ast.walk` order, so each pass below reads the list instead of walking
+    # the tree again, and `parent_of` is what a per-name question needs. The
+    # scan used to walk the whole tree once per pass, plus twice per literal
+    # table and once per loop variable: a file's cost grew with the number of
+    # names in it.
+    all_nodes: list = []
+    parent_of: dict[int, ast.AST] = {}
+    todo: deque[ast.AST] = deque([tree])
+    while todo:
+        node = todo.popleft()
+        all_nodes.append(node)
+        for child in ast.iter_child_nodes(node):
+            parent_of[id(child)] = node
+            todo.append(child)
+
+    whole: dict = {}
+    bound_under: dict[int, dict[str, int]] = {}
+
+    def _whole_file() -> dict:
+        """How often each name is bound in the file, and which names have a
+        use that is not a read: the answers `stores(tree, x)` and the old
+        per-name `_only_read` walk gave, for every name at once."""
+        if not whole:
+            bound: dict[str, int] = {}
+            not_read: set[str] = set()
+            for node in all_nodes:
+                if isinstance(node, ast.Name):
+                    if isinstance(node.ctx, (ast.Store, ast.Del)):
+                        bound[node.id] = bound.get(node.id, 0) + 1
+                    elif isinstance(node.ctx, ast.Load):
+                        parent = parent_of.get(id(node))
+                        if parent is not None and not _use_is_a_read(parent, node):
+                            not_read.add(node.id)
+                elif isinstance(node, ast.arg):
+                    bound[node.arg] = bound.get(node.arg, 0) + 1
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for a in node.names:
+                        key = a.asname or a.name.split(".")[0]
+                        bound[key] = bound.get(key, 0) + 1
+            whole["bound"], whole["not_read"] = bound, not_read
+        return whole
+
+    def stores(root, name: str) -> int:
+        """Bindings of ``name`` under ``root``: assignment targets and parameters."""
+        if root is tree:
+            return _whole_file()["bound"].get(name, 0)
+        # One walk per subtree asked about, whatever the number of names:
+        # a function holding sixty dynamic imports is walked once, not sixty
+        # times (review of L-147).
+        bound = bound_under.get(id(root))
+        if bound is None:
+            bound = bound_under[id(root)] = {}
+            for node in ast.walk(root):
+                if isinstance(node, ast.Name):
+                    if isinstance(node.ctx, (ast.Store, ast.Del)):
+                        bound[node.id] = bound.get(node.id, 0) + 1
+                elif isinstance(node, ast.arg):
+                    bound[node.arg] = bound.get(node.arg, 0) + 1
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for a in node.names:
+                        key = a.asname or a.name.split(".")[0]
+                        bound[key] = bound.get(key, 0) + 1
+        return bound.get(name, 0)
+
+    def _frozen(node) -> bool:
+        return isinstance(node, ast.Constant) or (
+            isinstance(node, ast.Tuple) and all(_frozen(e) for e in node.elts)
+        )
+
+    def _frozen_below(node) -> bool:
+        """Everything under the top level is a constant or a tuple of them.
+
+        Only the table's own name is guarded against change (`_only_read`); a
+        mutable value reached through it (`T["a"].append(cfg)`,
+        `for v in T.values(): v.append(cfg)`) is a change no name-level rule
+        sees, so such a table is not a literal at all (review of #876).
+        """
+        elts = node.values if isinstance(node, ast.Dict) else node.elts
+        keys_ok = all(k is None or _frozen(k) for k in node.keys) if isinstance(node, ast.Dict) else True
+        return keys_ok and all(_frozen(e) for e in elts)
+
+    # Module-level literal tables.
+    tables: dict[str, ast.AST] = {}
+    for stmt in tree.body:
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else (
+            [stmt.target] if isinstance(stmt, ast.AnnAssign) and stmt.value is not None else []
+        )
+        value = getattr(stmt, "value", None)
+        if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set)) and _frozen_below(value):
+            for t in targets:
+                if isinstance(t, ast.Name):
+                    tables[t.id] = value
+    # A table is the literal it was only while nothing can change what it
+    # holds: a rebinding, `T[k] = cfg`, `del T[k]`, a mutating method
+    # (`T.update(...)`), an alias (`U = T`) or handing `T` to a function we
+    # cannot see all make it a site (review of #876). Reads stay reads:
+    # `T[k]`, `k in T`, `for k in T`, `sorted(T)`, `T.get(k)`.
+    read_methods = {"get", "keys", "values", "items", "copy", "index", "count"}
+    read_builtins = {
+        "sorted", "len", "list", "tuple", "set", "frozenset", "dict", "iter",
+        "enumerate", "reversed", "any", "all", "min", "max", "str", "repr", "print",
+    }
+
+    def _use_is_a_read(parent, child) -> bool:
+        if isinstance(parent, ast.Subscript):
+            return parent.value is child and isinstance(parent.ctx, ast.Load)
+        if isinstance(parent, ast.Attribute):
+            return parent.attr in read_methods
+        if isinstance(parent, ast.Call):
+            return (
+                child in parent.args and isinstance(parent.func, ast.Name)
+                and parent.func.id in read_builtins
+            )
+        if isinstance(parent, (ast.For, ast.AsyncFor, ast.comprehension)):
+            return parent.iter is child
+        return isinstance(parent, (ast.Compare, ast.FormattedValue, ast.BoolOp, ast.UnaryOp, ast.If, ast.While))
+
+    def _only_read(name: str) -> bool:
+        return stores(tree, name) == 1 and name not in _whole_file()["not_read"]
+
+    tables = {k: v for k, v in tables.items() if _only_read(k)}
+
+    def _select(nodes: list, key) -> Optional[list]:
+        """Apply one subscript to candidate container nodes; None when unknowable."""
+        k = key.value if isinstance(key, ast.Constant) else None
+        out_nodes: list = []
+        for n in nodes:
+            if isinstance(n, ast.Dict):
+                if k is None:
+                    out_nodes.extend(n.values)
+                else:
+                    hits = [v for kk, v in zip(n.keys, n.values) if isinstance(kk, ast.Constant) and kk.value == k]
+                    out_nodes.extend(hits)
+            elif isinstance(n, (ast.List, ast.Tuple)):
+                if isinstance(k, int) and -len(n.elts) <= k < len(n.elts):
+                    out_nodes.append(n.elts[k])
+                elif k is None:
+                    out_nodes.extend(n.elts)
+                else:
+                    return None
+            else:
+                return None
+        return out_nodes
+
+    def table_candidates(node) -> Optional[list[str]]:
+        keys = []
+        while isinstance(node, ast.Subscript):
+            keys.append(node.slice)
+            node = node.value
+        if not keys or not isinstance(node, ast.Name) or node.id not in tables:
+            return None
+        nodes: Optional[list] = [tables[node.id]]
+        for key in reversed(keys):
+            nodes = _select(nodes, key) if nodes is not None else None
+        if not nodes:
+            return None
+        strings = [literal(n) for n in nodes]
+        return [s for s in strings if s] if all(strings) else None
+
+    # Loop variables over literal sequences: `for m in ("a", "b")`. A name
+    # also bound any other way (`m = cfg`) is not bounded by its loops.
+    loop_values: dict[str, list[str]] = {}
+    loop_bindings: dict[str, int] = {}
+    for node in all_nodes:
+        gens = []
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            gens = [(node.target, node.iter)]
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            gens = [(g.target, g.iter) for g in node.generators]
+        for target, it in gens:
+            if isinstance(target, ast.Name) and isinstance(it, (ast.List, ast.Tuple, ast.Set)):
+                vals = [literal(e) for e in it.elts]
+                if vals and all(vals):
+                    loop_values.setdefault(target.id, []).extend(v for v in vals if v)
+                    loop_bindings[target.id] = loop_bindings.get(target.id, 0) + 1
+    loop_values = {k: v for k, v in loop_values.items() if stores(tree, k) == loop_bindings[k]}
+    # A comprehension's target is local to it, so an import call in its body
+    # reading that target is bounded exactly, however else the name is used
+    # outside it -- unless the comprehension itself binds the name again.
+    comp_values: dict[int, list[str]] = {}
+    for node in all_nodes:
+        if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            continue
+        for g in node.generators:
+            if not (isinstance(g.target, ast.Name) and isinstance(g.iter, (ast.List, ast.Tuple, ast.Set))):
+                continue
+            vals = [literal(e) for e in g.iter.elts]
+            if not (vals and all(vals)):
+                continue
+            if stores(node, g.target.id) != 1:
+                continue  # shadowed by an inner comprehension or a later generator
+            body = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+            for part in [*body, *g.ifs]:
+                for call in ast.walk(part):
+                    if (
+                        isinstance(call, ast.Call) and _is_dynamic_import_call(call) and call.args
+                        and isinstance(call.args[0], ast.Name) and call.args[0].id == g.target.id
+                    ):
+                        comp_values[id(call)] = [v for v in vals if v]
+
+    # Names bound to a package or module name.
+    own_pkg = {"__name__", "__package__"}
+    module_alias: dict[str, str] = {}  # alias -> absolute dotted module
+    for node in all_nodes:
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    module_alias[a.asname] = a.name
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name in ("__name__", "__package__") and a.asname and node.level > 0 and not node.module:
+                    own_pkg.add(a.asname)
+                elif node.level == 0 and node.module:
+                    module_alias[a.asname or a.name] = f"{node.module}.{a.name}"
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in ("__name__", "__package__"):
+            own_pkg |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+
+    def _leading(node):
+        if isinstance(node, ast.Constant):
+            return node
+        if isinstance(node, ast.JoinedStr) and node.values:
+            return node.values[0]
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                node = node.left
+            return node
+        return None
+
+    def _anchor(call) -> Optional[ast.AST]:
+        """The ``package=`` argument of ``import_module(name, package)``."""
+        if call is None:
+            return None
+        if len(call.args) > 1:
+            return call.args[1]
+        return next((k.value for k in call.keywords if k.arg == "package"), None)
+
+    def scope_of(node, call=None) -> str:
+        """What an unresolved target can reach."""
+        head = _leading(node)
+        if head is None:
+            return "opaque"
+        if isinstance(head, ast.Constant) and isinstance(head.value, str):
+            if head.value.startswith("."):
+                # `import_module(f".{m}", __package__)`: this package's own
+                # modules, the relative spelling of the #569 shape. Only one
+                # dot: `..` climbs out of the package.
+                anchor = _anchor(call)
+                if (
+                    not head.value.startswith("..")
+                    and isinstance(anchor, ast.Name) and anchor.id in own_pkg
+                ):
+                    return "package"
+                return "opaque"
+            prefix = head.value.rstrip(".")
+            return f"prefix:{prefix}" if prefix else "opaque"
+        inner = head.value if isinstance(head, ast.FormattedValue) else head
+        if isinstance(inner, ast.Name) and inner.id in own_pkg:
+            return "package"
+        if (
+            isinstance(inner, ast.Attribute) and inner.attr == "__name__"
+            and isinstance(inner.value, ast.Name) and inner.value.id in module_alias
+        ):
+            return f"prefix:{module_alias[inner.value.id]}"
+        return "opaque"
+
+    def resolve_target(node) -> bool:
+        target = literal(node)
+        if target is not None:
+            add(target)
+            return True
+        candidates = table_candidates(node)
+        if candidates is not None:
+            for c in candidates:
+                add(c)
+            return True
+        if isinstance(node, ast.Name) and node.id in loop_values:
+            for c in loop_values[node.id]:
+                add(c)
+            return True
+        return False
+
+    # Functions whose parameter feeds a dynamic import, unrebound. A name
+    # defined twice is not propagated through: its call sites stay sites.
+    feeders: dict[str, tuple[int, str, bool]] = {}  # name -> (arg position, param, public)
+    feeder_node: dict[str, int] = {}
+    feeder_calls: dict[str, set[int]] = {}
+    duplicate: set[str] = set()
+    # Only a function that holds a dynamic import can feed one. Each such
+    # call is filed under every function enclosing it, in `all_nodes` order,
+    # which is the order a walk of that function meets them: no function is
+    # walked to find its calls.
+    calls_under: dict[int, list] = {}
+    for node in all_nodes:
+        if isinstance(node, ast.Call) and _is_dynamic_import_call(node):
+            up = parent_of.get(id(node))
+            while up is not None:
+                if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    calls_under.setdefault(id(up), []).append(node)
+                up = parent_of.get(id(up))
+    for fn in all_nodes:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or id(fn) not in calls_under:
+            continue
+        params = [a.arg for a in (*fn.args.posonlyargs, *fn.args.args)]
+        if params and params[0] in ("self", "cls"):
+            params = params[1:]  # a bound call passes them implicitly (review of #876)
+        for call in calls_under[id(fn)]:
+            if call.args:
+                arg = call.args[0]
+                if not (isinstance(arg, ast.Name) and arg.id in params):
+                    continue
+                if stores(fn, arg.id) != 1:
+                    continue  # rebound: `name = "plugins." + name` is not the caller's literal
+                if fn.name in feeder_node and feeder_node[fn.name] != id(fn):
+                    duplicate.add(fn.name)
+                if fn.name in feeders and feeders[fn.name][1] != arg.id:
+                    duplicate.add(fn.name)
+                feeder_node[fn.name] = id(fn)
+                feeders[fn.name] = (params.index(arg.id), arg.id, not fn.name.startswith("_"))
+                feeder_calls.setdefault(fn.name, set()).add(id(call))
+    for name in duplicate:
+        feeders.pop(name, None)
+
+    def _direct_callee(call) -> Optional[str]:
+        func = call.func
+        if isinstance(func, ast.Name):
+            return func.id
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name) and func.value.id in ("self", "cls")
+        ):
+            return func.attr
+        return None
+
+    # A feeder is resolved by its callers only when every use of its name in
+    # this file is a direct call; `map(_load, cfg)`, `registry.add(_load)` or
+    # `obj._load(x)` can hand it anything (review of #876).
+    direct_uses: dict[str, int] = {}
+    for node in all_nodes:
+        if isinstance(node, ast.Call):
+            callee = _direct_callee(node)
+            if callee in feeders:
+                direct_uses[callee] = direct_uses.get(callee, 0) + 1
+    all_uses: dict[str, int] = {}
+    for node in all_nodes:
+        if isinstance(node, ast.Name) and node.id in feeders and isinstance(node.ctx, ast.Load):
+            all_uses[node.id] = all_uses.get(node.id, 0) + 1
+        elif isinstance(node, ast.Attribute) and node.attr in feeders:
+            all_uses[node.attr] = all_uses.get(node.attr, 0) + 1
+    for name in list(feeders):
+        used = direct_uses.get(name, 0)
+        if used == 0 or all_uses.get(name, 0) != used:
+            feeders.pop(name)
+    fed_calls: set[int] = set().union(*(feeder_calls[n] for n in feeders)) if feeders else set()
+
+    for call in all_nodes:
+        if not isinstance(call, ast.Call):
+            continue
+        if _is_dynamic_import_call(call):
+            if id(call) in fed_calls:
+                continue
+            if id(call) in comp_values:
+                for c in comp_values[id(call)]:
+                    add(c)
+                continue
+            if not (call.args and resolve_target(call.args[0])):
+                scopes.add(scope_of(call.args[0], call) if call.args else "opaque")
+            continue
+        callee = _direct_callee(call)
+        if callee in feeders:
+            pos, pname, _public = feeders[callee]
+            value = call.args[pos] if pos < len(call.args) else next(
+                (k.value for k in call.keywords if k.arg == pname), None
+            )
+            if value is None or not resolve_target(value):
+                scopes.add(scope_of(value) if value is not None else "opaque")
+
+    # A PUBLIC feeder can be called from another file with any argument: its
+    # own in-file calls cannot bound it (review of #876). A `_private` one is
+    # taken as module-private.
+    if any(public for _pos, _p, public in feeders.values()):
+        scopes.add("opaque")
+
+    for scope in sorted(scopes):
+        out.append({
+            "specifier": DYNAMIC_IMPORT_UNRESOLVED, "names": [],
+            "dynamic_unresolved": True, "dynamic_scope": scope,
+        })
+    return out
 
 
 def _extract_go_imports(content: str) -> list[dict]:
@@ -452,6 +1061,23 @@ def _extract_php_imports(content: str) -> list[dict]:
         parts = qualified.rsplit("\\", 1)
         names = [parts[-1]] if len(parts) > 1 else []
         edges.append({"specifier": qualified, "names": names})
+    # (L-177) A group use matched neither pattern, so the file had no edge to
+    # any class it named. Each member is one edge, as `use A\B\C;` is; a body
+    # with an item this reader cannot read records nothing, as before.
+    for m in _PHP_GROUP_USE.finditer(content):
+        prefix = m.group(1)
+        members = []
+        for part in re.sub(r"//[^\n]*|/\*.*?\*/", " ", m.group(2), flags=re.DOTALL).split(","):
+            part = " ".join(part.split())
+            if not part:
+                continue
+            item = _PHP_GROUP_ITEM.match(part)
+            if not item:
+                members = []
+                break
+            members.append(item.group(1).strip("\\"))
+        for member in members:
+            edges.append({"specifier": f"{prefix}\\{member}", "names": [member.rsplit("\\", 1)[-1]]})
     for m in _PHP_REQUIRE.finditer(content):
         edges.append({"specifier": m.group(1), "names": []})
     return edges
@@ -461,18 +1087,109 @@ def _extract_swift_imports(content: str) -> list[dict]:
     return [{"specifier": m.group(1), "names": []} for m in _SWIFT_IMPORT.finditer(content)]
 
 
+def _scala_selector_names(body: str) -> list[str]:
+    """The names a Scala selector `{...}` imports, or [] when it is not whole (LEDGER L-177).
+
+    The old pattern stopped at the first space or comma, so `import a.b.{C, D}`
+    never reached its closing brace and recorded `a.b` with no names, on one
+    line or several. `C => _` hides `C`; `_`, `*` and `given ...` select
+    everything, which [] already means for the names that are left.
+    """
+    body = re.sub(r"//[^\n]*", " ", body)
+    names: list[str] = []
+    for part in body.split(","):
+        part = part.strip()
+        if not part or part in ("_", "*", "given") or re.match(r"given\s", part):
+            continue
+        m = _SCALA_SELECTOR.match(part)
+        if not m:
+            return []
+        if m.group(2) != "_":
+            names.append(m.group(1))
+    return names
+
+
 def _extract_scala_imports(content: str) -> list[dict]:
     edges = []
     for m in _SCALA_IMPORT.finditer(content):
-        raw = m.group(1)
-        brace_m = re.search(r"\{([^}]+)\}", raw)
-        names = _clean_names(brace_m.group(1)) if brace_m else []
-        edges.append({"specifier": raw.split("{")[0].rstrip(".").strip(), "names": names})
+        names = _scala_selector_names(m.group(2)) if m.group(2) is not None else []
+        edges.append({"specifier": m.group(1).rstrip(".").strip(), "names": names})
     return edges
 
 
+def _haskell_statement(content: str, pos: int) -> str:
+    """The rest of a Haskell import from *pos*: its line and the indented lines under it.
+
+    A line that starts in column 0 begins the next declaration (the layout
+    rule), so the read stops there and never walks past the import block.
+    """
+    end = content.find("\n", pos)
+    if end == -1:
+        return content[pos:]
+    lines = [content[pos:end]]
+    size = len(content)
+    while end < size:
+        nxt = content.find("\n", end + 1)
+        if nxt == -1:
+            nxt = size
+        line = content[end + 1:nxt].rstrip("\r")
+        if line.strip() and not line[:1].isspace():
+            break
+        lines.append(line)
+        end = nxt
+    return "\n".join(lines)
+
+
+def _haskell_list_names(rest: str) -> list[str]:
+    """The names an import list `(c, T(..), (<>))` brings in, or [] (LEDGER L-177).
+
+    The extractor read the module and nothing after it, so every Haskell edge
+    had no names. `hiding (...)` imports everything but the list, which []
+    already means. A list that never closes, or an item this reader cannot
+    read, records [], as before.
+    """
+    rest = re.sub(r"--+(?![!#$%&*+./<=>?@\\^|~:])[^\n]*", " ", rest)
+    head = _HASKELL_LIST_HEAD.match(rest)
+    if not head or head.group(1):
+        return []
+    depth, start, items = 1, head.end(), []
+    for i in range(head.end(), len(rest)):
+        ch = rest[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                items.append(rest[start:i])
+                break
+        elif ch == "," and depth == 1:
+            items.append(rest[start:i])
+            start = i + 1
+    else:
+        return []
+    names: list[str] = []
+    for item in items:
+        item = re.sub(r"^(?:type|pattern)\s+", "", item.strip())
+        if not item:
+            continue
+        if item.startswith("("):
+            op = item[1:].split(")", 1)[0].strip()
+            if not _HASKELL_OPERATOR.match(op) or item.split(")", 1)[1].strip():
+                return []
+            names.append(op)
+            continue
+        m = re.match(r"([\w']+)\s*(\(.*\))?$", item, re.DOTALL)
+        if not m:
+            return []
+        names.append(m.group(1))
+    return names
+
+
 def _extract_haskell_imports(content: str) -> list[dict]:
-    return [{"specifier": m.group(1), "names": []} for m in _HASKELL_IMPORT.finditer(content)]
+    return [
+        {"specifier": m.group(1), "names": _haskell_list_names(_haskell_statement(content, m.end()))}
+        for m in _HASKELL_IMPORT.finditer(content)
+    ]
 
 
 def _extract_gleam_imports(content: str) -> list[dict]:
@@ -507,8 +1224,43 @@ _DART_IMPORT = re.compile(
 )
 
 
+# (L-177) What may follow a Dart URI up to its `;`: a prefix, `show`/`hide`
+# combinators and configurable-import conditions, on any number of lines.
+# ⚠⚠ Every keyword and every name ends on `\b`. Without it `\w+` could stop
+# inside a word and let the next keyword start there (`0deferred` read as `0`
+# then `deferred`), so a clause had exponentially many readings and a line of
+# `as 0deferred as 0deferred ...` with no `;` backtracked through all of them
+# (CodeQL on the L-177 PR; 18 repeats took 0.35 s and each 2 more took 4x).
+_DART_CLAUSE = re.compile(
+    r"""((?:\s*\b(?:deferred\s+)?as\s+\w+\b"""
+    r"""|\s*\b(?:show|hide)\s+\w+\b(?:\s*,\s*\w+\b)*"""
+    r"""|\s*\bif\s*\([^()]*\)\s*['"][^'"]*['"])*)\s*;"""
+)
+_DART_SHOW = re.compile(r"""\bshow\s+(\w+(?:\s*,\s*\w+)*)""")
+
+
+def _dart_shown_names(content: str, pos: int) -> list[str]:
+    """The names a Dart `show` combinator lists, or [] (LEDGER L-177).
+
+    The extractor read the URI and nothing after it, so `import 'a.dart'
+    show C, D;` recorded no names, on one line or several. Without `show` the
+    import takes everything (`hide` included), which [] already means; a
+    clause that does not reach its `;` in this shape records [], as before.
+    """
+    m = _DART_CLAUSE.match(content, pos)
+    if not m:
+        return []
+    names: list[str] = []
+    for shown in _DART_SHOW.findall(m.group(1)):
+        names.extend(n.strip() for n in shown.split(",") if n.strip())
+    return names
+
+
 def _extract_dart_imports(content: str) -> list[dict]:
-    return [{"specifier": m.group(1), "names": []} for m in _DART_IMPORT.finditer(content)]
+    return [
+        {"specifier": m.group(1), "names": _dart_shown_names(content, m.end())}
+        for m in _DART_IMPORT.finditer(content)
+    ]
 
 
 # SQL/dbt: {{ ref('model_name') }} and {{ source('source', 'table') }}
@@ -654,6 +1406,208 @@ def _extract_vue_imports(content: str) -> list[dict]:
             continue
         # Synthetic import edge for template-only component usage
         edges.append({"specifier": pascal, "names": [pascal]})
+
+    return edges
+
+
+# ASP.NET Web Forms directives: codebehind, master page, registered controls.
+# A `%` may appear in a value (`Title="50% off"`); stopping at the next `<%`
+# keeps an unclosed directive from scanning to the end of the file.
+#
+# Both patterns are anchored so a long run of name characters is read ONCE
+# (review of #1012). Without the `\b`, the directive name and the body both
+# match word characters, so an unclosed `<%@aaaa...` was split at every
+# position; without the lookbehind, the attribute name was retried from every
+# character of the run. Each is one C call that no parse budget interrupts:
+# 100 KB of `a` took minutes.
+_ASPX_DIRECTIVE = re.compile(r"<%@\s*(\w+)\b((?:[^%<]|%(?!>)|<(?!%))*)%>", re.DOTALL)
+# ASP.NET's parser takes a double-quoted, single-quoted or unquoted value. An
+# unquoted one must end at a delimiter, so `Title= CodeFile="x"` does not read
+# `CodeFile` as Title's value; in a tag it also stops at the `/` of `/>`, while
+# a directive value may be a path.
+_ASPX_VALUE = r"""(?:"([^"]*)"|'([^']*)'|([^\s"'<>%=]+)(?=\s|$))"""
+_ASPX_TAG_VALUE = r"""(?:"([^"]*)"|'([^']*)'|([^\s"'<>%=/]+)(?=[\s/>]|$))"""
+_ASPX_ATTR = re.compile(r"(?<![\w:.\-])(\w[\w:.\-]*)\s*=\s*" + _ASPX_VALUE)
+
+
+def _aspx_attr_pairs(pattern: re.Pattern, text: str):
+    """(name, value) for each match of an attribute pattern ending in `_ASPX_VALUE`."""
+    for name, dq, sq, bare in pattern.findall(text):
+        yield name, dq or sq or bare
+
+_ASPX_MARKUP_SUFFIXES = (".aspx", ".ascx", ".master", ".asax", ".ashx", ".asmx")
+
+# The generated `X.aspx.designer.cs` half of the partial codebehind class; the
+# directive names only `X.aspx.cs`, so the designer file needs its own edge.
+_ASPX_DESIGNER_SUFFIX = ".designer.cs"
+
+
+@functools.lru_cache(maxsize=2)
+def _lowercase_paths_cached(source_files: frozenset) -> dict:
+    return {f.lower(): f for f in sorted(source_files)}
+
+
+def _lowercase_paths(source_files) -> dict:
+    if isinstance(source_files, frozenset):
+        return _lowercase_paths_cached(source_files)
+    return {f.lower(): f for f in sorted(source_files)}
+
+def _aspx_tags(content: str):
+    """Yield each `<...>` tag, which may span lines.
+
+    An inline `<%...%>` inside an attribute is skipped whole so its `%>` does not
+    end the tag. A scanner, not a regex: every regex form backtracks
+    super-linearly on unclosed or chained `<%` blocks.
+    """
+    i = 0
+    while (start := content.find("<", i)) >= 0:
+        j = start + 1
+        while True:
+            gt = content.find(">", j)
+            if gt < 0:
+                return
+            block = content.find("<%", j, gt)
+            if block < 0:
+                yield content[start:gt + 1]
+                i = gt + 1
+                break
+            close = content.find("%>", block + 2)
+            if close < 0:
+                return
+            j = close + 2
+
+
+_ASPX_TAG_ATTR = re.compile(r"(?<![\w:.\-])(\w[\w:.\-]*)\s*=\s*" + _ASPX_TAG_VALUE)
+# The whole attribute name: `data-onclick="Foo"` names no server handler.
+_ASPX_EVENT_NAME = re.compile(r"on[a-z]+", re.IGNORECASE)
+
+
+def _without_inline_blocks(text: str) -> str:
+    """`text` with each closed `<%...%>` replaced by a space; a scan, so linear."""
+    parts: list[str] = []
+    i = 0
+    while (start := text.find("<%", i)) >= 0:
+        close = text.find("%>", start + 2)
+        if close < 0:
+            break
+        parts.append(text[i:start])
+        parts.append(" ")
+        i = close + 2
+    parts.append(text[i:])
+    return "".join(parts)
+
+
+def _aspx_tag_attrs(raw: str) -> list[tuple[str, str]]:
+    """(name, value) for each attribute of one tag, left to right.
+
+    One pass consumes each quoted value whole, so `ToolTip="use OnClick=X"`
+    names no handler and opens no `runat` gate. Inline blocks are blanked first:
+    their quotes (`Text="<%# Eval("Id") %>"`) would otherwise shift the pass.
+    """
+    return list(_aspx_attr_pairs(_ASPX_TAG_ATTR, _without_inline_blocks(raw)))
+
+
+def _aspx_runat_server(attrs: list[tuple[str, str]]) -> bool:
+    return any(n.lower() == "runat" and v.lower() == "server" for n, v in attrs)
+
+
+# OnClient* handlers are JavaScript, not codebehind methods.
+_ASPX_CLIENT_EVENT_PREFIX = "onclient"
+# Bare method names only; databound expressions are not handler references.
+_ASPX_HANDLER_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# AutoEventWireup lifecycle methods, deliberately NOT emitted as edges: without
+# checking the codebehind defines them, they add phantom references (matched by
+# name repo-wide) that make dead code look alive.
+_ASPX_LIFECYCLE_METHODS = (
+    "Page_PreInit", "Page_Init", "Page_InitComplete", "Page_PreLoad",
+    "Page_Load", "Page_LoadComplete", "Page_DataBind", "Page_PreRender",
+    "Page_PreRenderComplete", "Page_SaveStateComplete", "Page_Unload",
+    "Page_Error", "Page_AbortTransaction", "Page_CommitTransaction",
+)
+
+
+def _aspx_handler_names(content: str) -> list[str]:
+    """Codebehind method names from `On*=` attributes on `runat="server"` tags."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in _aspx_tags(content):
+        attrs = _aspx_tag_attrs(raw)
+        if not _aspx_runat_server(attrs):
+            continue
+        for attr_name, value in attrs:
+            if not _ASPX_EVENT_NAME.fullmatch(attr_name):
+                continue
+            if attr_name.lower().startswith(_ASPX_CLIENT_EVENT_PREFIX):
+                continue
+            value = value.strip()
+            if not _ASPX_HANDLER_NAME.match(value) or value in seen:
+                continue
+            seen.add(value)
+            found.append(value)
+    return found
+
+
+def _extract_aspx_imports(content: str) -> list[dict]:
+    """Extract dependency edges from Web Forms directives and server-control handlers.
+
+    `Inherits=` is a class name, so it rides in `names` on the codebehind edge.
+    """
+    edges: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(spec: str, names: list[str], **extra) -> None:
+        spec = (spec or "").strip()
+        if not spec:
+            return
+        # `~/` is the ASP.NET application root.
+        if spec.startswith("~/"):
+            spec = spec[2:]
+        key = (spec, ",".join(names))
+        if key in seen:
+            return
+        seen.add(key)
+        edge = {"specifier": spec, "names": [n for n in names if n]}
+        edge.update(extra)
+        edges.append(edge)
+
+    handlers = None  # sorted handler names, found once
+    for m in _ASPX_DIRECTIVE.finditer(content):
+        name = m.group(1).lower()
+        attrs = {k.lower(): v for k, v in _aspx_attr_pairs(_ASPX_ATTR, m.group(2))}
+
+        if name in ("page", "control", "master", "application", "webservice", "webhandler"):
+            code = attrs.get("codebehind") or attrs.get("codefile") or attrs.get("src")
+            if code:
+                _add(code, [attrs.get("inherits", "")])
+                # Emitted unconditionally; a missing designer file just won't resolve.
+                if code.lower().endswith(".cs"):
+                    _add(
+                        code[: -len(".cs")] + _ASPX_DESIGNER_SUFFIX,
+                        [attrs.get("inherits", "")],
+                        aspx_binding="designer_partial",
+                    )
+                # Handler names on a separate edge to the codebehind file, so
+                # check_references sees them without mixing into the Inherits edge.
+                # ONE such edge per file, on its first code directive: a page has
+                # one codebehind, and an edge per directive made the output
+                # directives x handlers (a 462 KB page produced 80 million names
+                # and 681 MB of edges; review of #1012).
+                if handlers is None:
+                    handlers = sorted(_aspx_handler_names(content))
+                    if handlers:
+                        _add(code, handlers, aspx_binding="markup_event")
+            master = attrs.get("masterpagefile")
+            if master:
+                _add(master, [])
+        elif name == "register":
+            src = attrs.get("src")
+            if src:
+                _add(src, [attrs.get("tagname", "")])
+        elif name == "import":
+            ns = attrs.get("namespace")
+            if ns:
+                edges.append({"specifier": ns, "names": [ns]})
 
     return edges
 
@@ -1021,6 +1975,7 @@ _LANGUAGE_EXTRACTORS = {
     "arduino": _extract_c_imports,
     "ruby": _extract_ruby_imports,
     "csharp": _extract_csharp_imports,
+    "aspx": _extract_aspx_imports,
     "php": _extract_php_imports,
     "swift": _extract_swift_imports,
     "scala": _extract_scala_imports,
@@ -1179,6 +2134,11 @@ def resolve_php_namespace(
 _sql_stem_cache: dict[frozenset, dict[str, str]] = {}
 _SQL_STEM_CACHE_MAX = 4
 _SQL_STEM_LOCK = threading.Lock()
+# The same stems keyed by the caller's whole frozenset. Building the .sql key
+# above reads every path, so it cost O(files) on every call: resolve_specifier
+# reaches this for every unresolved bare name, once per import of every file
+# when the import graph is built. A frozenset caches its own hash, so looking
+# the caller's set up here is O(1) after the first call.
 _sql_stem_by_files: dict[frozenset, dict[str, str]] = {}
 
 
@@ -1188,16 +2148,22 @@ def _get_sql_stems(source_files: set[str]) -> dict[str, str]:
     if whole is not None:
         with _SQL_STEM_LOCK:
             cached = _sql_stem_by_files.get(whole)
-            if cached is not None:
-                return cached
-    key = frozenset(f for f in source_files if f.endswith(".sql"))
+        if cached is not None:
+            return cached
+    stems = _sql_stems_for(frozenset(f for f in source_files if f.endswith(".sql")))
+    if whole is not None:
+        with _SQL_STEM_LOCK:
+            if len(_sql_stem_by_files) >= _SQL_STEM_CACHE_MAX:
+                _sql_stem_by_files.pop(next(iter(_sql_stem_by_files)))
+            _sql_stem_by_files[whole] = stems
+    return stems
+
+
+def _sql_stems_for(key: frozenset) -> dict[str, str]:
+    """The stems of one set of .sql paths, cached by that set."""
     with _SQL_STEM_LOCK:
         cached = _sql_stem_cache.get(key)
         if cached is not None:
-            if whole is not None:
-                if len(_sql_stem_by_files) >= _SQL_STEM_CACHE_MAX:
-                    _sql_stem_by_files.pop(next(iter(_sql_stem_by_files)))
-                _sql_stem_by_files[whole] = cached
             return cached
 
     # Miss: build without holding the lock
@@ -1211,10 +2177,6 @@ def _get_sql_stems(source_files: set[str]) -> dict[str, str]:
         if len(_sql_stem_cache) >= _SQL_STEM_CACHE_MAX:
             _sql_stem_cache.pop(next(iter(_sql_stem_cache)))
         _sql_stem_cache[key] = stems
-        if whole is not None:
-            if len(_sql_stem_by_files) >= _SQL_STEM_CACHE_MAX:
-                _sql_stem_by_files.pop(next(iter(_sql_stem_by_files)))
-            _sql_stem_by_files[whole] = stems
     return stems
 
 
@@ -1423,6 +2385,9 @@ _ALIAS_MAP_LOCK = threading.Lock()
 # walk cheaper.
 _TSCONFIG_EXTRA_SKIP_DIRS = frozenset({
     "out", ".cache", ".next", ".nuxt", ".svelte-kit", ".turbo", ".vercel",
+    # Left the authority when the index rule became content-aware; no
+    # migrations directory holds a tsconfig, so the walk keeps skipping it.
+    "migrations",
 })
 
 
@@ -1860,7 +2825,139 @@ def resolve_specifier(
                              posixpath.normpath(posixpath.join(importer_dir, specifier + e))):
                     if cand in source_files:
                         return cand
+    # Web Forms paths are relative to the markup file or to the app root (an
+    # ancestor), not the repo root: try the sibling, then each ancestor directory.
+    #
+    # A markup specifier names a FILE, extension included (`CodeBehind=`,
+    # `Src=`, `MasterPageFile=`), so it is matched as written and never
+    # through `_candidates`. With extension expansion, `<%@ Import
+    # Namespace="Utils" %>` bound an unrelated `utils.js` in any ancestor
+    # directory, and `check_delete_safe` blocked that file's deletion as final
+    # (review of #1012). A namespace resolves to nothing, here or below.
+    if not specifier.startswith((".", "/")) and importer_path.lower().endswith(
+        _ASPX_MARKUP_SUFFIXES
+    ):
+        # ASP.NET paths are case-insensitive; an exact match still wins per directory.
+        lowered = None
+        probe_dir = posixpath.dirname(importer_path)
+        while True:
+            joined = posixpath.normpath(posixpath.join(probe_dir, specifier))
+            if joined in source_files:
+                return joined
+            if lowered is None:
+                lowered = _lowercase_paths(source_files)
+            hit = lowered.get(joined.lower())
+            if hit:
+                return hit
+            if not probe_dir:
+                break
+            probe_dir = posixpath.dirname(probe_dir)
+        return None
 
+    # Python bare module name: a script's own directory is `sys.path[0]`, so
+    # `import checks` in `tools/run.py` is `tools/checks.py`, ahead of the root.
+    # Climb out of packages (there a bare name is absolute) to the first plain
+    # directory and stop: only that one is treated as being on `sys.path`.
+    #
+    # ⚠⚠ Two refusals, and both err toward NO edge. A false edge gives a file
+    # an importer it does not have, so `find_dead_code` stops reporting it and
+    # nothing shows; a missed edge is the behaviour before this branch existed.
+    # (1) A standard-library name is the standard library: `import types`
+    # beside a `types.py` is not that file. (2) A directory with no
+    # `__init__.py` that has a package ANYWHERE above it is a namespace
+    # sub-package, not a script directory (`pkg/files/main.py` is imported as
+    # `pkg.files.main`), so a bare name there is absolute. Any level, not the
+    # parent alone: `pkg/types/llms/` is the same shape one directory deeper.
+    # That also refuses a real script directory kept inside a package
+    # (`pkg/tests/`, `pkg/demos/`).
+    if (
+        importer_path.endswith((".py", ".pyi"))
+        and "." not in specifier
+        and "/" not in specifier
+        and specifier not in sys.stdlib_module_names
+    ):
+        script_dir = posixpath.dirname(importer_path)
+        while script_dir and f"{script_dir}/__init__.py" in source_files:
+            script_dir = posixpath.dirname(script_dir)
+        inside_a_package = False
+        above = script_dir
+        while above and not inside_a_package:
+            above = posixpath.dirname(above)
+            init = f"{above}/__init__.py" if above else "__init__.py"
+            inside_a_package = init in source_files
+        if script_dir and not inside_a_package:
+            for c in (f"{script_dir}/{specifier}/__init__.py", f"{script_dir}/{specifier}.py"):
+                if c in source_files:
+                    return c
+
+    # Everything below reads the importer only for Gleam. For any other
+    # importer the answer depends on the specifier, the file set and the alias
+    # map alone, so it is computed once per specifier and file set: the
+    # import-graph builders resolve every import of every file, and a large
+    # repository repeats the same specifiers across thousands of files.
+    if not importer_path.endswith(".gleam"):
+        memo = _tail_memo(source_files, alias_map)
+        if memo is not None:
+            hit = memo.get(specifier, _TAIL_MISS)
+            if hit is _TAIL_MISS:
+                hit = _resolve_tail(specifier, importer_path, source_files, alias_map)
+                memo[specifier] = hit
+            return hit
+    return _resolve_tail(specifier, importer_path, source_files, alias_map)
+
+
+_TAIL_MISS = object()
+# file set -> [(alias_map, {specifier: resolved})]. The file set is a frozenset
+# (it caches its own hash); an alias map is matched by identity, because the
+# maps come from one cache per source root and are never edited in place.
+_tail_memos: dict[frozenset, list] = {}
+_TAIL_MEMO_MAX = 4
+_TAIL_MEMO_LOCK = threading.Lock()
+
+
+def clear_resolution_caches() -> None:
+    """Drop the SQL-stem caches and the specifier memo.
+
+    Callers use this rather than importing the dicts, because a dict imported
+    by name stays the old object once this module rebinds the global.
+    """
+    with _SQL_STEM_LOCK:
+        _sql_stem_cache.clear()
+        _sql_stem_by_files.clear()
+    with _TAIL_MEMO_LOCK:
+        _tail_memos.clear()
+
+
+def _tail_memo(source_files, alias_map) -> Optional[dict]:
+    """The specifier memo for one file set and alias map, or None if not cacheable."""
+    if not isinstance(source_files, frozenset):
+        return None
+    with _TAIL_MEMO_LOCK:
+        entries = _tail_memos.get(source_files)
+        if entries is None:
+            if len(_tail_memos) >= _TAIL_MEMO_MAX:
+                _tail_memos.pop(next(iter(_tail_memos)))
+            entries = _tail_memos[source_files] = []
+        # An empty map and None resolve alike (the alias step is skipped), and
+        # callers often pass a fresh `{}`, so both share one memo.
+        alias_map = alias_map or None
+        for held_map, memo in entries:
+            if held_map is alias_map:
+                return memo
+        memo = {}
+        if len(entries) >= _TAIL_MEMO_MAX:
+            entries.pop(0)
+        entries.append((alias_map, memo))
+        return memo
+
+
+def _resolve_tail(
+    specifier: str,
+    importer_path: str,
+    source_files: set[str],
+    alias_map: Optional[dict[str, list[str]]],
+) -> Optional[str]:
+    """resolve_specifier's absolute, Gleam, Python-module, alias and stem steps."""
     # Absolute: try direct match first (e.g., for Go or absolute paths)
     for c in _candidates(specifier):
         if c in source_files:

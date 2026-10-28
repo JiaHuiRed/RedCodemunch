@@ -15,7 +15,13 @@ from typing import Callable, Optional
 from .. import config as _config
 from ..parser.symbols import Symbol
 from ..path_map import parse_path_map, remap
-from .sqlite_store import SQLiteIndexStore, _VERIFIED_PATHS, _default_base_path
+from .sqlite_store import (
+    IndexIdentityConflict,
+    SQLiteIndexStore,
+    _VERIFIED_PATHS,
+    _default_base_path,
+    _meta_names_other_repo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -541,7 +547,146 @@ INDEX_VERSION = 17
 #   ⚠⚠ **And L-45: a C-family class behind an export macro is a class.**
 #   MOVES: `Status#function` for `class LEVELDB_EXPORT Status {}` becomes
 #   `Status#class`, and its members gain their owner.
-PARSER_GENERATION = 8
+#
+#   ⚠⚠ **And L-47: a C-family enum behind an export macro is an enum.**
+#   MOVES: `enum class API E { A };` gains `E#type` where it published
+#   nothing; in a class body `S.E#field` becomes `S.E#type`; C's
+#   `E#function` for `enum API E { A };` becomes `E#type`, and C's
+#   `cs#function` for the array `enum Color cs[2] { RED, GREEN };` goes.
+#
+#   ⚠⚠ **And L-46: a C++ type defined with a qualified name is its owner's
+#   member.** MOVES: `Impl#class` for `class Widget::Impl {}` becomes
+#   `Widget.Impl#class` (parent `Widget` when it is in the file) and its
+#   members follow; `W::I#type` for `struct a::W::I` becomes `a.W.I#type`; an
+#   out-of-line specialisation `B<int>` becomes `A.B`, so two of one
+#   template in a file (`std::hash<A>`, `std::hash<B>`) are `std.hash~1`/`~2`;
+#   `A::B#class` for `class ::A::B` becomes `A.B#class`; an existing id can
+#   gain a `~N` when a moved type now shares its name.
+#
+#   ⚠⚠ **And L-52: a C++ header of namespaced declarations is read as C++.**
+#   MOVES: in such a `.h`, `n#function` and bare `f#function` rows from the
+#   C misparse become `n.f#function`, `n.A#class` and `n.A.f#method`.
+#
+#   ⚠⚠ **And L-54: a C++ template specialisation keeps its arguments.**
+#   MOVES: `hash#type~1`/`~2` for `hash<A>`/`hash<B>` become `hash<A>#type`
+#   and `hash<B>#type`, their members follow, and ids numbered only because
+#   specialisations shared a bare name lose the `~N`. This SUPERSEDES the
+#   L-46 lines above for specialisations: against v1.108.319, an out-of-line
+#   `std::hash<A>` goes from `hash<A>` to `std.hash<A>`, and `A::B<int>`
+#   from `B<int>` to `A.B<int>`. An out-of-line body in a file without its
+#   class keeps the arguments too (`hash<A>.h`, no parent); a member
+#   specialised under `template <>` (`FloatingPoint<float>::Max`) is
+#   `FloatingPoint<float>.Max` owned by the primary.
+#
+# 9 (#876): a Python dynamic import is an import EDGE. `__import__("x")` and
+#   `importlib.import_module("x")` with a literal target, or a literal passed
+#   one step into a parameter that feeds one, gain an edge to `x`; a target
+#   still not a literal is recorded as a `dynamic_unresolved` marker edge,
+#   with its scope, which `blast_verdict` reads: a scope reaching the file
+#   refuses an empty walk, an opaque one is disclosed. ⚠⚠ No symbol id
+#   moves; only `files.imports` changes, on UNCHANGED content, so an existing
+#   index gains the edges only by a re-parse (Standing lesson 08-05).
+#
+# 10 (L-126): a dbt macro, test, snapshot or materialization, and a Jinja or
+#   Twig `macro`/`block`, takes the `{# comment #}` that ends directly above
+#   it as its docstring. Every such directive after the first documented one
+#   carried the FIRST comment of the file. ⚠⚠ No symbol id moves; only
+#   `docstring` (and a summary built from it) changes, on UNCHANGED content.
+#
+# 11 (L-129, L-130, L-131): three more rules for that docstring. A comment
+#   that trails code on its line is not the next directive's; a `{#` inside
+#   `{{ ... }}` or `{% ... %}` opens no comment; and a whitespace-control
+#   mark is dropped only for its own dialect (`+` Jinja and dbt, `~` Twig).
+#   ⚠⚠ No symbol id moves; only `docstring` changes, on UNCHANGED content.
+#
+# 12 (L-159): a call through a receiver records the METHOD. In Go, Java, Rust,
+#   Ruby and C# `t.Recv()` recorded `t`, so a method read as never called and
+#   a function named like a receiver read as called. ⚠⚠ No symbol id moves;
+#   only `call_references` changes, on UNCHANGED content, and the dead-code
+#   and call-hierarchy tools read nothing else for these languages.
+#
+# 13 (L-164): a call written inside a Rust macro invocation is recorded. The
+#   grammar leaves a macro's arguments as tokens, so `assert_eq!(f(x), y)`
+#   recorded no call of `f`. ⚠⚠ No symbol id moves; only `call_references`
+#   changes, on UNCHANGED content.
+#
+# 14 (L-166): a Java constructor's `super(...)` records the superclass's
+#   constructor, by the name the class extends. It recorded nothing, so the
+#   constructor of a class that is only subclassed read as never called.
+#   No symbol id moves; only `call_references` changes, on UNCHANGED content.
+#
+# 15 (L-170): a C# `new Made(...)` records the class it creates. It recorded
+#   nothing, so a C# constructor read as never called however often its class
+#   was created. No symbol id moves; only `call_references` changes, on
+#   UNCHANGED content.
+#
+# 16 (L-171): a Go call the grammar reads as a conversion to a generic type
+#   (`Generic[int](1)`, `fs[i](1)`) records what it calls. It recorded
+#   nothing. No symbol id moves; only `call_references` changes, on UNCHANGED
+#   content.
+#
+# 17 (L-172): a Ruby method called with no receiver and no arguments
+#   (`settings`) records a call where the method around it has introduced no
+#   local of that name. It recorded nothing unless it was a receiver. No
+#   symbol id moves; only `call_references` changes, on UNCHANGED content.
+#
+# 18 (L-173 item 7): a JavaScript or TypeScript call through a string key
+#   (`t["m"]()`) records the member. It recorded the container. No symbol id
+#   moves; only `call_references` changes, on UNCHANGED content.
+#
+# 19 (L-176): a Python `from x import (...)` spread over several lines, or
+#   continued with a backslash, records the names it imports. It recorded
+#   none, so `find_references` missed every name imported that way. No symbol
+#   id moves; only `files.imports` changes, on UNCHANGED content.
+#
+# 20 (follow-up to #1012): a Web Forms attribute value may be single-quoted or
+#   unquoted. A page whose directive or server control uses either form gains
+#   its codebehind and handler edges, its control symbols and its server-script
+#   symbols, on UNCHANGED content.
+#
+# 21: a `///` XML doc comment (C#, AL) summarises as the sentence
+#   inside its `<summary>`, not the literal tag. No symbol id moves; `summary`
+#   changes on UNCHANGED content, and an AL `docstring` keeps its XML as a C#
+#   one does (an empty stub stays no docstring); a doc comment of only
+#   sections such as `<inheritdoc/>` falls to the signature. ⚠⚠ The bump alone
+#   repairs nothing: a re-parse REUSES the stored summaries of unchanged files,
+#   so `_indexing_pipeline.preservable_summaries` no longer carries over one
+#   stored beside a docstring -- free to recompute, because no AI summarizer is
+#   ever given a symbol with a docstring. Paid AI summaries are still kept. ⚠ An
+#   AL `<Summary></Summary>` or `<summary/>` stub loses its docstring here, so
+#   with AI enabled it costs one summarizer call on this re-parse, as a fresh
+#   index would.
+#
+# 22: a T-SQL/Sybase stored procedure or trigger is a symbol (recovered by
+#   source scan), a bracket-quoted name is `schema.name`, and a SQL table,
+#   view or index has its own kind instead of `type`. ⚠⚠ Symbol ids MOVE:
+#   `type` -> `table`/`view`/`index`, and `dbo].[X` -> `dbo.X`.
+#
+# 23: a SQL file is parsed one batch (`GO` / `/`) at a time, so one
+#   unparseable statement no longer loses every object after it, and named
+#   constraints, Sybase rules, defaults and `sp_addtype` types are symbols.
+#   ⚠⚠ The rows change on UNCHANGED content: objects that were lost appear.
+#
+# 24 (L-188): git blame's property names (`last_author`, `last_modified`) are
+#   no longer search keywords. `keywords` changes on UNCHANGED content, and
+#   enrichment runs only on re-parsed files, so without this bump an edited file
+#   would drop them while untouched files kept them: one index holding both
+#   states, the ranking skew the fix removes.
+#
+# 25 (L-177): import forms that recorded no names, or no edge, record them --
+#   a Python `import` continued by a backslash, a Scala selector, a PHP group
+#   use, a Haskell import list, a Dart `show`, a destructuring `require` and a
+#   Kotlin `as` import. `files.imports` changes on UNCHANGED content, so a
+#   re-parse is the only way an existing index gains the names.
+#
+# 26 (#1177): a Flask `@x.route(..., methods=[...])` reports the verbs it
+#   names, not always `GET`. The decorator-routes context (`ecosystem_context`
+#   and the file summary's route line) changes on UNCHANGED content, and
+#   enrichment runs only on re-parsed files, the generation-24 shape. ⚠ The
+#   bump does not rewrite a stored AI summary that already says GET: a
+#   re-parse keeps paid AI summaries (see 21), so those need
+#   `summarize_repo(force=true)`.
+PARSER_GENERATION = 26
 
 
 @dataclass(frozen=True)
@@ -682,6 +827,7 @@ class CodeIndex:
     racket_config_digest: Optional[str] = None  # config.racket_config_digest() at save time: `racket_definition_forms` + `racket_langs` change what the Racket parser emits for UNCHANGED content, and the incremental path never re-reads unchanged content, so a mismatch at the next index forces one full re-parse. Same rule as parser_generation, scoped to one project's config. ⚠ None means NEVER STAMPED (the meta key is absent): an index built before the stamp existed. A local index holding Racket files with None re-parses once. ⚠ That was written to stand IN PLACE OF a PARSER_GENERATION bump (#556), and 1.108.303 bumped the counter to 7 anyway for an unrelated Rust fix -- so those particular indexes are reached twice over. The stamp is not redundant: a bump fires once per release, and this fires whenever a PROJECT edits `racket_definition_forms` or `racket_langs`, which no global counter can see. "" is a stamped, unconfigured project and never differs from itself.
     racket_reader_generation: Optional[int] = None  # racket_reader.READER_GENERATION at save time, stamped beside the digest above under the same rule (every LOCAL index holding Racket files; None = never stamped = parsed by tree-sitter). A mismatch forces one full re-parse with reason `racket_reader_changed`, so a reader change reaches exactly the indexes that hold `.rkt` files without a PARSER_GENERATION bump for everybody.
     coverage: dict = field(default_factory=dict)  # v1.108.145: coverage contract for absence claims — {files_discovered, files_indexed, skip_counts{reason:count}, no_symbols_count, walk, recorded_at} from the last full discovery walk. Empty = unknown (pre-upgrade index or no full walk recorded).
+    summaries_generation: str = ""  # L-228: the `summaries_generation` meta row, which `update_symbol_summaries` advances. A summary-only write leaves `indexed_at` alone, so a result cache keyed on `indexed_at` alone kept serving old summaries; this is the part of the key that moves. "" = never advanced.
 
     def __post_init__(self) -> None:
         if not self.display_name:
@@ -936,18 +1082,28 @@ class IndexStore:
         safe_name = self._safe_repo_component(name, "name")
         return f"{safe_owner}-{safe_name}"
 
+    def _slot(self, owner: str, name: str) -> str:
+        """The slot name for a repository, after the identity check.
+
+        Every facade path into a slot comes through here, and the check is the
+        SQLite store's one ``_guard_slot``: raises ``IndexIdentityConflict``
+        when the slot's index records another repository.
+        """
+        slug = self._repo_slug(owner, name)
+        self._sqlite._guard_slot(self.base_path / f"{slug}.db", owner, name)
+        return slug
+
     def _index_path(self, owner: str, name: str) -> Path:
         """Path to index JSON file."""
-        self._sqlite._db_path(owner, name)
-        return self.base_path / f"{self._repo_slug(owner, name)}.json"
+       return self.base_path / f"{self._slot(owner, name)}.json"
 
     def _lock_path(self, owner: str, name: str) -> Path:
         """Path to per-repo advisory lock file."""
-        return self.base_path / f"{self._repo_slug(owner, name)}.json.lock"
+        return self.base_path / f"{self._slot(owner, name)}.json.lock"
 
     def _meta_path(self, owner: str, name: str) -> Path:
         """Path to lightweight metadata sidecar for list_repos."""
-        return self.base_path / f"{self._repo_slug(owner, name)}.meta.json"
+        return self.base_path / f"{self._slot(owner, name)}.meta.json"
 
     def _checksum_path(self, index_path: Path) -> Path:
         """Path to SHA-256 integrity checksum sidecar."""
@@ -1010,9 +1166,8 @@ class IndexStore:
             logger.debug("Failed to write meta sidecar", exc_info=True)
 
     def _content_dir(self, owner: str, name: str) -> Path:
-        """Path to raw content directory."""
-        self._sqlite._db_path(owner, name)
-        return self.base_path / self._repo_slug(owner, name)
+       """Path to raw content directory (guarded: see ``_slot``)."""
+       return self.base_path / self._slot(owner, name)
 
     def _safe_content_path(self, content_dir: Path, relative_path: str) -> Optional[Path]:
         """Resolve a content path and ensure it stays within content_dir.
@@ -1153,22 +1308,30 @@ class IndexStore:
         self._lock_path(owner, name).unlink(missing_ok=True)
         self._checksum_path(index_path).unlink(missing_ok=True)
 
+        # The set of indexes changed: a remembered repo-key miss may now be wrong (#960).
+        _config.forget_repo_resolutions()
         return result
 
     def has_index(self, owner: str, name: str) -> bool:
-        """Return True if an index exists (SQLite or JSON)."""
-        return self._sqlite.has_index(owner, name) or self._index_path(owner, name).exists()
+        """Return True if an index exists (SQLite or JSON). An index that
+        belongs to another repository is not this repository's: False."""
+        try:
+            return self._sqlite.has_index(owner, name) or self._index_path(owner, name).exists()
+        except IndexIdentityConflict:
+            return False
 
     def inspect_index(self, owner: str, name: str, branch: str = "") -> IndexLoadStatus:
         """Return index presence/loadability without changing load_index's contract."""
         sqlite_status = self._sqlite.inspect_index(owner, name, branch=branch)
-        if sqlite_status.loadable:
+        if sqlite_status.loadable or sqlite_status.status == "identity_conflict":
             return sqlite_status
 
         if not branch:
             index_path = self._index_path(owner, name)
             if index_path.exists():
                 data = _load_index_json_cached(str(index_path), index_path.stat().st_mtime_ns)
+                if data and _meta_names_other_repo(data, owner, name):
+                    data = None  # a legacy JSON naming another repository is not ours
                 if data:
                     return IndexLoadStatus(
                         repo=data.get("repo", f"{owner}/{name}"),
@@ -1214,12 +1377,24 @@ class IndexStore:
 
         # Try auto-migration from JSON (no branch support for legacy JSON)
         if not branch:
-            index_path = self._index_path(owner, name)
+            try:
+                index_path = self._index_path(owner, name)
+            except IndexIdentityConflict as e:
+                logger.warning("%s", e)
+                return None
             if index_path.exists():
                 logger.info("Auto-migrating %s/%s from JSON to SQLite", owner, name)
                 result = self._sqlite.migrate_from_json(index_path, owner, name)
                 if result is not None:
                     _invalidate_index_cache()
+                    # A legacy JSON keeps its own `repo`: never serve one that
+                    # names another repository under this name.
+                    if _meta_names_other_repo({"repo": result.repo}, owner, name):
+                        logger.warning(
+                            "Legacy index in the slot for %s/%s is %s; not serving it",
+                            owner, name, result.repo,
+                        )
+                        return None
                     return result
 
         return None
@@ -1252,6 +1427,10 @@ class IndexStore:
     ) -> Optional[str]:
         """Read a cached file's full content."""
         return self._sqlite.get_file_content(owner, name, file_path, _index)
+
+    def read_cached_source(self, owner: str, name: str, file_path: str) -> Optional[str]:
+        """A file's text from the content cache (path-contained); None if absent."""
+        return self._sqlite.read_cached_source(owner, name, file_path)
 
     def detect_changes(
         self,
@@ -1297,6 +1476,19 @@ class IndexStore:
                       hashes_for_changed_and_new, updated_mtimes).
         """
         return self._sqlite.detect_changes_with_mtimes(owner, name, current_mtimes, hash_fn)
+
+    def update_symbol_summaries(
+        self, owner: str, name: str, summaries: dict[str, tuple[str, str]]
+    ) -> int:
+        """Write new summaries and nothing else (#1161); see the SQLite method."""
+        return self._sqlite.update_symbol_summaries(owner, name, summaries)
+
+    def update_summaries_from_symbols(self, owner: str, name: str, symbols: list) -> int:
+        """`update_symbol_summaries` for Symbol objects (L-227): each non-empty
+        summary, guarded by the content hash it was written from."""
+        return self._sqlite.update_symbol_summaries(
+            owner, name, {s.id: (s.summary, s.content_hash) for s in symbols if s.summary}
+        )
 
     def incremental_save(
         self,
@@ -1433,14 +1625,16 @@ class IndexStore:
         _pairs = parse_path_map()
 
         # Pass 1: SQLite databases
-        from .sqlite_store import _NON_REPO_DB_FILES
         for db_file in self.base_path.glob("*.db"):
-            if db_file.name in _NON_REPO_DB_FILES:
-                continue
             slug = db_file.stem
-            seen_slugs.add(slug)
             try:
+                # None: not an index, decided by content (L-144). The slug
+                # stays unseen, so a legacy JSON index of that name still
+                # surfaces in pass 2.
                 entry = self._sqlite._list_repo_from_db(db_file, _pairs)
+                if entry is None:
+                    continue
+                seen_slugs.add(slug)
                 if entry and entry.get("loadable") is False:
                     if json_entry := self._try_json_fallback(slug, _pairs, json_files_to_migrate):
                         repos.append(json_entry)
@@ -1449,6 +1643,9 @@ class IndexStore:
                     repos.append(entry)
             except Exception:
                 logger.debug("Skipping corrupted DB: %s", db_file, exc_info=True)
+                # An unreadable file is listed (or its JSON is), so pass 2
+                # must not list the JSON a second time.
+                seen_slugs.add(slug)
                 parts = slug.split("-", 1)
                 owner, name = parts if len(parts) == 2 else ("local", slug)
                 status = self._sqlite.inspect_index(owner, name)
@@ -1556,6 +1753,8 @@ class IndexStore:
         """
         db_existed = self._sqlite.has_index(owner, name)
         deleted = self._sqlite.delete_index(owner, name)
+        # A resolved repo key must not outlive its index (#960).
+        _config.forget_repo_resolutions()
 
         index_path = self._index_path(owner, name)
         meta_path = self._meta_path(owner, name)
@@ -1606,6 +1805,7 @@ class IndexStore:
             "byte_offset": symbol.byte_offset,
             "byte_length": symbol.byte_length,
             "content_hash": symbol.content_hash,
+            "ecosystem_context": getattr(symbol, "ecosystem_context", "") or "",
             "cyclomatic": getattr(symbol, "cyclomatic", 0) or 0,
             "max_nesting": getattr(symbol, "max_nesting", 0) or 0,
             "param_count": getattr(symbol, "param_count", 0) or 0,

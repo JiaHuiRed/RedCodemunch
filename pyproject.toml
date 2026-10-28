@@ -1,6 +1,6 @@
 [project]
 name = "jcodemunch-mcp"
-version = "1.108.319"
+version = "1.108.400"
 description = "Token-efficient MCP server for source code exploration via tree-sitter AST parsing"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -64,7 +64,13 @@ dependencies = [
     # The F# wheel's grammar is ABI 15, which a tree-sitter runtime older than
     # 0.25 cannot load: `Language()` raises and F# indexes as empty. The pack
     # carried that floor only transitively, and its own spec does not promise it.
-    "tree-sitter>=0.25",
+    # CAPPED at the locked minor: the per-file parse budget stops a slow parse
+    # through `Parser.timeout_micros`, and tree-sitter 0.26.0 removed it. With
+    # no cap an install resolved 0.26.0 and lost the stop, while CI, locked to
+    # 0.25.2, saw nothing. Raise the cap only together with `uv.lock`, so
+    # `tests/test_parse_budget_cancels.py` runs on the new version first
+    # (`tests/test_tree_sitter_range_is_the_tested_range.py`).
+    "tree-sitter>=0.25,<0.26",
     "pathspec>=0.12.0",
     "pyyaml>=6.0",
 ]
@@ -83,16 +89,16 @@ zhipu = ["openai>=1.0.0"]
 dbt = ["pyyaml>=6.0"]
 http = ["uvicorn>=0.20.0", "starlette>=1.3.1", "anyio>=4.14.2"]
 watch = ["watchfiles>=1.0.0"]
-semantic = ["sentence-transformers>=2.2.0"]
+semantic = ["sentence-transformers>=5.6.0", "filelock==3.20.3; python_version < '3.11'", "filelock>=4.2.1; python_version >= '3.11'"]
 local-embed = ["onnxruntime>=1.16.0"]
 groq = ["openai>=1.0.0"]
 groq-voice = ["openai>=1.0.0", "sounddevice>=0.4.6", "numpy>=1.24.0"]
-groq-explain = ["openai>=1.0.0", "Pillow>=10.0.0"]
+groq-explain = ["openai>=1.0.0", "Pillow>=13.0.0; python_version >= '3.11'"]
 keyring = ["keyring>=24.0"]
 bench = ["openai>=1.0.0", "anthropic>=0.40.0", "pyyaml>=6.0", "rich>=13.0", "jinja2>=3.1"]
 # `all` is a hand-maintained union of every extra above. When you add a new
 # extra or a new dependency to one, mirror it here (there is no auto-union).
-all = ["anthropic>=0.40.0", "google-generativeai>=0.8.0", "openai>=1.0.0", "pyyaml>=6.0", "uvicorn>=0.20.0", "starlette>=1.3.1", "anyio>=4.14.2", "watchfiles>=1.0.0", "sentence-transformers>=2.2.0", "onnxruntime>=1.16.0", "sounddevice>=0.4.6", "numpy>=1.24.0", "Pillow>=10.0.0", "rich>=13.0", "jinja2>=3.1", "keyring>=24.0"]
+all = ["anthropic>=0.40.0", "google-generativeai>=0.8.0", "openai>=1.0.0", "pyyaml>=6.0", "uvicorn>=0.20.0", "starlette>=1.3.1", "anyio>=4.14.2", "watchfiles>=1.0.0", "sentence-transformers>=5.6.0", "filelock==3.20.3; python_version < '3.11'", "filelock>=4.2.1; python_version >= '3.11'", "onnxruntime>=1.16.0", "sounddevice>=0.4.6", "numpy>=1.24.0", "Pillow>=13.0.0; python_version >= '3.11'", "rich>=13.0", "jinja2>=3.1", "keyring>=24.0"]
 
 
 [project.scripts]
@@ -149,11 +155,24 @@ exclude = [
     # competitor (the suite contract's framing rule 1).
     "docs/competitive/",
     "benchmarks/competitive/",
+    # Recorded model answers from munch-bench runs. Data, not code: nothing
+    # installed reads it, and the answers quote the code they were asked
+    # about, including Flask's dynamic-execution calls, which a registry
+    # scanner reading the sdist counts against us as if we ran them
+    # (tests/test_shipped_text_has_no_dynamic_code_calls.py).
+    "munch-bench/results/",
+    # The community savings meter's deployed receiver (PHP). Kept beside the
+    # client that describes it so a test can hold the two together; it runs
+    # on the meter's web host, never in an installed package.
+    "server/",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# pytest resets the warning filters for every test, which removes the one
+# `parser/parse_budget.py` installs; without this line each parse is recorded.
+filterwarnings = ["ignore:Use the progress_callback in parse:DeprecationWarning"]
 
 [tool.ruff]
 target-version = "py310"
@@ -221,4 +240,13 @@ dev = [
     # of importorskip-ing. The harness is edited by people who are not running
     # it, which is exactly how its jCodeMunch constants went four months stale.
     "tiktoken>=0.7.0",
+]
+
+[tool.uv]
+# A lock-only constraint; it does not change what pip installs for users.
+# setuptools reaches the lock only through torch (the `semantic` extra), and
+# this keeps the lock past a published advisory. filelock needs no entry here:
+# the `semantic` and `all` extras pin it for pip and the lock alike.
+constraint-dependencies = [
+    "setuptools>=84.1.0",
 ]

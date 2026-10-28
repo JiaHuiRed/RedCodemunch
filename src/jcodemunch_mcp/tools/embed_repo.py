@@ -214,6 +214,76 @@ def warm_up_embedding_backend() -> Optional[str]:
 # ── Per-provider embedding functions (all lazy-imported) ───────────────────
 
 
+# GHSA-jhr6-gm9c-rqjv: before this release, loading a LOCAL model directory
+# bypassed `trust_remote_code` and executed the custom Python inside it.
+_ST_LOCAL_CODE_FIXED = (5, 6, 0)
+
+
+def _sentence_transformers_version() -> tuple[Optional[tuple[int, ...]], bool, str]:
+    """(parsed release, is a pre-release, raw text) of the sentence-transformers actually imported.
+
+    The module's own `__version__` first, then the distribution metadata.
+    `None` means it could not be read, which is not the same as fixed.
+    """
+    import re
+    import sys
+
+    raw = getattr(sys.modules.get("sentence_transformers"), "__version__", None)
+    if not isinstance(raw, str):
+        try:
+            import importlib.metadata
+
+            raw = importlib.metadata.version("sentence-transformers")
+        except Exception:
+            logger.debug("sentence-transformers version could not be read", exc_info=True)
+            return None, False, ""
+    if not isinstance(raw, str):  # a distribution with no Version field answers None
+        return None, False, ""
+    match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?(.*)", raw.strip())
+    if not match:
+        return None, False, raw
+    pre = bool(re.match(r"[-_.]?(a|b|c|rc|alpha|beta|pre|preview|dev)\d*", match.group(4), re.IGNORECASE))
+    return tuple(int(part or 0) for part in match.groups()[:3]), pre, raw
+
+
+def _is_local_model_path(model_name: str) -> bool:
+    """True when the name is a path that exists.
+
+    The library tests `os.path.exists` on the RAW name, so the raw check is the
+    one that matches what it would load. The expanded check (`~`, `$VAR`) only
+    adds refusals: the library does not expand, so such a name would not load
+    from disk there. Refusing it is the safe direction.
+    """
+    expanded = os.path.expanduser(os.path.expandvars(model_name))
+    return os.path.exists(model_name) or os.path.exists(expanded)
+
+
+def _refuse_local_model_on_an_old_release(model_name: str) -> None:
+    """Raise before a local model directory reaches a release that runs its code unasked.
+
+    The `semantic` extra's floor is install metadata: an upgrade that does not
+    name the extra, or a `sentence-transformers` installed directly, keeps an
+    older release. A Hub name is not refused; the advisory is the local path.
+    """
+    if not _is_local_model_path(model_name):
+        return
+    parsed, pre, raw = _sentence_transformers_version()
+    # A pre-release OF the fixed release (5.6.0.dev0, 5.6.0rc1) may predate the fix.
+    if parsed is not None and (parsed > _ST_LOCAL_CODE_FIXED or (parsed == _ST_LOCAL_CODE_FIXED and not pre)):
+        return
+    found = f"sentence-transformers {raw}" if parsed is not None else (
+        "a sentence-transformers whose version could not be read"
+    )
+    # The cause and the remedy come first: the failure ledger keeps the first
+    # 300 characters of a message, and a path can be longer than that.
+    raise RuntimeError(
+        f"Refused: this environment has {found}, and releases before 5.6.0 final run the custom "
+        "code inside a local model directory with trust_remote_code off (GHSA-jhr6-gm9c-rqjv). "
+        "Run: pip install -U 'jcodemunch-mcp[semantic]', or set embed_model to a Hub model name. "
+        f"embed_model is the local path {model_name!r}."
+    )
+
+
 def _embed_sentence_transformers(texts: list[str], model_name: str) -> list[list[float]]:
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore[import]
@@ -222,6 +292,7 @@ def _embed_sentence_transformers(texts: list[str], model_name: str) -> list[list
             "sentence-transformers is not installed. "
             "Run: pip install 'jcodemunch-mcp[semantic]'"
         ) from exc
+    _refuse_local_model_on_an_old_release(model_name)
     model = SentenceTransformer(model_name)
     raw = model.encode(texts, convert_to_numpy=False, show_progress_bar=False)
     return [list(map(float, e)) for e in raw]
@@ -232,6 +303,18 @@ def _gemini_task_aware() -> bool:
     return os.environ.get("GEMINI_EMBED_TASK_AWARE", "1").strip() not in (
         "0", "false", "no", "off"
     )
+
+
+def _embed_task_types(provider: str) -> tuple[Optional[str], Optional[str]]:
+    """(query task type, document task type) for ``provider``; Gemini only.
+
+    One rule for the writer that stamps the document task type (`embed_repo`)
+    and the two `search_symbols` exits that compare against the stamp: a copy
+    that drifted would refuse every search as `embedding_task_type_changed`.
+    """
+    if provider == "gemini" and _gemini_task_aware():
+        return "CODE_RETRIEVAL_QUERY", "RETRIEVAL_DOCUMENT"
+    return None, None
 
 
 # CODE_RETRIEVAL_QUERY was added in the newer google-genai SDK; the legacy
@@ -388,9 +471,7 @@ def embed_repo(
     provider, model = provider_info
 
     # Determine document-side task type (Gemini only).
-    doc_task_type: Optional[str] = None
-    if provider == "gemini" and _gemini_task_aware():
-        doc_task_type = "RETRIEVAL_DOCUMENT"
+    doc_task_type = _embed_task_types(provider)[1]
 
     try:
         owner, name = resolve_repo(repo, storage_path)
@@ -402,7 +483,11 @@ def embed_repo(
     if not index:
         return index_status_to_tool_error(store.inspect_index(owner, name))
 
-    from ..storage.embedding_store import EmbeddingStore
+    from ..storage.embedding_store import (
+        STALE_MODEL_CHANGED,
+        EmbeddingStore,
+        stale_reason,
+    )
     db_path = store._sqlite._db_path(owner, name)
     emb_store = EmbeddingStore(db_path)
 
@@ -415,29 +500,49 @@ def embed_repo(
     # still named the first. `EmbeddingMatrix` then infers its dimension from
     # the FIRST row and drops every row that disagrees, so the symbols embedded
     # after the change stopped being searchable — silently, and cumulatively.
-    stored_dim = emb_store.get_dimension()
-    stored_model = emb_store.get_model()
+    #
+    # ⚠ ONE reading of the store decides the rebuild AND what is disclosed
+    # (LEDGER L-121, review rounds 4 and 5): with the model read by one call
+    # and the rule fed by another, a failed second reading skipped the rebuild
+    # while the first still reported `embedding_model_changed`. `for_writer`
+    # reads over the read-write connection this function writes with.
+    stored_meta = emb_store.read_meta(for_writer=True)
+    stored_dim: Optional[int] = None
+    stored_model: Optional[str] = None
+    if stored_meta is None:
+        # Nothing could be read, so nothing is claimed about the model; a
+        # dimension row that can be read still stops a re-stamp over vectors
+        # this call did not write.
+        stored_dim = emb_store.get_dimension()
+    elif stored_meta["has_vectors"]:
+        stored_dim = stored_meta["dimension"]
+        stored_model = stored_meta["model"]
+    else:
+        # An empty store has no stamp to honour. `clear()` removes the rows
+        # with the vectors now; a store emptied before that still carries
+        # them, and seeding `dim` from one skipped the re-stamp below, so new
+        # vectors were written under the old model's name.
+        emb_store.drop_orphan_stamp()
     # ⚠ Unknown is NOT a change. A store written before `embed_model` was
     # persisted has no name, and forcing a re-embed on that would bill every
     # existing user a full rebuild for a model that may well be identical.
     model_changed = bool(stored_model) and bool(model) and stored_model != model
-    if not force and model_changed and emb_store.count() > 0:
-        logger.info(
-            "embed_repo: model changed (%r → %r); forcing re-embed",
-            stored_model, model,
-        )
-        force = True
 
-    # If the task type changed (e.g. Gemini task-awareness toggled), existing
-    # embeddings were built with a different task type and must be regenerated.
-    stored_task_type = emb_store.get_task_type()
-    if not force and stored_task_type != (doc_task_type or "") and emb_store.count() > 0:
-        logger.info(
-            "embed_repo: task_type changed (%r → %r); forcing re-embed",
-            stored_task_type,
-            doc_task_type,
-        )
-        force = True
+    # A changed model, a changed task type (e.g. Gemini task-awareness toggled)
+    # and vectors with no metadata each force a rebuild. The rule and its three
+    # states (#523) are `embedding_store.stale_reason`, which the semantic
+    # top-up in `search_symbols` asks too (LEDGER L-121); do not restate it here.
+    rebuild_reason: Optional[str] = None
+    if not force:
+        stale = stale_reason(stored_meta, model, doc_task_type or "")
+        if stale:
+            logger.info(
+                "embed_repo: %s (stored model %r, active %r, task type %r); forcing re-embed",
+                stale, stored_model, model, doc_task_type,
+            )
+            force = True
+            if stale != STALE_MODEL_CHANGED:
+                rebuild_reason = stale
 
     if force:
         emb_store.clear()
@@ -527,4 +632,8 @@ def embed_repo(
         # corpus and the caller did not ask for one.
         result["model_changed_from"] = stored_model
         result["rebuild_reason"] = "embedding_model_changed"
+    elif rebuild_reason:
+        # The same disclosure for the two rebuilds this function decides on
+        # its own besides a model change (#523).
+        result["rebuild_reason"] = rebuild_reason
     return result

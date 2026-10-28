@@ -7,7 +7,8 @@ printed as one line: id, criterion, floor, observed, PASS|FAIL.
 
 Tier membership: harness/tiers.json. Floors: harness/thresholds.json (only).
 Corpus checksums: harness/corpora.json. Results: harness/results/latest.json
-when --write-results is given.
+when --write-results is given; --results-out PATH writes the same result to
+PATH and leaves the tracked file alone.
 
 Methodology rules R1-R62 (docs/harness/ARCHAEOLOGY.md section A) bind the bench
 tier; the assertions that enforce them cite the rule number.
@@ -32,6 +33,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 from harness import thresholds as T  # noqa: E402
 from harness import corpora as C  # noqa: E402
+from harness import release_age as RA  # noqa: E402
 
 TIERS = json.loads((HERE / "tiers.json").read_text(encoding="utf-8"))
 RESULTS_DIR = HERE / "results"
@@ -146,6 +148,10 @@ def _run(cmd: list[str], *, env: dict | None = None) -> tuple[int, str, float]:
     e = dict(os.environ)
     e.setdefault("PYTHONPATH", str(REPO / "src"))
     e.setdefault("PYTHONIOENCODING", "utf-8")
+    # A tier is not a user: the tool calls it makes must not be reported to the
+    # public savings total. Benchmark tiers ran outside the tests' network guard
+    # and posted like any install (cicd C-23).
+    e.setdefault("JCODEMUNCH_SHARE_SAVINGS", "0")
     if env:
         e.update(env)
     proc = subprocess.run(
@@ -648,6 +654,7 @@ DELEGATED = {
     "ci.skips_ubuntu": "this runner / pr-gate.yml full tier, pytest summary",
     "ci.skips_windows": "this runner / pr-gate.yml full tier, pytest summary",
     "suite.full_seconds_ci_windows": "harness full tier on a GitHub windows runner",
+    "suite.full_seconds_ci_ubuntu_py310": "harness full tier on the GitHub ubuntu runner under Python 3.10",
     "suite.fast_skips_max": "harness fast tier, pytest summary",
 }
 
@@ -656,6 +663,15 @@ def check(
     tid: str, *, stamp: bool = False, explicit: bool = False
 ) -> tuple[bool | None, object]:
     e = T.get(tid)
+    if tid == RA.TID:
+        # N8: the clock, the environment and the checkout decide this one, and
+        # a run where it does not apply prints why instead of a PASS.
+        age = RA.measure()
+        print(RA.describe(age))
+        ok = RA.verdict(age)
+        if stamp and ok is not None and age.hours is not None:
+            _stamp(tid, age.hours)
+        return ok, age.hours
     if tid in NETWORK_MEASURERS and not explicit:
         print(
             f"{tid:<40} crit {e['criterion']:<3} floor {e['comparator']} {e['floor']!s:<12} delegated to `python -m harness check {tid}` (network; pr-gate.yml stage 1)"
@@ -707,7 +723,13 @@ def offline_checks(stamp: bool = False) -> tuple[bool, list[dict]]:
                 "id": tid,
                 "floor": T.floor(tid),
                 "observed": obs,
-                "verdict": "PASS" if ok else ("FAIL" if ok is False else "DELEGATED"),
+                "verdict": "PASS"
+                if ok
+                else (
+                    "FAIL"
+                    if ok is False
+                    else ("NOT EVALUATED" if tid == RA.TID else "DELEGATED")
+                ),
             }
         )
         if ok is False:
@@ -720,9 +742,19 @@ def _skips_floor_id() -> str:
 
 
 def _full_wall_floor_id() -> str:
-    """A GitHub-hosted windows runner is ~3x this box on the full tier (docs/cicd/FINDINGS.md C-9)."""
-    if os.environ.get("GITHUB_ACTIONS") and sys.platform.startswith("win"):
-        return "suite.full_seconds_ci_windows"
+    """Which full-tier wall Floor this runner is judged by.
+
+    A GitHub-hosted windows runner is ~3x this box on the full tier
+    (docs/cicd/FINDINGS.md C-9). The ubuntu Python 3.10 leg has its own Floor
+    (L-232): its median sat just under the shared one and tripped it with every
+    test passing. Every other ubuntu leg and every non-CI run keeps
+    `suite.full_seconds`.
+    """
+    if os.environ.get("GITHUB_ACTIONS"):
+        if sys.platform.startswith("win"):
+            return "suite.full_seconds_ci_windows"
+        if sys.platform.startswith("linux") and sys.version_info[:2] == (3, 10):
+            return "suite.full_seconds_ci_ubuntu_py310"
     return "suite.full_seconds"
 
 
@@ -927,12 +959,29 @@ def tier_bench(result: dict, *, offline: bool, write_results: bool = False) -> b
         if step.get("restore"):
             subprocess.run(["git", "checkout", "--", *step["restore"]], cwd=REPO)
         if scratch_art is not None:
+            dest = REPO / step["artifact"]
+            failed_dest = dest.with_name(dest.stem + ".failed" + dest.suffix)
             if rc == 0 and scratch_art.exists():
                 arts[step["name"]] = json.loads(scratch_art.read_text(encoding="utf-8"))
                 if write_results:
-                    dest = REPO / step["artifact"]
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(scratch_art.read_bytes())
+                    failed_dest.unlink(missing_ok=True)
+            elif scratch_art.exists():
+                # LEDGER L-72: a red run's measurement is the evidence (F-19), so
+                # it rides in the result and, under --write-results, BESIDE the
+                # tracked file -- never over it: the tracked copy is the last
+                # accepted weekly result, and CI used to upload it under the
+                # failing run's name while this measurement was deleted below.
+                try:
+                    arts[step["name"]]["measurement"] = json.loads(
+                        scratch_art.read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError):
+                    arts[step["name"]]["measurement_unreadable"] = True
+                if write_results:
+                    failed_dest.parent.mkdir(parents=True, exist_ok=True)
+                    failed_dest.write_bytes(scratch_art.read_bytes())
             import shutil
 
             shutil.rmtree(scratch_art.parent, ignore_errors=True)
@@ -942,9 +991,20 @@ def tier_bench(result: dict, *, offline: bool, write_results: bool = False) -> b
     return ok
 
 
-def write_results(result: dict) -> Path:
-    RESULTS_DIR.mkdir(exist_ok=True)
-    p = RESULTS_DIR / "latest.json"
+def write_results(result: dict, path: Path | None = None) -> Path:
+    """Write the run's result: the tracked `latest.json`, or `path` when given.
+
+    A caller's `path` (`--results-out`) is how a branch run hands THIS run's
+    numbers to `scripts/pr_bench_comment.py` without touching the tracked file
+    (workflow FINDINGS W-52: the table read the tracked file a plain run had
+    not written, and compared the base ref with itself).
+    """
+    if path is None:
+        RESULTS_DIR.mkdir(exist_ok=True)
+        p = RESULTS_DIR / "latest.json"
+    else:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(
         json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
@@ -982,6 +1042,11 @@ def main(argv: list[str] | None = None) -> int:
         "--write-results", action="store_true", help="write harness/results/latest.json"
     )
     ap.add_argument(
+        "--results-out",
+        metavar="PATH",
+        help="write this run's result JSON to PATH; tracked files are not touched",
+    )
+    ap.add_argument(
         "--pin",
         action="store_true",
         help="corpora: (re)write harness/corpora.json checksums",
@@ -1003,6 +1068,12 @@ def main(argv: list[str] | None = None) -> int:
         help="print a ::error annotation for every FAIL verdict",
     )
     a = ap.parse_args(argv)
+    if a.results_out and a.command not in ("fast", "full", "bench", "all"):
+        ap.error(f"--results-out applies to a tier run, not to `{a.command}`")
+    if a.results_out and (
+        Path(a.results_out).resolve() == (RESULTS_DIR / "latest.json").resolve()
+    ):
+        ap.error("--results-out names the tracked latest.json; that is --write-results")
     _FAILURE_REPORTS.clear()
     tee = None
     if a.summary or a.annotate:
@@ -1061,6 +1132,10 @@ def _dispatch(a) -> int:
         ok, _ = offline_checks(stamp=a.stamp)
         return 0 if ok else 1
 
+    if a.results_out:
+        # A run that dies before the write must not leave an earlier run's file
+        # under the name a reader is about to table (W-52).
+        Path(a.results_out).unlink(missing_ok=True)
     result = {
         "schema": "jcm-harness-result/v1",
         "date": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1076,6 +1151,8 @@ def _dispatch(a) -> int:
         ok = tier_bench(result, offline=a.offline, write_results=a.write_results) and ok
     if a.write_results:
         print("results ->", write_results(result))
+    if a.results_out:
+        print("results ->", write_results(result, Path(a.results_out)))
     print("HARNESS", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

@@ -48,7 +48,7 @@ Method: `python benchmarks/harness/run_benchmark.py --out benchmarks/results.md 
 Current: committed 24,249 jcm tokens vs 664,975 grep-top-3 = 27.4x (captured 2026-08-25 at 1.108.297). CI re-measure 2026-09-03 (run 33713310141): 23,440 jcm tokens, i.e. 28.4x, and the workflow is warning that the committed artifact is stale.
 Floor: [`token.grand_ratio_vs_grep`] at least 20x fewer tokens than grep-top-3 on the pinned corpus, and [`token.per_repo_rise_max`] no repo's `jmunch_total_tokens` more than 10% ABOVE its committed value.
 Target: the committed artifact never more than one week older than the last weekly run that disagreed with it.
-Status: MEASURED and GATED: `run_benchmark.py --floor` fails the weekly `benchmark.yml` on an upward move (2026-09-03); the verdict logic is pinned offline by `tests/test_token_benchmark_floor.py`, which also asserts the committed `results.md` clears the floor.
+Status: MEASURED and GATED: `run_benchmark.py --floor` fails the weekly `benchmark.yml` on an upward move (2026-09-03); an approved rise is re-baselined only through `accept_rise` (Definition of Regression 6, 2026-10-22); the verdict logic is pinned offline by `tests/test_token_benchmark_floor.py`, which also asserts the committed `results.md` clears the floor.
 Gap: none for the gate. The downward drift warning (FINDINGS F-10) still needs the Practice 4 re-sync.
 
 ### 3. Index freshness and incremental cost
@@ -84,7 +84,7 @@ right shape, but nothing prevents the next one.
 Metric: per-tool p50 / p95 from `analyze_perf`; cold and warm latency of the six core tools on the self corpus.
 Method: today, the script in `DISCOVERY.md` §3 (hand-run). `analyze_perf` reports from a session ring (512 calls) or the opt-in `telemetry.db`.
 Current (2026-09-03, self corpus, fresh process): `search_symbols` cold 2,605.9 ms / warm 0.8 ms; `search_text` cold 8,780.4 ms / warm 325.9-383.4 ms; `get_symbol_source` warm 7.4 ms. No committed artifact carries any of these.
-Floor: [`latency.<tool>_warm_p95_ms`] for `search_symbols`, `search_text`, `get_symbol_source`, `get_file_outline`: 2x the median of three consecutive `benchmarks/self_latency/measure.py` runs on the src-only self corpus (set 2026-09-03; medians 11.2 / 135.3 / 13.1 / 13.9 ms). `analyze_perf` still refuses to diff latency against the TOKEN baselines (v1.108.309), correctly; this artifact is the latency baseline it lacked.
+Floor: [`latency.<tool>_warm_p95_ms`] for `search_symbols`, `search_text`, `get_symbol_source`, `get_file_outline`: 2x the median of three consecutive `benchmarks/self_latency/measure.py` runs on the src-only self corpus (set 2026-09-03; medians 11.2 / 135.3 / 13.1 / 13.9 ms). Since 2026-09-28 (#906, #911, harness F-19) a 20-call series whose p95 FAILS is measured once more in the same process and the SECOND series is gated; the first p95 is kept in the artifact. That trades detection for runner noise: a defect that slows 10% of calls fails one series with p 0.61 and two with p 0.37, so a tail-only regression can pass on the second series and is visible only in `self_latency.json` (`latency.<tool>_resampled: true` beside `_warm_p95_first_ms`) and the step log. `analyze_perf` still refuses to diff latency against the TOKEN baselines (v1.108.309), correctly; this artifact is the latency baseline it lacked.
 Target: warm p95 under 500 ms for `search_symbols`, `search_text`, `get_symbol_source`, `get_file_outline` on the self corpus in CI; cold first-call under 5 s.
 Status: MEASURED (bench tier).
 Gap: CI runner noise is unmeasured until `pr-gate.yml`/`main.yml` have produced three bench runs; `search_text` at 10x `search_symbols` warm (FINDINGS F-07) is the first thing to profile.
@@ -217,6 +217,15 @@ Target: a step that fails the job when `skipped` exceeds the floor.
 Status: MEASURED and enforced (`pr-gate.yml` fails a leg over [`ci.skips_ubuntu`] / [`ci.skips_windows`]; the full tier applies the same ceiling locally).
 Gap: reconcile the 19-vs-13 local delta (FINDINGS F-05).
 
+### N8. Release latency
+Metric: hours an entry in `CHANGELOG.md`'s `[Unreleased]` block has waited, from the commit at which the block last went from empty to non-empty on the measured ref's first-parent chain.
+Method: `harness/release_age.py`, run by the fast tier (`python -m harness check release.unreleased_max_hours`). The ref is `main` as users receive it: the upstream remote's `main` locally (found by URL, with the fetch age in the verdict line), the test merge's first parent on a `pull_request` run; every other GitHub event prints `not evaluated`. A release cut in the working tree (the block emptied under a new version heading) reads 0, so the release commit is never refused.
+Current: 1.108.320 shipped 14 days and 124 PRs after 1.108.319 (CLAUDE.md Standing lesson 09-30).
+Floor: at or under [`release.unreleased_max_hours`] (jjg, 2026-09-30). UNKNOWN (a shallow history, a git failure) fails.
+Target: the Floor, held.
+Status: MEASURED (fast tier, commit hook and `pr-gate.yml` stage 1).
+Gap: a release PR merged but not dispatched reads 0; the tag is the publish, and `scripts/release_preflight.py` owns that gap. Past the Floor, a fix `main` needs before the release cannot merge on its own: it rides the release PR, or follows it (`docs/cicd/RUNBOOK.md` section 1).
+
 ---
 
 ## Definition of Regression
@@ -229,7 +238,7 @@ following holds on the same job and same corpus as the committed value:
 3. Any `find_implementations` channel recall falls below 1.0 on the goldset.
 4. `core_compact` exceeds 4,000 tokens, or any surface moves more than 5% from `schema_baseline.json` without a regenerated baseline and a CHANGELOG entry that states the cache-write cost.
 5. The `counter` surface bytes change without a CHANGELOG entry.
-6. Any repo's `jmunch_total_tokens` in the token benchmark rises more than 10% above its committed value, or the grand ratio vs grep-top-3 falls below 20x.
+6. Any repo's `jmunch_total_tokens` in the token benchmark rises more than 10% above its committed value, or the grand ratio vs grep-top-3 falls below 20x. One exception: a rise a maintainer has approved, applied only by a `benchmark.yml` reference dispatch that names the repo in `accept_rise`, with the approval, the repo, the query that rose and why recorded in the same PR's CHANGELOG entry and in the `docs/harness/ARCHAEOLOGY.md` history row for the re-capture. The Floor value does not move, the grand ratio and every other repo are still judged, and the next weekly run judges against the new reference.
 7. Route@1 on the held-out CONTROL subset of `benchmarks/route_recall/holdout.json` falls below the [`route.control_at1`] floor (the regression assertion in `tests/test_catalog_moratorium.py`). Its target is the moratorium EXIT bar, not a regression line, and the human corpus is measured, not gated (#715).
 8. `ruff check src/` reports any error.
 9. Coverage falls below 74%.

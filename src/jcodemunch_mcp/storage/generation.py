@@ -90,7 +90,21 @@ def readonly_uri(db_path: PathLike) -> str:
 
 
 def _uri(db_path: PathLike, *, immutable: bool) -> str:
-    path = quote(str(db_path), safe="/:\\")
+   """The read-only URI for ``db_path``, with the path escaped.
+
+   ⚠⚠ SQLite reads this string as a URI, so a raw path is not a path: ``#``
+   starts a fragment, ``?`` starts the query, and ``%HH`` is an escape.
+   Measured (LEDGER L-137) under a directory named ``c#proj``: the query
+   string fell into the fragment, so SQLite opened the path up to the ``#``
+   read-WRITE, created an empty file there, and the read failed on a missing
+   table; ``EmbeddingStore.has_any()`` answered False over a store holding
+   vectors. ``a%20b`` named a directory called ``a b``.
+
+   ⚠ Only those three characters are escaped, ``%`` first. Every other
+   character reaches SQLite as it always has (a space, a backslash, a drive
+   colon, non-ASCII), so no path that opened before opens differently.
+   """
+   path = str(db_path).replace("%", "%25").replace("#", "%23").replace("?", "%3f")
     return f"file:{path}?mode=ro" + ("&immutable=1" if immutable else "")
 
 

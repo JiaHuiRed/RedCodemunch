@@ -615,7 +615,7 @@ class TestEnforcementHooksInstall:
         settings.write_text("{}", encoding="utf-8")
 
         with mock.patch("jcodemunch_mcp.cli.init._settings_json_path", return_value=settings):
-            msg = install_enforcement_hooks(dry_run=False, backup=False)
+            msg = install_enforcement_hooks(dry_run=False, backup=False, guidance=True)
 
         assert "PreToolUse" in msg or "PostToolUse" in msg or "PreCompact" in msg
         data = json.loads(settings.read_text(encoding="utf-8"))
@@ -639,8 +639,8 @@ class TestEnforcementHooksInstall:
         settings.write_text("{}", encoding="utf-8")
 
         with mock.patch("jcodemunch_mcp.cli.init._settings_json_path", return_value=settings):
-            install_enforcement_hooks(dry_run=False, backup=False)
-            msg2 = install_enforcement_hooks(dry_run=False, backup=False)
+            install_enforcement_hooks(dry_run=False, backup=False, guidance=True)
+            msg2 = install_enforcement_hooks(dry_run=False, backup=False, guidance=True)
 
         assert "already present" in msg2
         data = json.loads(settings.read_text(encoding="utf-8"))
@@ -660,7 +660,7 @@ class TestEnforcementHooksInstall:
         settings.write_text(json.dumps(existing), encoding="utf-8")
 
         with mock.patch("jcodemunch_mcp.cli.init._settings_json_path", return_value=settings):
-            install_enforcement_hooks(dry_run=False, backup=False)
+            install_enforcement_hooks(dry_run=False, backup=False, guidance=True)
 
         data = json.loads(settings.read_text(encoding="utf-8"))
         assert "SessionStart" in data["hooks"]  # preserved
@@ -689,7 +689,7 @@ class TestEnforcementHooksInstall:
         settings.write_text("{}", encoding="utf-8")
 
         with mock.patch("jcodemunch_mcp.cli.init._settings_json_path", return_value=settings):
-            install_enforcement_hooks(dry_run=False, backup=False)
+            install_enforcement_hooks(dry_run=False, backup=False, guidance=True)
 
         data = json.loads(settings.read_text(encoding="utf-8"))
         hooks = data["hooks"]
@@ -786,12 +786,17 @@ class TestSubagentStart:
             # Real list_repos() shape: entries keyed "repo", NO owner/name keys.
             # The old mock's {"owner","name"} shape masked months of every repo
             # being skipped (the real store never produces those keys).
-            "list_repos": lambda self: [{"repo": "test/repo", "source_root": "/tmp/x"}],
+            "list_repos": lambda self: [
+                {"repo": "test/repo", "source_root": "/tmp/x", "symbol_count": 1}
+            ],
             "load_index": lambda self, owner, name: mock_index,
         })
         monkeypatch.setattr("jcodemunch_mcp.storage.IndexStore", MockStore)
 
-        rc, out, _ = _run_with_stdin(run_subagentstart, '{"hook_event_name": "SubagentStart"}')
+        # #1139: a repo is briefed only for a cwd inside its root; with no cwd
+        # this test exercised the brief-everything fallback (Practice 9).
+        rc, out, _ = _run_with_stdin(run_subagentstart, json.dumps(
+            {"hook_event_name": "SubagentStart", "cwd": "/tmp/x"}))
         assert rc == 0
         if out:
             msg = _additional_context(out, event="SubagentStart")

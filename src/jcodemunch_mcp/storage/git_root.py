@@ -18,6 +18,8 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple, Optional
 
+from ..checkout_boundary import separate_checkout_between
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,6 +76,10 @@ def _existing_git_identity(path: Path, store) -> Optional[IdentityDecision]:
         entries = store.list_repos()
     except Exception:
         return None
+   # Containment is a filesystem fact; the index wants a repository one. A
+   # linked worktree (#372) or an independent clone nested inside an indexed
+   # checkout is path-contained in the parent's git_root but has its own index.
+   # One rule for both, shared with resolve_repo and the hooks (#1202).
     for entry in entries:
         repo_id = entry.get("repo", "")
         if "/" not in repo_id:
@@ -88,7 +94,10 @@ def _existing_git_identity(path: Path, store) -> Optional[IdentityDecision]:
                 index = None
             git_root = getattr(index, "git_root", "") if index is not None else ""
         if _contains_path(git_root, path):
-            if _separate_checkout_between(path, Path(git_root).expanduser().resolve()):
+           if (
+               separate_checkout_between(path, Path(git_root).expanduser().resolve(), worktrees=True)
+               is not None
+           ):
                 continue
             return IdentityDecision(
                 mode="git",
@@ -98,32 +107,6 @@ def _existing_git_identity(path: Path, store) -> Optional[IdentityDecision]:
                 walk_root=str(Path(git_root).resolve()),
             )
     return None
-
-
-def _separate_checkout_between(path: Path, root: Path) -> bool:
-    for directory in (path, *path.parents):
-        if directory == root:
-            return False
-        dotgit = directory / ".git"
-        if dotgit.is_dir() or is_linked_worktree(directory):
-            return True
-        if dotgit.is_file():
-            try:
-                text = dotgit.read_text(encoding="utf-8", errors="ignore").strip()
-            except OSError:
-                continue
-            if not text.startswith("gitdir:"):
-                continue
-            target = Path(text[len("gitdir:"):].strip())
-            if not target.is_absolute():
-                target = directory / target
-            if target.parent.name == "modules" or any(
-                ancestor.name == "modules" and ancestor.parent.name == ".git"
-                for ancestor in target.parents
-            ):
-                continue
-            return True
-    return False
 
 
 def _configured_identity_mode(folder_path: Path) -> str:

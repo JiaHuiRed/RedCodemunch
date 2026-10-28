@@ -35,7 +35,7 @@ under `.claude/state/evidence/`. Authority for every rule is
 2. **Spec.** Load the `standard-axes` skill. Write `SPEC.md` in the run
    directory: the request restated in one paragraph, then acceptance
    criteria as a numbered list, each mapped to a STANDARD.md criterion
-   number (1-10, N1-N7) and to the Floor ids it could move (run
+   number (1-10, N1-N8) and to the Floor ids it could move (run
    `uv run python -m harness thresholds` for the list; cite ids, never
    values). A criterion mapped to nothing is a refusal.
 3. **Surface impact.** Load `tool-surface-discipline`. Answer in SPEC.md:
@@ -74,10 +74,14 @@ under `.claude/state/evidence/`. Authority for every rule is
    the skip-ceiling verdict rows in `full.md`, not only the exit code.
 7. **Bench delta.** Load `benchmark-methodology`. If `benchmarks/`,
    `harness/` or `src/jcodemunch_mcp/server.py` changed, run
-   `uv run python -m harness bench --offline --summary .claude/state/evidence/bench.md`
+   `uv run python -m harness bench --offline --results-out .claude/state/evidence/latest_cur.json --summary .claude/state/evidence/bench.md`
    and then the per-criterion table against main:
-   `uv run python scripts/pr_bench_comment.py --base-ref origin/main --results harness/results/latest.json --summary .claude/state/evidence/bench_table.md`
-   (never `--post`). Otherwise write the one line `bench: not required
+   `uv run python scripts/pr_bench_comment.py --base-ref origin/main --results .claude/state/evidence/latest_cur.json --summary .claude/state/evidence/bench_table.md`
+   (never `--post`; `--results` is the file THIS run wrote, never the
+   tracked `latest.json`, which a branch run does not rewrite: the script
+   prints a latency row only from a result measured on HEAD and refuses a
+   table with nothing measured in it, W-52; a delta against a base from
+   another kind of box reads `n/c`). Otherwise write the one line `bench: not required
    (no change under benchmarks/, harness/ or server.py)` to
    `evidence/bench_table.md`; a table of zeros by construction is not
    evidence. The description half of DoD 4 comes from step 3's

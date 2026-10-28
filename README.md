@@ -1,14 +1,16 @@
 # jCodeMunch MCP
 
-**The most token-efficient MCP server for precise source code retrieval via tree-sitter AST parsing.** Cut AI token costs 86-99% on code exploration (96% average, benchmarked at 28.3x fewer tokens than a grep-and-read agent) and stop burning your context window reading entire files.
+**An MCP server that retrieves source code by symbol, not by file, using tree-sitter AST parsing.** On our pinned benchmark, one lookup costs 96.2% fewer tokens than a grep-and-read agent (26.5x fewer; 86.9% to 98.7% across the 15 lookups), so your agent stops spending its context window on whole files.
+
+<sub>Benchmark: 5 queries on each of express, fastapi and gin at pinned commits, tokens counted with tiktoken `cl100k_base`, jcodemunch-mcp at commit `15afcf75`, whose version string is 1.108.391 but which also carries the settings-file ranking change released in 1.108.392 and the field/constant change released after it. A lookup is one `search_symbols` plus `get_symbol_source` on its top 3 hits, against grep-and-read (rank files by match count, read the top 3 whole). Per lookup, not per session. Reproduce with [`benchmarks/REPRODUCING.md`](benchmarks/REPRODUCING.md).</sub>
 
 > **Real results, live from production**
 > **838B+ tokens saved** · **136,000+ reporting installs** · **$4.2M+ in AI spend avoided** · **100,000+ kg CO₂ prevented**
-> Counter figures as of 2026-08-17, valued at the $5/MTok Claude Opus **input** rate. All four only grow, so read them as floors. Live at **[jcodemunch.com](https://jcodemunch.com/)**.
+> Counter figures as of 2026-08-17, valued at the $5/MTok Claude Opus **input** rate. All four only grow, so read them as floors. Live at **[jcodemunch.com](https://jcodemunch.com/?utm_medium=readme&utm_campaign=jcm_readme_counter)**.
 
 Works with **Claude Code**, **Cursor**, **VS Code**, **Codex CLI**, **Windsurf**, **Continue**, and [any MCP-compatible client](CLIENTS.md).
 
-[**Install now**](#install) · [**Quickstart**](QUICKSTART.md) · [**See the evidence**](#evidence) · [**Pricing**](https://jcodemunch.com/?utm_source=github&utm_medium=readme&utm_campaign=jcm_readme_top#pricing)
+[**Install now**](#install) · [**Quickstart**](QUICKSTART.md) · [**See the evidence**](#evidence) · [**Pricing**](https://jcodemunch.com/?utm_medium=readme&utm_campaign=jcm_readme_top#pricing)
 
 [![PyPI version](https://img.shields.io/pypi/v/jcodemunch-mcp)](https://pypi.org/project/jcodemunch-mcp/)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/jcodemunch-mcp)](https://pypi.org/project/jcodemunch-mcp/)
@@ -46,19 +48,19 @@ Index once. Query cheaply. Keep moving. **Precision context beats brute-force co
 
 ### Reproducible token efficiency benchmark
 
-Measured with `tiktoken cl100k_base` across three public repos pinned to upstream commits, run 2026-09-03 on v1.108.316. Workflow: `search_symbols` (top 5) + `get_symbol_source` × 3 per query. Two baselines, same run, same corpus, same file reader:
+Measured with `tiktoken cl100k_base` across three public repos pinned to upstream commits, run 2026-10-22 on v1.108.391 (at commit `15afcf75`, whose version string is 1.108.391 but which also carries the settings-file ranking change released in 1.108.392 and the field/constant change released after it). Workflow: `search_symbols` (top 5) + `get_symbol_source` × 3 per query. Two baselines, same run, same corpus, same file reader:
 
 - **Grep-top-3**: `rg -l` the query terms, rank files by match count, open the top 3 whole. This is what a competent agent without the tool actually does, and it is the number to quote.
 - **Read-all**: every indexed source file concatenated. A ceiling nobody pays; retained for continuity with previously published figures.
 
 | Repository | Files | Symbols | Grep-top-3 baseline | jCodeMunch | vs grep | vs read-all |
 |------------|------:|--------:|--------------------:|-----------:|--------:|------------:|
-| expressjs/express | 186 | 455 | 15,724 avg | 1,007 avg | **15.6x** | 153.5x |
-| fastapi/fastapi | 1,186 | 13,240 | 85,296 avg | 2,149 avg | **39.7x** | 384.1x |
-| gin-gonic/gin | 98 | 1,451 | 31,975 avg | 1,537 avg | **20.8x** | 98.8x |
-| **Grand total (15 task-runs)** | | | **664,975** | **23,467** | **28.3x** | 241.1x |
+| expressjs/express | 186 | 989 | 15,724 avg | 990 avg | **15.9x** | 156.1x |
+| fastapi/fastapi | 1,186 | 13,699 | 85,296 avg | 2,556 avg | **33.4x** | 322.9x |
+| gin-gonic/gin | 98 | 1,822 | 31,975 avg | 1,481 avg | **21.6x** | 102.5x |
+| **Grand total (15 task-runs)** | | | **664,975** | **25,132** | **26.5x** | 225.2x |
 
-**Against a grep-and-read agent: 96.5% reduction, 28.3x fewer tokens.** No single multiple describes every query; the per-repo rows above are the spread. Against read-all the figure is 99.6%, but nobody pays that ceiling. Compact [MUNCH](SPEC_MUNCH.md) wire encoding then trims a median 45.5% more bytes off responses.
+**Against a grep-and-read agent: 96.2% reduction, 26.5x fewer tokens.** No single multiple describes every query; the per-repo rows above are the spread. Against read-all the figure is 99.6%, but nobody pays that ceiling. Compact [MUNCH](SPEC_MUNCH.md) wire encoding then trims a median 45.5% more bytes off responses.
 
 Full methodology, pinned commits, harness, and known caveats: [benchmarks/METHODOLOGY.md](benchmarks/METHODOLOGY.md) · [Reproduce it yourself](benchmarks/REPRODUCING.md) · [TOKEN_SAVINGS.md](TOKEN_SAVINGS.md)
 
@@ -73,7 +75,7 @@ Full methodology, pinned commits, harness, and known caveats: [benchmarks/METHOD
 - **Julian Horsey** (Geeky Gadgets): *"3,850 tokens reduced to just 700 — a 5.5× improvement"* · [JCodeMunch AI Token Saver](https://www.geeky-gadgets.com/jcodemunch-mcp-token-savings/)
 - **Eric Grill**: *"context is the scarce resource. Cut it by 90% and the whole stack gets cheaper and more reliable"* · [jCodemunch: Context Engine for AI Agents](https://www.ericgrill.com/blog/jcodemunch-mcp-context-engine-for-ai-agents)
 
-[Full recognition page →](https://jcodemunch.com/recognition.php)
+[Full recognition page →](https://jcodemunch.com/recognition.php?utm_medium=readme&utm_campaign=jcm_readme_recognition)
 
 ---
 
@@ -94,7 +96,9 @@ jcodemunch-mcp init
 
 No virtualenv to manage, nothing written into system Python, and it works as-is on PEP 668 distros (Ubuntu 24.04+, Debian 12+) where bare `pip install` is refused. [Don't have `uv` yet?](https://docs.astral.sh/uv/getting-started/installation/)
 
-`init` auto-detects your MCP clients (Claude Code, Claude Desktop, Cursor, Windsurf, Continue), writes their config entries, installs the CLAUDE.md prompt policy so your agent actually uses jCodeMunch, optionally installs enforcement hooks, optionally indexes your project, and audits your agent config files for token waste.
+`init` auto-detects your MCP clients (Claude Code, Claude Desktop, Cursor, Windsurf, Continue), writes their config entries, installs the hooks that keep the index fresh without adding anything to the model's context (re-index after an edit, a pre-compaction checkpoint, a task-complete note to you), optionally indexes your project, and audits your agent config files for token waste. Two extras are opt-in because the model reads them on every turn they apply: `--policy` writes the Code Exploration Policy into CLAUDE.md, AGENTS.md and the Cursor and Windsurf rules files, and `--guidance` adds the hooks that advise the model on Read/Grep/Glob/Bash, brief subagents and restore context after compaction. An install that already has them keeps them; `jcodemunch-mcp init --remove-guidance` removes them, with backups.
+
+**Ask for it by name.** Tell your agent to use jcodemunch ("use jcodemunch to find where X is handled"). In the sessions we measured, agents used it when the user asked for it by name.
 
 <details>
 <summary><b>Other install paths</b></summary>
@@ -148,8 +152,8 @@ Want to skip initial indexing for popular frameworks? Pre-built **starter packs*
 
 - **Retrieve one symbol instead of loading a file.** `get_symbol_source` returns the exact function body, byte-precise, for the majority of edits that touch one function in a 700-line file (~95% savings on that read).
 - **Assemble a whole task's context in one call.** `assemble_task_context` classifies the task intent, extracts anchor symbols, and runs the right tool sequence under one token budget. `plan_turn` routes the turn before the first read.
-- **Ask structural questions grep can't answer.** `find_importers`, `get_blast_radius`, `get_call_hierarchy`, `find_dead_code`, `get_changed_symbols`, `get_hotspots`, `search_ast` anti-pattern sweeps, and more. Two of them sound alike and are not: `check_references` answers where a name is used (import sites plus every file whose content mentions it), `find_references` answers who imports it, over the import graph alone, so a call site is invisible to it.
-- **Preflight risky changes, and know when to stop.** `check_edit_safe`, `check_delete_safe`, `get_pr_risk_profile`, and `plan_refactoring` with edit-ready `{old_text, new_text}` blocks. The two safety checks return `stop_rule.terminal`: true means no further jcodemunch call moves the verdict, so re-running `find_importers` or `check_references` to be sure is wasted work. It means final, not safe. Hand the server your type checker's own output (`jcodemunch-mcp import-trace --diagnostics <file>`: `mypy --output json`, `pyright --outputjson`, `tsc --pretty false`, `ruff --output-format json`) and `check_edit_safe`, `get_changed_symbols`, `get_pr_risk_profile` and `get_symbol_provenance` say which symbols the checker already flags, as of which commit. Nothing runs a checker for you. False names the specific thing that would change the answer.
+- **Ask structural questions grep can't answer.** `find_importers`, `get_blast_radius`, `get_call_hierarchy`, `find_dead_code`, `get_changed_symbols`, `get_hotspots`, `search_ast` anti-pattern sweeps, and more. Two of them sound alike and are not: `check_references` answers where a name is used (import sites plus every file whose content mentions it), `find_references` answers who imports it, over the import graph alone, so a call site is invisible to it. `get_call_hierarchy` says which callers are direct: a deeper row names the caller it is reached from.
+- **Preflight risky changes, and know when to stop.** `check_edit_safe`, `check_delete_safe`, `get_pr_risk_profile`, and `plan_refactoring` with edit-ready `{old_text, new_text}` blocks. The two safety checks return `stop_rule.terminal`: true means no further jcodemunch call moves the verdict, so re-running `find_importers` or `check_references` to be sure is wasted work. It means final, not safe. `corpus_inadequate` (the index could not back an absence claim) and `dynamic_import_boundary` (a dynamic import, or for a .NET control or build item a path the index does not carry, can load the file) are never terminal, and each tool's description lists every verdict it returns. `check_rename_safe` answers `safe: null` rather than `true` when the import graph could not reach the symbol's file, so the files that use it were never checked, and `get_pr_risk_profile` answers `risk_score: null` with `unmeasurable_axes` when it could not measure the blast axis; a CI gate should fail on null. Hand the server your type checker's own output (`jcodemunch-mcp import-trace --diagnostics <file>`: `mypy --output json`, `pyright --outputjson`, `tsc --pretty false`, `ruff --output-format json`) and `check_edit_safe`, `get_changed_symbols`, `get_pr_risk_profile` and `get_symbol_provenance` say which symbols the checker already flags, as of which commit. Nothing runs a checker for you. False names the specific thing that would change the answer.
 - **Trust the answers.** Calibrated confidence scores, freshness flags, coverage contracts on absence claims, compiler-verified references via SCIP import, and automatic secret redaction before anything reaches the LLM.
 - **Keep the index fresh automatically.** Watch modes, agent hooks, and a VS Code extension close the staleness gap.
 
@@ -158,9 +162,10 @@ That's the highlight reel. The complete tour of the fork's 52 tools, the MUNCH c
 <!-- WHATSNEW:START -->
 #### What's new
 
-- **[v1.108.318](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.318)** (2026-09-11) — the process is code that cannot skip a step, and the field is measured from result files
-- **[v1.108.317](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.317)** (2026-09-04) — CI runs the harness on every change; publishing is a dispatched workflow
-- **[v1.108.316](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.316)** (2026-09-02) — A display preference edited the data it was displaying
+- **[v1.108.400](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.400)** (2026-10-27) — a text search returns the code it found, and a retired tool name says what replaced it
+- **[v1.108.399](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.399)** (2026-10-26) — four core tool descriptions open with the question each tool answers
+- **[v1.108.398](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.398)** (2026-10-25) — the semantic and all extras install a fixed filelock on every Python
+- **[v1.108.397](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.397)** (2026-10-24) — a cut search names the files it left off, and file_pattern takes braces
 <!-- WHATSNEW:END -->
 
 ---
@@ -214,6 +219,8 @@ Send it with the beta header `mcp-client-2025-11-20`. **Both halves are required
 
 The `configs` block above follows Anthropic's own advice — keep your 3–5 most-used tools resident so common requests skip the search round trip — and per-tool `configs` overrides `default_config`.
 
+A deferred tool is found by searching its name and description, so the core descriptions open with the question each tool answers, in the words an agent uses: `search_symbols` "find where a function, class or method is defined", `get_symbol_source` "read or show the source code", `get_call_hierarchy` "who calls this function or method", `check_references` "where is a function, class or other identifier used".
+
 Deferred definitions are excluded from the system-prompt prefix and appended inline as `tool_reference` blocks when Claude discovers them, **so prompt caching is preserved** — this is not the cache-invalidating kind of dynamic tool list. At least one tool in the request must stay non-deferred, or the API returns a 400.
 
 ⚠ **This is a different mechanism from our own `tool_surface: "counter"`**, and you do not need both. Tool search is host-side and works across every MCP server you have connected; the Counter is server-side, works on any host including ones with no tool-search support, and is what `init` configures on a first-ever install. Pick whichever your host supports — see [CONFIGURATION.md](CONFIGURATION.md#the-counter--collapse-to-a-3-tool-front-door-tool_surface) for the Counter and `jcodemunch-mcp surface` for what your install actually advertises.
@@ -222,7 +229,7 @@ Deferred definitions are excluded from the system-prompt prefix and appended inl
 
 ## Security, privacy, and background behavior
 
-Local-first by design: indexes live at `~/.code-index/`, and the base package's only default network behavior is an anonymous savings counter (random ID plus aggregate token counts, no code, no paths, no PII; opt out with `share_savings: false`). Everything the server does beyond answering a tool call (file watching, the opt-in login service, license validation, model downloads, org reporting) is opt-in or opt-out, visible, and reversible, and every item is enumerated in **[SECURITY.md](SECURITY.md#background-behavior-fully-disclosed)** alongside the path-traversal, symlink, and secret-redaction controls.
+Local-first by design: indexes live at `~/.code-index/`, and the base package's only default network behavior is an anonymous savings counter (random ID plus aggregate token counts, no code, no paths, no PII; opt out with `share_savings: false`). Everything the server does beyond answering a tool call (file watching, the opt-in login service, license validation, model downloads, org reporting) is opt-in or opt-out, visible, and reversible, and every item is enumerated in **[SECURITY.md](SECURITY.md#background-behavior-fully-disclosed)** alongside the path-traversal, symlink, and secret-redaction controls. A default `init` writes no policy file and installs no hook whose output the model reads; those are `init --policy` and `init --guidance`, and `init --remove-guidance` takes them back out of an older install.
 
 **Grammar pack override (#608).** The dependency `tree-sitter-language-pack` is pinned `<1.0.0` because the 0.x wheels bundle every grammar and parsing stays local. F# is the one exception: it is parsed by the pinned `tree-sitter-fsharp` wheel, which also compiles its grammar in, so F# parsing stays local on either pack (#848). You can override it with `pip install -U tree-sitter-language-pack` after installing; nothing in the code refuses it. What you accept, measured against 1.17.0 on 2026-09-11: the 1.x pack ships no grammars and fetches each one over the network into its cache directory (measured on Windows: `%LOCALAPPDATA%\tree-sitter-language-pack\v<version>\libs`; `jcodemunch-mcp install-status` prints the path on any platform) the first time a language is parsed, so an airgapped install parses nothing, and the `nim` grammar changed upstream, so nim files yield no symbols (the manifest also lacks `autohotkey`, `ejs` and `verse`, which costs nothing here: those three are parsed by jCodeMunch's own extractors, not by tree-sitter). An install on a 1.x pack says so: every `index_folder` result carries a `grammar_pack` block and a warning naming the version, the cache directory and each language whose grammar failed, and `jcodemunch-mcp install-status` prints the same. Dropping the pin is a separate decision that needs the offline story first.
 
@@ -303,11 +310,11 @@ Both keys change what the parser emits for *unchanged* files, so a change to eit
 
 jCodeMunch-MCP is released under the **jCodeMunch-MCP Dual-Use License** ([full terms](LICENSE)). **Free for non-commercial use. Commercial use requires a paid license**, one-time, sold by jMunch LLC via Stripe:
 
-**jCodeMunch-only:** [Builder, $79](https://jcodemunch.com/descriptions.php#builder) (1 developer) · [Studio, $349](https://jcodemunch.com/descriptions.php#studio) (up to 5) · [Platform, $1,999](https://jcodemunch.com/descriptions.php#platform) (org-wide internal deployment)
+**jCodeMunch-only:** [Builder, $79](https://jcodemunch.com/descriptions.php?utm_medium=readme&utm_campaign=jcm_readme_tiers#builder) (1 developer) · [Studio, $349](https://jcodemunch.com/descriptions.php?utm_medium=readme&utm_campaign=jcm_readme_tiers#studio) (up to 5) · [Platform, $1,999](https://jcodemunch.com/descriptions.php?utm_medium=readme&utm_campaign=jcm_readme_tiers#platform) (org-wide internal deployment)
 
-**Full jMunch suite (code + docs + data):** [Trio Builder, $99](https://jcodemunch.com/descriptions.php#builder) · [Trio Studio, $449](https://jcodemunch.com/descriptions.php#studio) · [Trio Platform, $2,499](https://jcodemunch.com/descriptions.php#platform)
+**Full jMunch suite (code + docs + data):** [Trio Builder, $99](https://jcodemunch.com/descriptions.php?utm_medium=readme&utm_campaign=jcm_readme_tiers#builder) · [Trio Studio, $449](https://jcodemunch.com/descriptions.php?utm_medium=readme&utm_campaign=jcm_readme_tiers#studio) · [Trio Platform, $2,499](https://jcodemunch.com/descriptions.php?utm_medium=readme&utm_campaign=jcm_readme_tiers#platform)
 
-Not sure it's worth it? Run your own numbers through the [ROI calculator](https://jcodemunch.com/roi.php?utm_source=github&utm_medium=readme&utm_campaign=jcm_readme_bottom), or forward [the finance-team version](https://jcodemunch.com/for-finance.php?utm_source=github&utm_medium=readme&utm_campaign=jcm_readme_bottom) to whoever signs off. The guarantee stands: if jCodeMunch doesn't pay for itself, you don't pay for jCodeMunch.
+Not sure it's worth it? Run your own numbers through the [ROI calculator](https://jcodemunch.com/roi.php?utm_medium=readme&utm_campaign=jcm_readme_bottom), or forward [the finance-team version](https://jcodemunch.com/for-finance.php?utm_medium=readme&utm_campaign=jcm_readme_bottom) to whoever signs off. The guarantee stands: if jCodeMunch doesn't pay for itself, you don't pay for jCodeMunch.
 
 Conditions on all uses: retain the copyright notice, clearly mark modifications and keep the original author's name intact (he's kinda full of himself), and include a prominent modification notice in source redistributions. The Software may not be renamed, rebranded, or published to any public package registry, and is provided "AS IS" without warranty. [LICENSE](LICENSE) controls.
 
@@ -316,7 +323,7 @@ Conditions on all uses: retain the copyright notice, clearly mark modifications 
 ## FAQ
 
 **How much can I save on Claude / Opus tokens?**
-In retrieval-heavy workflows, code-reading tokens typically drop 86-99%, benchmarked at 96.5% average (28.3x) against a grep-and-read agent across 15 tasks and 3 repositories. Per-query results span 7.6x to 81.2x. Methodology: [TOKEN_SAVINGS.md](TOKEN_SAVINGS.md) and [benchmarks/](benchmarks/).
+In retrieval-heavy workflows, code-reading tokens typically drop 86-99%, benchmarked at 96.2% average (26.5x) against a grep-and-read agent across 15 tasks and 3 repositories. Per-query results span 7.6x to 77.2x. Methodology: [TOKEN_SAVINGS.md](TOKEN_SAVINGS.md) and [benchmarks/](benchmarks/).
 
 **How is this different from RAG or grep-based tools?**
 jCodeMunch retrieves at the **symbol level** with byte-level precision (functions, classes, importers, blast radius, hierarchies) rather than fuzzy chunks (RAG) or raw line matches (grep) the agent still has to read and reason over.
@@ -325,8 +332,8 @@ jCodeMunch retrieves at the **symbol level** with byte-level precision (function
 Yes. Commercial use needs a license; see [above](#licensing-and-commercial-use).
 
 **Where's the deep-dive on X?**
-Capabilities: [CAPABILITIES.md](CAPABILITIES.md). Config: [CONFIGURATION.md](CONFIGURATION.md). Clients: [CLIENTS.md](CLIENTS.md). Internals: [UNDER_THE_HOOD.md](UNDER_THE_HOOD.md). Or the firehose: [jcodemunch.com](https://jcodemunch.com/).
+Capabilities: [CAPABILITIES.md](CAPABILITIES.md). Config: [CONFIGURATION.md](CONFIGURATION.md). Clients: [CLIENTS.md](CLIENTS.md). Internals: [UNDER_THE_HOOD.md](UNDER_THE_HOOD.md). Or the firehose: [jcodemunch.com](https://jcodemunch.com/?utm_medium=readme&utm_campaign=jcm_readme_docs).
 
 ---
 
-Extras: [OSS code-health observatory](https://jgravelle.github.io/jcodemunch-observatory/) (weekly six-axis snapshots of Express, FastAPI, Gin, Django, and friends) · [Token Cost Radar](https://jcodemunch.com/radar/) (daily AI token cost intelligence) · [jMunch Console](https://github.com/jgravelle/jmunch-console) (free MIT GUI for one-click upgrades)
+Extras: [OSS code-health observatory](https://jgravelle.github.io/jcodemunch-observatory/) (weekly six-axis snapshots of Express, FastAPI, Gin, Django, and friends) · [Token Cost Radar](https://jcodemunch.com/radar/?utm_medium=readme&utm_campaign=jcm_readme_extras) (daily AI token cost intelligence) · [jMunch Console](https://github.com/jgravelle/jmunch-console) (free MIT GUI for one-click upgrades)

@@ -34,8 +34,9 @@ src/jcodemunch_mcp/
     inference.py       # Groq API streaming + batch via OpenAI-compatible client
   parser/
     languages.py       # LANGUAGE_REGISTRY, extension → language map, LanguageSpec
-    extractor.py       # parse_file() dispatch; custom parsers for Erlang, Fortran, SQL, Razor
+    extractor.py       # parse_file() dispatch; custom parsers for Erlang, Fortran, SQL, Razor, ASP.NET Web Forms
     grammar_pack.py    # (#608) Which GENERATION of tree-sitter-language-pack is installed (bundled 0.x / download 1.x / absent) and what that costs; records a grammar-load failure per language, once, where the extractor used to swallow it as `[]`. A leaf that never calls the pack's network API: the unavailable-language list is what the extractor SAW fail, never a manifest lookup. Read by index_folder (warnings + `grammar_pack` block), evidence/capability.py (`grammar_source`) and install-status; on a bundled pack with no failures `notice()` is None so a 0.x result is byte-identical
+    parse_budget.py    # (L-114, L-116) The per-file parse budget, enforced in the parser: `armed()` opens one deadline per `parse_file` call (a nested call shares it), counted in the parsing thread's own time between parses and by tree-sitter's wall timer inside one; `bind()` wraps a parser so tree-sitter's own timeout stops the parse at the deadline, and a cancel swallowed by a dedicated parser is still raised by `parse_file`. `checkpoint()` is the Python side: the first statement of every loop in the modules a parse runs through (three exemptions, named in the test) and called where a `Symbol` is built; `parse_file` reads the deadline once more at its end; it raises inside a `parse_file` call once the deadline has passed, and is one attribute read outside one. Stdlib-only leaf; `ParseBudgetExceeded` lives here and `tools/_indexing_pipeline` re-exports it.
     fqn.py             # PHP FQN ↔ symbol_id translation (PSR-4); symbol_to_fqn(), fqn_to_symbol()
   encoding/
     __init__.py          # Dispatcher: encode_response(tool, response, format) — auto/compact/json
@@ -63,11 +64,12 @@ src/jcodemunch_mcp/
     find_importers.py  # Files that import a given file (import graph); cross_repo param
     find_references.py # Files that IMPORT or re-export a given identifier (import graph; who imports this). Not the usage-site tool: a call site is invisible to it, so `check_references.py` (imports + every content match) answers "where is this name used" (CF-51, CF-63, 2026-09-10). v1.108.96: _attach_scip_to_response unions SCIP compiler-verified reference edges (compile-time evidence P1)
     check_references.py # Where an identifier is USED: import sites plus every file whose content mentions it, in one call; is_referenced (bool) for a quick dead-code check. The tool the usage question routes to on every steering surface since 2026-09-10
+    check_rename_safe.py # Would renaming a symbol collide? Checks the symbol's own file and every file that imports it for the new name. `safe` is tri-state since #879: `null` with `unresolvable` when no importer was found and `blast_verdict` says the graph could not reach the file (a Go package import), so its users went unchecked
     test_summarizer.py # Diagnostic tool: probe AI summarizer, report status (disabled by default)
     package_registry.py # Cross-repo package registry: manifest parsing, registry building, specifier resolution
     get_cross_repo_map.py # Cross-repo dependency map at the package level
-    _call_graph.py       # Shared AST-derived call-graph helpers (callers/callees, BFS)
-    get_call_hierarchy.py # get_call_hierarchy: callers+callees for a symbol, N levels deep
+    _call_graph.py       # Shared AST-derived call-graph helpers (callers/callees, BFS); a BFS row deeper than 1 carries `via`, the row one level shallower
+    get_call_hierarchy.py # get_call_hierarchy: callers+callees for a symbol, N levels deep; rows ordered by depth, with direct and per-depth counts
     decision_context.py   # (v1.108.59) resolve_decision_context: read-only git-archaeology surfacer. Mines decision-bearing commits (revert/perf/refactor/rename/bugfix) for a set of files, reusing get_symbol_provenance's _run_git/_classify_commit/_extract_intent; dedupes by SHA, ranks by category weight × recency, emits digest + by_category + volatility + summary. Surface-only, nothing persisted. Consumed by get_blast_radius / get_impact_preview via include_decisions
     get_impact_preview.py # get_impact_preview: transitive "what breaks?" analysis. v1.108.59: include_decisions attaches a read-only `decisions` block (decision_context)
     plan_refactoring.py   # plan_refactoring: edit-ready plans for rename/move/extract/signature refactorings

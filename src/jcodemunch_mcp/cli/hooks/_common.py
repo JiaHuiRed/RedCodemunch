@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +132,43 @@ def _path_overlaps(root: str, source_roots: list[str]) -> bool:
 
     The ancestor case matters too: grepping a parent directory that *contains*
     an indexed repo is still a search jcm can serve.
+
+    A filesystem root already ends in a separator (`C:\\`, `/`), so appending
+    one more made the ancestor test fail for every root (L-195).
+
+    ⚠ (#1202) A path INSIDE an indexed root is served by it only if no separate
+    checkout sits between them: a linked worktree nested in the checkout
+    (``.claude/worktrees/<name>``) is another branch the index does not hold
+    (#372), and so is a nested independent clone. ``resolve_repo`` answers both
+    ``indexed: false``; steering toward the parent's index there would send the
+    agent to another branch's code.
     """
+    from ...path_prefix import dir_prefix  # noqa: PLC0415  (leaf, stdlib only)
+
     for sr in source_roots:
-        if root == sr or root.startswith(sr + os.sep) or sr.startswith(root + os.sep):
+        if root == sr or sr.startswith(dir_prefix(root)):
+            return True
+        if root.startswith(dir_prefix(sr)) and not _crosses_a_checkout(root, sr):
             return True
     return False
+
+
+def _crosses_a_checkout(path: str, source_root: str) -> bool:
+    """True when a linked worktree or independent repo lies between the two.
+
+    Stats only (``checkout_boundary`` is a stdlib leaf), so the per-call hook
+    cost is a few ``stat`` calls on the path's own ancestors. Any doubt is
+    False: a wrong True would switch steering off for an indexed file.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    from ...checkout_boundary import separate_checkout_between  # noqa: PLC0415
+
+    try:
+        return separate_checkout_between(Path(path), Path(source_root), worktrees=True) is not None
+    except Exception:
+        logger.debug("checkout boundary probe failed", exc_info=True)
+        return False
 
 
 def _repo_owner_name(entry: dict) -> "tuple[str, str]":
@@ -187,18 +220,61 @@ def _repo_contains_any(store, owner: str, name: str, files: list) -> bool:
         return True
 
 
-def _iter_loaded_repos(store, repos, wanted_files=None):
+# #1139 / L-219: the one size rule for a hook that hydrates on a synchronous
+# path (SubagentStart, PreCompact). Seeded, not calibrated: on the
+# maintainer's box (2026-10-19) a 50,320-symbol index hydrated in 0.86 s and
+# a 46,765-symbol one took 2.50 s of PageRank. An index above the cap, or of
+# unknown size, is not hydrated by a hook.
+HYDRATE_MAX_SYMBOLS = 100_000
+BUDGET_SECONDS = 3.0
+
+
+def _small_enough(symbol_count) -> bool:
+    """True only for a KNOWN count at or under the cap; unknown is not small."""
+    return (
+        isinstance(symbol_count, int)
+        and not isinstance(symbol_count, bool)
+        and 0 <= symbol_count <= HYDRATE_MAX_SYMBOLS
+    )
+
+
+def _too_large_note(entry: dict) -> str:
+    """Why an index was not hydrated: too large, or of unknown size."""
+    n = entry.get("symbol_count")
+    known = isinstance(n, int) and not isinstance(n, bool) and n >= 0
+    return "too large to load in a hook" if known else "index size unknown"
+
+
+def _iter_loaded_repos(store, repos, wanted_files=None, *, size_capped=False, skipped=None,
+                       stop_at=None, late=None):
     """Yield ``(repo_id, idx)`` for each loadable entry of ``list_repos()``.
 
     Membership and scoping guards stay with each caller — the landmark,
     taskcomplete and subagent loops genuinely differ there. ``wanted_files``
     skips hydrating repos whose index provably contains none of them.
+
+    ``size_capped=True`` applies the hook size rule (``_small_enough``): an
+    entry past the cap or of unknown size is not hydrated, and is appended to
+    ``skipped`` as ``(repo_id, entry)`` when a list is passed, so the caller
+    can say so instead of dropping it in silence. ``stop_at`` is a
+    ``time.monotonic()`` deadline: past it, no further index is loaded, and
+    each one not started is appended to ``late``.
     """
     for entry in repos:
         owner, name = _repo_owner_name(entry)
         if not owner or not name:
             continue
         if wanted_files and not _repo_contains_any(store, owner, name, wanted_files):
+            continue
+        if size_capped and not _small_enough(entry.get("symbol_count")):
+            if skipped is not None:
+                skipped.append((f"{owner}/{name}", entry))
+            continue
+        # Checked BEFORE the load: a hydration cannot be interrupted once it
+        # starts, so a deadline checked after it has already paid for it.
+        if stop_at is not None and time.monotonic() > stop_at:
+            if late is not None:
+                late.append(f"{owner}/{name}")
             continue
         try:
             idx = store.load_index(owner, name)
@@ -236,3 +312,36 @@ def _top_symbols_by_pagerank(idx, *, n_files: int, n_syms: int):
     ]
     symbol_pr.sort(key=lambda x: x[1], reverse=True)
     return symbol_pr[:n_syms]
+
+
+def tool_surface() -> str:
+    """Effective ``tool_surface`` as the MCP server would resolve it (env wins,
+    then config). Best-effort: any failure reads as ``full``.
+
+    Duplicates the resolution order of ``server._effective_surface()`` on
+    purpose: importing the server module here would put its full import cost
+    in front of every subagent spawn, and this hook only needs the one key.
+
+    Reads via ``config.get`` — NOT ``load_config()``, which returns None (its
+    job is populating the module global) and, worse, defaults to
+    ``create_missing=True``: a config READ from a hook process must never
+    WRITE a config file into the user's storage dir (Maintenance Practice 8).
+    ``config.get``'s lazy load passes ``create_missing=False`` for exactly
+    that reason, and its env-var fallback layer already honors
+    ``JCODEMUNCH_TOOL_SURFACE``.
+    """
+    # counter.resolve_tool_surface is the one authority for precedence and
+    # validation (env wins; unrecognized serves "full"). The env pre-check
+    # also skips the config import entirely when the env var decides —
+    # config.get's own env layer is only a FALLBACK, so it cannot be used
+    # for the precedence half.
+    env = os.environ.get("JCODEMUNCH_TOOL_SURFACE")
+    try:
+        from ...counter import resolve_tool_surface
+        if (env or "").strip():
+            return resolve_tool_surface(env, None)[0]
+        from ...config import get as _config_get
+        return resolve_tool_surface(None, _config_get("tool_surface"))[0]
+    except Exception:
+        logger.debug("tool_surface resolution failed", exc_info=True)
+        return "full"

@@ -1,14 +1,13 @@
 """Shared indexing pipeline used by index_folder, index_file, and index_repo."""
 
 import logging
-import os
-import threading
 from collections import defaultdict
 from typing import Optional
 
 from ..parser import cached_parse_file as parse_file, get_language_for_path
 from ..parser.context import ContextProvider, enrich_symbols, collect_extra_imports
 from ..parser.imports import extract_imports
+from ..parser.parse_budget import ParseBudgetExceeded  # noqa: F401  (re-exported: callers catch it by this path)
 from ..parser.symbols import Symbol
 from ..summarizer import summarize_symbols, generate_file_summaries
 
@@ -18,68 +17,25 @@ logger = logging.getLogger(__name__)
 # whole index: without this, a grammar that degrades on some particular shape
 # (a minified bundle, a generated blob, a deeply nested literal) stalls the run
 # with no output and no name to blame.
-_DEFAULT_PARSE_BUDGET_SECONDS = 20.0
-
-# The watchdog costs a thread per file, so it is only armed for files large
-# enough to plausibly hit the ceiling. Below this, parsing runs inline exactly
-# as before — the common path is untouched, and a 2 KB file that somehow takes
-# 20s is a bug we want to see rather than paper over.
-_PARSE_WATCHDOG_MIN_BYTES = 131072
-
-
-class ParseBudgetExceeded(Exception):
-    """Raised when a single file's parse overruns its wall-clock budget."""
-
-
-def _parse_budget_seconds() -> float:
-    """Per-file parse budget; ``0`` or negative disables the ceiling."""
-    raw = os.environ.get("JCODEMUNCH_PARSE_BUDGET_SECONDS")
-    if raw is None:
-        return _DEFAULT_PARSE_BUDGET_SECONDS
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        logger.warning(
-            "Ignoring non-numeric JCODEMUNCH_PARSE_BUDGET_SECONDS=%r; using %.1fs",
-            raw, _DEFAULT_PARSE_BUDGET_SECONDS,
-        )
-        return _DEFAULT_PARSE_BUDGET_SECONDS
+#
+# ⚠⚠ The ceiling is NOT here. It is `parser/parse_budget.py`, inside
+# `parse_file`, in the parsing thread: tree-sitter's own timeout for the parse
+# (L-114) and a checkpoint in every loop of the parse path for the Python side
+# (L-116).
+# This module used to wrap `parse_file` in a thread and wait on it. That wait
+# could not stop a parse (the parse holds the GIL), charged a file for time
+# another thread held the GIL, and left its worker running after the caller had
+# been told the file was skipped. Do not bring a second thread back.
 
 
 def parse_file_budgeted(content: str, rel_path: str, language: str, repo=None) -> list:
-    """``parse_file`` with a wall-clock ceiling on large files.
+    """``parse_file``. The budget is enforced inside it, on this thread.
 
-    Raises ``ParseBudgetExceeded`` on overrun so the caller's existing
-    parse-error handling names the file in ``warnings`` and moves on. The
-    abandoned parse thread keeps running — tree-sitter is C code and cannot be
-    interrupted — so this bounds the INDEX, not the CPU. That is the trade:
-    one file's cost becomes bounded latency plus a named skip, instead of an
-    unbounded stall with nothing to point at.
+    Kept as the name the three pipeline routes call. Raises
+    ``ParseBudgetExceeded`` on overrun, which their parse-error handling turns
+    into a warning naming the file.
     """
-    budget = _parse_budget_seconds()
-    if budget <= 0 or len(content) < _PARSE_WATCHDOG_MIN_BYTES:
-        return parse_file(content, rel_path, language, repo=repo)
-
-    box: dict = {}
-
-    def _target() -> None:
-        try:
-            box["symbols"] = parse_file(content, rel_path, language, repo=repo)
-        except BaseException as exc:  # noqa: BLE001 — re-raised to the caller
-            box["exc"] = exc
-
-    worker = threading.Thread(target=_target, daemon=True)
-    worker.start()
-    worker.join(budget)
-    if worker.is_alive():
-        raise ParseBudgetExceeded(
-            f"parse exceeded the {budget:g}s budget ({len(content):,} chars, "
-            f"{language}); file skipped and its symbols are absent from this "
-            f"index. Raise JCODEMUNCH_PARSE_BUDGET_SECONDS to allow more time."
-        )
-    if "exc" in box:
-        raise box["exc"]
-    return box.get("symbols") or []
+    return parse_file(content, rel_path, language, repo=repo)
 
 
 def file_languages_for_paths(
@@ -122,7 +78,7 @@ def complete_file_summaries(
                 for provider in providers:
                     ctx = provider.get_file_context(file_path)
                     if ctx is not None:
-                        summary = ctx.file_summary()
+                        summary = ctx.file_summary(include_properties=provider.properties_are_search_terms)
                         if summary:
                             generated[file_path] = summary
                             break
@@ -249,7 +205,7 @@ def deferred_summarize(
     for s in symbols:
         symbols_map[s.file].append(s)
     # Call AI summarizer
-    summarized = summarize_symbols(symbols, use_ai=True, repo=repo)
+    summarized = summarize_symbols(symbols, use_ai=True, repo=repo, source_for=file_contents.get)
     logger.debug("Deferred summarization complete for %d symbols", len(summarized))
     return summarized
 
@@ -314,7 +270,7 @@ def parse_and_prepare_incremental(
         enrich_symbols(new_symbols, providers)
 
     # 3. Summarize (repo passed for project-aware config reads, #304)
-    new_symbols = summarize_symbols(new_symbols, use_ai=use_ai_summaries, repo=repo)
+    new_symbols = summarize_symbols(new_symbols, use_ai=use_ai_summaries, repo=repo, source_for=file_contents.get)
 
     # 4. Build symbols-by-file map, file summaries, file languages
     symbols_map: dict[str, list] = defaultdict(list)
@@ -356,6 +312,9 @@ def _split_for_summarization(
     existing summary onto the symbol and places it in ``already_summarized``.  All
     other symbols go into ``needs_summary`` and will be sent to the AI summarizer.
 
+    ``existing_summaries`` comes from `preservable_summaries`, which has already
+    left out every stored summary that is free to recompute.
+
     Returns:
         (needs_summary, already_summarized)
     """
@@ -370,6 +329,48 @@ def _split_for_summarization(
                 continue
         needs_summary.append(sym)
     return needs_summary, already_summarized
+
+
+def preservable_summaries(
+    existing_symbols: list[dict], unchanged_files: set[str]
+) -> dict[tuple[str, str, str], str]:
+    """(file, name, kind) -> stored summary worth carrying into a re-index.
+
+    THE ONE place both full re-index paths (`index_folder`, `index_repo`) decide
+    which stored summaries to reuse for files whose content did not change.
+
+    ⚠⚠ A summary that was free to produce is NOT carried over (see
+    `_stored_summary_was_free`). Reuse is what a PARSER_GENERATION re-parse of an
+    unchanged file does, so a summary an older rule derived from the docstring
+    would otherwise survive every bump that changes the rule (Standing lesson
+    08-05, "fixing a producer does not fix its history").
+    """
+    return {
+        (s["file"], s["name"], s["kind"]): s["summary"]
+        for s in existing_symbols
+        if s.get("summary")
+        and s.get("file") in unchanged_files
+        and not _stored_summary_was_free(s)
+    }
+
+
+def _stored_summary_was_free(row: dict) -> bool:
+    """True when a stored summary can only have come from a rule that costs nothing.
+
+    Preservation exists to avoid re-billing an AI summarizer, and every AI
+    `summarize_batch` skips a symbol that has a docstring -- so a summary stored
+    beside a docstring is Tier 1 (the docstring rule) or Tier 3 (the signature
+    fallback), both deterministic and free, and recomputing it is what lets a
+    change to the docstring rule reach an index whose files did not change.
+
+    ⚠⚠ Asks the STORED row, never the new parse: the summary was produced
+    against the docstring it was stored with. A parser change that turns an
+    empty docstring into a non-empty one must not discard the paid AI summary
+    the empty one earned. ⚠ Keyed on the property, not on how one stale value is
+    spelled: a refusal matching `<summary` alone kept every other summary the
+    docstring rule had also corrected.
+    """
+    return bool(row.get("docstring"))
 
 
 def parse_and_prepare_full(
@@ -449,10 +450,10 @@ def parse_and_prepare_full(
                 "Summary preservation: %d symbols reuse existing, %d need AI summarization",
                 len(already_summarized), len(needs_summary),
             )
-            summarized = summarize_symbols(needs_summary, use_ai=use_ai_summaries, repo=repo) if needs_summary else []
+            summarized = summarize_symbols(needs_summary, use_ai=use_ai_summaries, repo=repo, source_for=file_contents.get) if needs_summary else []
             all_symbols = summarized + already_summarized
         else:
-            all_symbols = summarize_symbols(all_symbols, use_ai=use_ai_summaries, repo=repo)
+            all_symbols = summarize_symbols(all_symbols, use_ai=use_ai_summaries, repo=repo, source_for=file_contents.get)
 
     # 4. Rebuild symbols_by_file after summarization (summaries may update fields)
     file_symbols_map: dict[str, list] = defaultdict(list)

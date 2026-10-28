@@ -1,19 +1,28 @@
 """SubagentStart: condensed, surface-aware repo orientation."""
 
 import logging
-import os
+import time
 
 from ._common import (
+    tool_surface,
+    BUDGET_SECONDS,
+    HYDRATE_MAX_SYMBOLS,  # noqa: F401  (re-exported; #1139's tests read it here)
     _emit_additional_context,
     _iter_loaded_repos,
     _top_symbols_by_pagerank,
+    _crosses_a_checkout,
     _norm_path,
     _note_transcript_root,
-    _path_overlaps,
     _read_hook_payload,
+    _small_enough,
+    _too_large_note,
 )
 
 logger = logging.getLogger(__name__)
+
+# #1139: the size rule and the budget are `_common`'s, shared with the
+# landmarks section (L-219); only the listing cap is the briefing's own.
+MAX_LISTED_REPOS = 10
 
 
 def run_subagentstart() -> int:
@@ -41,27 +50,31 @@ def run_subagentstart() -> int:
     if not repos:
         return 0
 
-    # Scope to the repo(s) containing the subagent's cwd when it names one:
-    # hydrating + PageRanking EVERY indexed repo per spawn is minutes-scale on
-    # big multi-repo boxes, and a briefing about unrelated repos is noise.
-    # No cwd (or no overlap) keeps the brief-everything fallback.
-    cwd = data.get("cwd", "")
-    if isinstance(cwd, str) and cwd:
-        try:
-            norm_cwd = _norm_path(cwd)
-            scoped = [
-                e for e in repos
-                if (sr := (e.get("source_root") or "").strip())
-                and _path_overlaps(norm_cwd, [_norm_path(sr)])
-            ]
-            if scoped:
-                repos = scoped
-        except Exception:
-            logger.debug("cwd scoping failed", exc_info=True)
+    # #1139: this runs synchronously on the agent-startup path, so its cost
+    # must be bounded. At most ONE index is hydrated (the most specific root
+    # containing the cwd), only when list_repos() says it is small, and
+    # PageRank is skipped once the budget is spent. Everything else is
+    # briefed from the counts list_repos() already read.
+    started = time.monotonic()
+    hydrate, listed = _select_repos(repos, data.get("cwd"))
 
     parts = ["## jCodemunch Repo Briefing"]
 
-    for repo_id, idx in _iter_loaded_repos(store, repos):
+    for entry in listed[:MAX_LISTED_REPOS]:
+        parts.extend(_stats_lines(entry))
+    if len(listed) > MAX_LISTED_REPOS:
+        parts.append(
+            f"\n... and {len(listed) - MAX_LISTED_REPOS} more indexed repos "
+            "under this directory."
+        )
+
+    small = [e for e in hydrate if _small_enough(e.get("symbol_count"))]
+    for entry in hydrate:
+        if entry not in small:
+            # UNKNOWN is not "too large": `_too_large_note` says which.
+            parts.extend(_stats_lines(entry, note=f"stats only: {_too_large_note(entry)}"))
+
+    for repo_id, idx in _iter_loaded_repos(store, small):
         # Stats
         n_files = len(idx.source_files)
         n_symbols = len(idx.symbols)
@@ -75,7 +88,12 @@ def run_subagentstart() -> int:
         parts.append(f"\n### {repo_id}")
         parts.append(f"- **Files:** {n_files} | **Symbols:** {n_symbols} | **Languages:** {lang_str}")
 
-        # Top central symbols via PageRank
+        # Top central symbols via PageRank, only inside the budget. A
+        # hydration cannot be interrupted once started; PageRank can be
+        # skipped, and on a large import graph it costs more than the load.
+        if time.monotonic() - started > BUDGET_SECONDS:
+            parts.append("- **Key symbols:** skipped (briefing time budget spent)")
+            continue
         try:
             sym_pr = _top_symbols_by_pagerank(idx, n_files=30, n_syms=15)
             if sym_pr:
@@ -117,34 +135,54 @@ def run_subagentstart() -> int:
     return _emit_additional_context("SubagentStart", "\n".join(parts))
 
 
-def _tool_surface() -> str:
-    """Effective ``tool_surface`` as the MCP server would resolve it (env wins,
-    then config). Best-effort: any failure reads as ``full``.
+def _select_repos(repos: list, cwd) -> "tuple[list, list]":
+    """``(hydrate, listed)`` for a SubagentStart cwd (#1139).
 
-    Duplicates the resolution order of ``server._effective_surface()`` on
-    purpose: importing the server module here would put its full import cost
-    in front of every subagent spawn, and this hook only needs the one key.
-
-    Reads via ``config.get`` — NOT ``load_config()``, which returns None (its
-    job is populating the module global) and, worse, defaults to
-    ``create_missing=True``: a config READ from a hook process must never
-    WRITE a config file into the user's storage dir (Maintenance Practice 8).
-    ``config.get``'s lazy load passes ``create_missing=False`` for exactly
-    that reason, and its env-var fallback layer already honors
-    ``JCODEMUNCH_TOOL_SURFACE``.
+    - cwd at or inside an indexed root: hydrate the DEEPEST such root only.
+      An ancestor index also contains the cwd and is the broad scope the
+      report measured, so it is not briefed. A root does not contain a cwd
+      that sits in a linked worktree or independent repo nested inside it
+      (#1202): that is another branch, and resolve_repo answers it
+      ``indexed: false``.
+    - cwd an ancestor of indexed roots (and inside none): list those roots
+      from their counts, hydrate nothing.
+    - cwd missing, not a string, or matching nothing: nothing. A briefing of
+      every repo on the box is the fallback that cost minutes.
     """
-    # counter.resolve_tool_surface is the one authority for precedence and
-    # validation (env wins; unrecognized serves "full"). The env pre-check
-    # also skips the config import entirely when the env var decides —
-    # config.get's own env layer is only a FALLBACK, so it cannot be used
-    # for the precedence half.
-    env = os.environ.get("JCODEMUNCH_TOOL_SURFACE")
+    if not isinstance(cwd, str) or not cwd.strip():
+        return [], []
     try:
-        from ...counter import resolve_tool_surface
-        if (env or "").strip():
-            return resolve_tool_surface(env, None)[0]
-        from ...config import get as _config_get
-        return resolve_tool_surface(None, _config_get("tool_surface"))[0]
+        from ...path_prefix import dir_prefix  # noqa: PLC0415  (leaf, stdlib only)
+
+        here = _norm_path(cwd)
+        containing, below = [], []
+        for e in repos:
+            sr = (e.get("source_root") or "").strip()
+            if not sr:
+                continue
+            root = _norm_path(sr)
+            if here == root or (here.startswith(dir_prefix(root)) and not _crosses_a_checkout(here, root)):
+                containing.append((len(root), e))
+            elif root.startswith(dir_prefix(here)):
+                below.append(e)
+        if containing:
+            return [max(containing, key=lambda t: t[0])[1]], []
+        return [], sorted(below, key=lambda e: e.get("repo") or "")
     except Exception:
-        logger.debug("tool_surface resolution failed", exc_info=True)
-        return "full"
+        logger.debug("cwd scoping failed", exc_info=True)
+        return [], []
+
+
+def _stats_lines(entry: dict, note: str = "") -> list:
+    """A repo's briefing from list_repos() counts alone: no hydration."""
+    lines = [f"\n### {entry.get('repo') or '?'}"]
+    files, syms = entry.get("file_count"), entry.get("symbol_count")
+    stats = f"- **Files:** {files if files is not None else '?'} | **Symbols:** {syms if syms is not None else '?'}"
+    lines.append(f"{stats} ({note})" if note else stats)
+    return lines
+
+
+# The one hook-side reader of the served surface (moved to _common so the
+# steering hook reads it the same way; kept under this name because tests
+# patch it here).
+_tool_surface = tool_surface

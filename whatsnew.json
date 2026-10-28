@@ -1,29 +1,143 @@
 {
-  "current": "1.108.319",
+  "current": "1.108.400",
   "entries": [
     {
-      "version": "1.108.319",
-      "date": "2026-09-16",
-      "title": "the numbers a competitor published about us were right, and so was the refusal we had shipped over twice",
-      "summary": "A benchmark run by someone else, against our own tool, named two real defects. TypeScript and TSX never indexed an `abstract class` at all, because the grammar spells it as a node type neither language spec listed, so every abstract class was absent and its methods lost their owner (#698). And `search_symbols` cut its page with a heap keyed on score alone, so an exact-name match could be evicted outright by same-named locals declared inside function bodies -- not ranked lower, absent (#699); all three cut sites read one rule now. Beside them, `/release` step 4 had refused three consecutive releases on the same six benchmark rows and two shipped over it: the per-repo cells in both READMEs are derived from `benchmarks/jcm_reference.json` now, and a ratchet gates the cells a reader actually reads rather than the grand total everyone remembers to update. Also in the block: `get_tectonic_map` partitions by Louvain instead of returning one plate holding most of the repository (#668) and its co-churn signal runs and says when it cannot be trusted (#667), changed paths resolve when the index is rooted below the git top level (#685), a triage result the model cannot produce is escalated instead of retried forever (#670), committing a tree no longer invalidates the full-tier stamp taken on it (#675), the inbound jobs that bill a model have their own switch and it is off, and `import-trace --diagnostics` maps a checker's own output to the symbol it names."
+      "version": "1.108.400",
+      "date": "2026-10-27",
+      "title": "a text search returns the code it found, and a retired tool name says what replaced it",
+      "summary": "When search_text's matches fall inside a few small functions or classes, the page carries each one's source once, so an agent can edit without opening the file. Calling get_symbol or get_symbols, retired in March, now returns an error naming get_symbol_source and its argument."
     },
     {
-      "version": "1.108.318",
-      "date": "2026-09-11",
-      "title": "the process is code that cannot skip a step, and the field is measured from result files",
-      "summary": "Three layers ship in this block, every one off by default where it can act: the workflows layer (seven Claude Code commands and the hooks that refuse a commit without the fast tier, a PR without a full-tier run on the tree it describes, and every irreversible verb), the inbound layer (nine headless jobs that draft and never post, the model never holding a token that can write) and the competitive tier (the null alternatives, jCodeMunch and nine competitors over pinned corpora in a sandbox, every recorded number written by a script from a result file). Beside them: the usage-site question reaches the tool that answers it (CF-63), a failed embedding batch names its cause (CF-66), the watcher's startup and its deletion reconciliation (#641, #629, @marcelruhf), a notice for installs on tree-sitter-language-pack 1.x (#608, @kecsap), the CodeQL triage's fixes (#628) and an sdist without `.github/`."
+      "version": "1.108.399",
+      "date": "2026-10-26",
+      "title": "four core tool descriptions open with the question each tool answers",
+      "summary": "search_symbols, get_symbol_source, get_call_hierarchy and check_references now open with the question each answers, so a host that searches tool names and descriptions can match them. The counter instructions add a line for an issue that names its code."
     },
     {
-      "version": "1.108.317",
-      "date": "2026-09-04",
-      "title": "CI runs the harness on every change; publishing is a dispatched workflow",
-      "summary": "The eight workflows are five: `pr-gate.yml` (five staged jobs, every one a required check on `main` by name), `main.yml` (full witness + online bench after a merge, a `regression` issue per failing Floor, a weekly results PR), `nightly.yml` (the matrix with fresh corpora, `drift` issues),"
+      "version": "1.108.398",
+      "date": "2026-10-25",
+      "title": "the semantic and all extras install a fixed filelock on every Python",
+      "summary": "pip install \"jcodemunch-mcp[semantic]\" on Python 3.10 took filelock 4.1.0, which has published advisories. The semantic and all extras now pin filelock 3.20.3 on Python 3.10 and require 4.2.1 or later on 3.11 and up."
     },
     {
-      "version": "1.108.316",
-      "date": "2026-09-02",
-      "title": "A display preference edited the data it was displaying",
-      "summary": "Reported by @rknighton, twice: #570 for the crash and #572 for the cause, with a standard-library reproduction that builds its own repo and needs no fixtures. `cache_put` stored the caller's dict and `cache_get` returned that same dict, so the dispatcher's metadata step — a DISPLAY preference — reached into the session"
+      "version": "1.108.397",
+      "date": "2026-10-24",
+      "title": "a cut search names the files it left off, and file_pattern takes braces",
+      "summary": "When search_text stops at max_results it lists the matching files it left off, with a count each (at most 20, with a total). file_pattern expands brace alternation such as a/{b,c}/**, bounded; a literal-brace path still matches."
+    },
+    {
+      "version": "1.108.396",
+      "date": "2026-10-23",
+      "title": "the first search on a large repository resolves each import once",
+      "summary": "The first search in a process resolves each distinct import once per file set instead of once per importing file. On a copy of the home-assistant/core index the first search_symbols took 24.4 s instead of 102.2 s, with identical import resolution."
+    },
+    {
+      "version": "1.108.395",
+      "date": "2026-10-22",
+      "title": "a text match says which function it is in",
+      "summary": "search_text and check_references give each match the innermost function, method or class around it, as in: {id, line, end_line}. search_text reports truncated and timed_out in the response body, and a file_pattern that matches no file returns a note saying nothing was searched."
+    },
+    {
+      "version": "1.108.394",
+      "date": "2026-10-22",
+      "title": "index_dependency validates package paths",
+      "summary": "index_dependency accepts only package names and reads only what is installed inside the repo: every package directory and its metadata must resolve inside the repo and be one package, the snapshot stays one directory in the store, and the copy skips secret, oversize, binary, symlinked and repo-gitignored files. index_folder(paths=...) honors .gitignore like a full index."
+    },
+    {
+      "version": "1.108.393",
+      "date": "2026-10-22",
+      "title": "a default install adds nothing to the model's context",
+      "summary": "A default `init` registers the server and installs only the hooks whose output the model never sees; the policy pastes (`--policy`) and the model-facing hooks (`--guidance`) are opt-in, an existing install keeps what it has, and `init --remove-guidance` removes them with backups. A question about how code works ranks functions, classes and methods above fields and UPPER_CASE constants that share a word with it, unless the query names values. The published token benchmark is re-measured: a lookup now fetches the code a question is about, so the headline against a grep-and-read agent moves from 96.6% (29.2x) to 96.2% (26.5x)."
+    },
+    {
+      "version": "1.108.392",
+      "date": "2026-10-22",
+      "title": "a warning in a tool's answer survives the compact encoding",
+      "summary": "A warning in a tool's answer, and its negative_evidence, now survive the compact encoding on a default install, where they were dropped; if any declared key would still be lost the answer falls back to JSON. A question about code ranks code above settings files: symbols from YAML, TOML, JSON and XML files and from stylesheets count for half unless the query names configuration or styling. get_call_hierarchy says which callers are direct (depth 1) and, for an indirect one, which row it is reached from (via), with direct_caller_count beside caller_count."
+    },
+    {
+      "version": "1.108.391",
+      "date": "2026-10-21",
+      "title": "a question about how code works ranks the code above its tests",
+      "summary": "A question about how code works now ranks the code above its tests: function words such as \"how\" and \"does\" count less in a multi-word question (never in a name), and test-file symbols rank below source code unless the query is about tests. A git worktree nested inside an indexed checkout (such as .claude/worktrees/x) is no longer given that checkout's index, in resolve_repo and in the session hooks. The .windsurfrules backup is named .windsurfrules.bak."
+    },
+    {
+      "version": "1.108.390",
+      "date": "2026-10-21",
+      "title": "the local embedding model is pinned and checked before it is used",
+      "summary": "The optional local embedding model is now downloaded from one fixed upstream revision and each file is checked against a pinned SHA-256 before it is used. A download goes to a temporary file and replaces the real one only after it matches, so an interrupted download no longer leaves a truncated model that later runs would load, and download-model re-checks a copy already on disk. The stated download size is corrected to about 90 MB. Pillow is no longer installed on Python 3.10, where no patched release exists; the groq-explain and all extras install Pillow 13 or newer on Python 3.11 and later."
+    },
+    {
+      "version": "1.108.389",
+      "date": "2026-10-21",
+      "title": "the core tools load up front where clients defer MCP tools",
+      "summary": "In clients that defer MCP tools, Claude Code among them by default, jcodemunch's core tools now load up front (route, menu and order on the default surface; the six core tools on the full surface), so the agent can use them from the first turn without a tool-search step. On stdio, the server's startup note says \"This repo is indexed by jcodemunch (N files)\" when the working directory was indexed. The steering hook names only tools the active surface publishes and says how to load order when it isn't loaded, and init reads the tool surface the way the server serves it."
+    },
+    {
+      "version": "1.108.388",
+      "date": "2026-10-21",
+      "title": "the license names jMunch, LLC, and the product says \"license\"",
+      "summary": "LICENSE moves to version 1.2, effective 2026-10-21: the copyright holder is now jMunch, LLC. The terms are word for word those of 1.1, and the SPDX identifier is unchanged, so nobody who allowlists it has to approve it again. The product now spells the word \"license\" everywhere a buyer reads it, and `jcodemunch-mcp license` with a rejected key points to j@gravelle.us for help instead of stopping at the error."
+    },
+    {
+      "version": "1.108.387",
+      "date": "2026-10-21",
+      "title": "a licensed install is not shown a sales line",
+      "summary": "init no longer ends with the $79 commercial-license line, and install-pack's listing no longer ends with \"Get a license\", when a license key is configured; jMunch promises paid clients they are never marketed to. The license command shows a pricing link (in text and in --json) only to an install with no key, and a valid Builder key reads \"Team features (org-rollup): not included in your license\". The gate reads the key and never validates it, so init still makes no network call. Also: certifi and Pillow lock updates for published advisories."
+    },
+    {
+      "version": "1.108.386",
+      "date": "2026-10-20",
+      "title": "the AI summary prompt can carry each symbol's own source, opt-in",
+      "summary": "summarizer_body_chars (default 0, off) lets the AI summary prompt carry up to that many characters of each symbol's indexed source plus its decorators, so a summary can say what a function does rather than what its signature suggests. The body goes to a non-local provider only when allow_remote_summarizer is true; it is redacted before it is cut. Contributed by @skibadubskiybadubs (#1175, #1179). Also: a Flask route declared with methods= reports the verbs it serves instead of GET (#1177), the prompt's Context: lines keep one order on every run (#1178), and a deferred AI summary writes the summary column and nothing else, so complexity and call references survive it (L-227)."
+    },
+    {
+      "version": "1.108.385",
+      "date": "2026-10-19",
+      "title": "a summary written by another process reaches this one's searches",
+      "summary": "A summary written by another process (a second server, a script) never reached this process's search cache, whose key held indexed_at, which a summary write leaves alone; a journal restored after an offline refresh served old summaries too. update_symbol_summaries now advances a summaries_generation counter in the same transaction and the cache key carries it. Also: an index read back in the process that saved it keeps ecosystem_context (L-224), and the README and registry description name the benchmark behind the 96.6% figure."
+    },
+    {
+      "version": "1.108.384",
+      "date": "2026-10-19",
+      "title": "the watcher no longer polls trees nothing indexes",
+      "summary": "Under WSL the file watcher polls every directory its census returns, and the census pruned only the built-in skip names, so it polled gitignored trees, caches and virtualenvs nothing indexes (96,191 entries across 23 repos in the report). The census and discovery now share one directory rule, which also prunes a gitignored or extra-ignored directory when everything below it would be ignored. discovery_skip_counts gains gitignored_dir and extra_ignore_dir. Reported by @yagiii1344 (#1163). Also: a search repeated after summarize_repo now serves the new summaries; the summary write evicts that repository from the search cache in the same process (L-226)."
+    },
+    {
+      "version": "1.108.383",
+      "date": "2026-10-19",
+      "title": "refreshing summaries no longer erases complexity and the call graph",
+      "summary": "summarize_repo(force=true), the documented way to refresh AI summaries, rewrote every symbol row and stored NULL in the fields its converter did not copy: cyclomatic, max_nesting, param_count and call_references. get_hotspots then returned [] and get_symbol_complexity said the data was unavailable. A refresh now writes only the summaries that changed, never onto a body a re-index changed meanwhile (reported as not_written). Reported by @SlimLemon (#1161)."
+    },
+    {
+      "version": "1.108.382",
+      "date": "2026-10-19",
+      "title": "a task capsule's risk entry carries the PR's real risk score",
+      "summary": "assemble_task_context copies get_pr_risk_profile's verdict into the capsule for review and audit tasks, and it read three keys the profile never published, so every capsule's risk entry said 0, \"\" and {} whatever the change. It now carries the real risk_score, risk_level and signal_breakdown; a score the profile withholds stays null with unmeasurable_axes beside it, and the list of files the import graph could not walk is capped at 20 with its total."
+    },
+    {
+      "version": "1.108.381",
+      "date": "2026-10-19",
+      "title": "one repository's index can no longer replace or stand in for another's",
+      "summary": "Two repositories whose owner and name join to the same <owner>-<name>, such as foo-bar/baz and foo/bar-baz, shared one index file, so indexing the second silently replaced the first and reads served its source under the first's name. The store now checks which repository each index belongs to before it writes, serves or deletes it, and refuses across a mismatch with an error naming both. Reported by mich3333."
+    },
+    {
+      "version": "1.108.380",
+      "date": "2026-10-19",
+      "title": "compacting a session no longer waits on a large index's landmarks",
+      "summary": "Before Claude Code compacts a conversation, jCodeMunch's PreCompact hook builds a Structural Landmarks section, and Claude Code waits for it. That section loaded and ranked every index holding a file the session touched, with no size cap or time limit. It now uses the same limits as the agent briefing (indexes over 100,000 symbols or of unknown size are skipped, and no index is started after 3 seconds), and it lists any index it skipped and why."
+    },
+    {
+      "version": "1.108.379",
+      "date": "2026-10-19",
+      "title": "a spawned agent no longer waits minutes for its jCodeMunch briefing",
+      "summary": "The SubagentStart hook briefed every index whose folder overlapped the agent's, and every index on the machine when nothing matched, loading and ranking each one before the agent could start; one report measured a 90-second median and 533 seconds at worst. It now loads at most one index (the most specific one containing the agent's folder, and only if it is small), describes everything else from counts it already has, briefs no repo when nothing matches, and stops ranking after 3 seconds. Reported by treyecollins (#1139)."
+    },
+    {
+      "version": "1.108.378",
+      "date": "2026-10-18",
+      "title": "install-pack's licence lookup writes no config file",
+      "summary": "install-pack without --license looked up your licence key in a way that could create a default config.jsonc when none existed, and that file could pin a new user to the full tool surface. The lookup now reads the config without ever writing one; --license, JCODEMUNCH_LICENSE_KEY and a license_key in config.jsonc resolve as before."
     }
   ]
 }

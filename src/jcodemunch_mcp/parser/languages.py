@@ -99,6 +99,14 @@ LANGUAGE_EXTENSIONS = {
     ".cs": "csharp",
     ".cshtml": "razor",
     ".razor": "razor",
+    # ASP.NET Web Forms: its own language, not a razor alias, so `language=`
+    # can tell the two apart and razor output is unchanged.
+    ".aspx": "aspx",
+    ".ascx": "aspx",
+    ".master": "aspx",
+    ".asax": "aspx",
+    ".ashx": "aspx",
+    ".asmx": "aspx",
     ".astro": "astro",
     ".c": "c",
     ".h": "cpp",
@@ -269,6 +277,18 @@ LANGUAGE_EXTENSIONS = {
     # XML / XUL
     ".xml": "xml",
     ".xul": "xml",
+    # .NET / MSBuild XML. ".config" and ".settings" are deliberately unmapped: they
+    # hold plaintext connection strings that is_secret_file/redact_dict don't cover.
+    ".xaml": "xml",
+    ".csproj": "xml",
+    ".vbproj": "xml",
+    ".fsproj": "xml",
+    ".props": "xml",
+    ".targets": "xml",
+    ".resx": "xml",
+    ".nuspec": "xml",
+    ".xsd": "xml",
+    ".wsdl": "xml",
     # YAML / Ansible (Ansible path heuristics handled in get_language_for_path)
     ".yaml": "yaml",
     ".yml": "yaml",
@@ -754,6 +774,17 @@ CSHARP_SPEC = LanguageSpec(
 # _parse_razor_symbols() in extractor.py, which delegates subregions to the
 # existing C#/JS parsers and emits lightweight symbols for HTML ids, external
 # scripts, style blocks, and (for Blazor) @page routes and @inject directives.
+# ASP.NET Web Forms: extracted by _parse_aspx_symbols(); ts_language is nominal.
+ASPX_SPEC = LanguageSpec(
+    ts_language="html",
+    symbol_node_types={},
+    name_fields={},
+    docstring_strategy="preceding_comment",
+    decorator_node_type=None,
+    container_node_types=[],
+    constant_patterns=[],
+)
+
 RAZOR_SPEC = LanguageSpec(
     ts_language="html",
     symbol_node_types={},
@@ -1356,8 +1387,8 @@ LUAU_SPEC = LanguageSpec(
 # SQL specification
 # NOTE: The derekstride/tree-sitter-sql grammar has no named field accessors.
 # Names live in positional children (object_reference → identifier, or direct
-# identifier). CREATE PROCEDURE and CREATE TRIGGER produce ERROR nodes and are
-# not supported by this grammar. All extraction logic is in _parse_sql_symbols()
+# identifier). CREATE PROCEDURE and CREATE TRIGGER produce ERROR nodes;
+# _scan_sql_routines recovers them. All extraction logic is in _parse_sql_symbols()
 # in extractor.py.
 SQL_SPEC = LanguageSpec(
     ts_language="sql",
@@ -2045,6 +2076,7 @@ LANGUAGE_REGISTRY = {
     "dart": DART_SPEC,
     "csharp": CSHARP_SPEC,
     "razor": RAZOR_SPEC,
+    "aspx": ASPX_SPEC,
     "astro": ASTRO_SPEC,
     "c": C_SPEC,
     "swift": SWIFT_SPEC,

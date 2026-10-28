@@ -27,22 +27,50 @@ to whoever owns that login.
    bump and a bump without its heading.
 2. Merge it when every required check is green (branch protection will not
    let you otherwise).
-3. Dispatch, from the Actions tab or:
+3. Dispatch, from the Actions tab or (only jgravelle may start or re-run a
+   release: every job's first step refuses any other triggering actor, C-26):
 
    ```
    gh workflow run release.yml -R jgravelle/jcodemunch-mcp -f version=X.Y.Z -f dry_run=false
    ```
 
-   The workflow: pre-flight on `main`'s HEAD (required checks green, pins,
-   changelog, tag absent, PyPI absent, no MERGEABLE CLEAN contributor PR),
+   The workflow: pre-flight on `main`'s HEAD (every check on HEAD green,
+   waiting up to `CI_WAIT_SECONDS` in `scripts/release_preflight.py` for one
+   still running; a Nightly run still going at
+   the end is named as "not waited for" and does not hold the release, C-28;
+   pins,
+   changelog, tag absent, PyPI absent, no MERGEABLE CLEAN contributor PR
+   unless our latest review requests changes on its current head, C-25),
    build once, Test PyPI, clean-venv smoke on ubuntu and windows, tag, PyPI,
    post-publish smoke from PyPI with the tool count recomputed, GitHub
    release from the CHANGELOG block, MCP registry.
-4. Read the run to the end. A P0 issue means §3. Then Practice 11:
-   reinstall and restart the local server.
+4. Read the run to the end. A P0 issue means §3. If the pre-flight's `ci`
+   row names a Nightly run as "not waited for", read that run to its end too:
+   a failure there opens a `drift` issue after the release, not before. Then
+   Practice 11: reinstall and restart the local server.
+   Nightly is scheduled for 04:00 UTC on `main`'s HEAD and usually runs
+   04:10-04:35 (GitHub delays scheduled runs by an unbounded amount), so a
+   dispatch outside that window usually avoids the case.
 
 `dry_run=true` (the default until the first real publish) stops before any
 upload, tag, release or registry write and smokes the built wheel instead.
+
+⚠⚠ **The release cadence (STANDARD N8, `release.unreleased_max_hours`).** Once
+`main`'s `[Unreleased]` block has waited past the Floor, every PR's
+`fast: harness fast tier` fails, and so does every local commit. The release
+PR itself passes: its tree empties the block under a new version heading.
+`main.yml`, `nightly.yml` and `release.yml` never evaluate it, so `main`
+stays green and `/release` will cut. The escape paths:
+- A fix `main` needs before the release: put it IN the release PR, or cut the
+  release first and merge the fix after. Nothing else unblocks it short of
+  §6.
+- A contributor PR failing only this row did nothing wrong. Say so on the
+  thread; it passes once its branch is UPDATED after the release merges. A
+  re-run reuses the old test merge, whose first parent is the pre-release
+  `main`, so the row stays red.
+- A local refusal while `main` is already released: `git fetch`. The gate
+  reads the upstream remote's `main` as last fetched, and its line names the
+  fetch age.
 
 ⚠ Never push a `v*` tag by hand. The workflow refuses it and says so.
 ⚠ Never run `twine upload` locally again. After the first pipeline publish,
@@ -63,8 +91,10 @@ uvx --from twine twine upload dist-ci\jcodemunch_mcp-X.Y.Z*
 
 then the post-publish smoke from PyPI in a fresh venv
 (`scripts\handshake.py --expect-version X.Y.Z --command <venv>\Scripts\jcodemunch-mcp.exe --fixture testsixtures\pkg_smoke`),
-`gh release create vX.Y.Z dist-ci\* --title ... --notes-file ...` with the
-notes rendered from the CHANGELOG block, and the registry line from
+`gh release create vX.Y.Z dist-ci\* --title ... --notes-file notes.md` with the
+notes rendered by `python scripts\release_notes.py X.Y.Z <tool_count> > notes.md`
+(never the block pasted by hand: GitHub refuses a body over 125,000
+characters, and 1.108.320's block alone was 335,730; LEDGER L-92), and the registry line from
 CLAUDE.md. The publisher is listed on PyPI since 2026-09-11 (FINDINGS C-15);
 the next dispatched run is the proof; if it is refused again, re-enter
 the form before each release. When `release: pypi` passes once, this
@@ -97,11 +127,15 @@ PyPI has the version and cannot be re-uploaded. Do not yank from a script.
 1. Read the P0 issue and the run. The failure is one of: install failed,
    handshake failed (version, instructions, tool list), fixture index or
    tool call failed, tool count moved.
-2. Reproduce by hand from a clean venv, pinned, never through bare `uvx`:
+2. Reproduce by hand from a clean venv, pinned, never through bare `uvx`.
+   Set `JCODEMUNCH_SHARE_SAVINGS=0` first: the smoke calls tools, and a box
+   with no config reports their savings to the public total (C-23). The
+   workflows and the harness set it themselves; a hand run does not.
 
    ```
+   set JCODEMUNCH_SHARE_SAVINGS=0
    uv venv %TEMP%\pp --python 3.12
-   uv pip install --python %TEMP%\pp\Scripts\python.exe jcodemunch-mcp==X.Y.Z
+   uv pip install --python %TEMP%\pp\Scripts\python.exe --refresh-package jcodemunch-mcp jcodemunch-mcp==X.Y.Z
    %TEMP%\pp\Scripts\python.exe scripts\handshake.py --expect-version X.Y.Z --command %TEMP%\pp\Scripts\jcodemunch-mcp.exe --fixture tests\fixtures\pkg_smoke --expect-languages python,typescript,javascript,go
    ```
 
@@ -109,6 +143,59 @@ PyPI has the version and cannot be re-uploaded. Do not yank from a script.
    and ship X.Y.Z+1 through the pipeline (policy 2: nothing waits). If the
    check was wrong, fix the check in a PR and close the issue with the run
    link. Either way the issue records the decision.
+
+## 3a. The registry job failed (a `release` issue was opened)
+
+PyPI and the GitHub release are live. Nothing is rolled back. The issue's
+title says which of two things happened (LEDGER L-96).
+
+1. **"registry could not be read after publishing vX.Y.Z".** The publish step
+   passed. No read of the registry got an answer: `scripts/registry_verify.py`
+   exited with its `UNREADABLE` code after every attempt timed out, was cut,
+   got an HTTP error status, returned a body, a page cursor or a row that was
+   not in the registry's shape, did not reach the last page, or the run's time
+   budget ran out. This says nothing about the publish. Read the registry
+   again:
+
+   ```
+   cd /d C:\MCPs\jcodemunch-mcp && python scripts\registry_verify.py --version X.Y.Z
+   ```
+
+   `PASS`: close the issue with that output. Do not re-publish.
+   The last line decides: `attempt N: FAIL: ...` lines above a final `PASS`
+   are a stale row that was asked again.
+   Lines that start `attempt N: version row:` come from the one-row read each
+   attempt makes first (C-27). Such a line never decides the exit code; the
+   paged read after it does. A `404` there is expected just after a publish,
+   while the registry indexes the new version. When the one-row read passes,
+   no paged read runs: the output ends `(read from the version row)` and then
+   `PASS`.
+   `UNREADABLE` again: read the `attempt N: no answer (<type>: ...)` lines.
+   - A timeout, a connection error, an HTTP 5xx or an HTTP 429: the registry
+     is still not answering. Wait and run it again.
+   - The same `ValueError` or `JSONDecodeError` on every attempt (a body, a
+     cursor or a row in another shape, a cursor that did not advance, too
+     many pages), or any other HTTP 4xx (the request itself is refused):
+     waiting will not fix it. The registry's shape changed or the script is wrong.
+     Read the row by hand, the one-row read first because the paged search is
+     the slow one
+     (`https://registry.modelcontextprotocol.io/v0/servers/io.github.jgravelle%2Fjcodemunch-mcp/versions/X.Y.Z`,
+     then `https://registry.modelcontextprotocol.io/v0/servers?search=io.github.jgravelle/jcodemunch-mcp&version=latest`),
+     close the issue on what it shows, and fix the script in a PR.
+   `FAIL:` as the last lines: the registry answered; go to item 2's first case.
+2. **"registry publish failed for vX.Y.Z".** Open the run and read which step
+   failed.
+   - The verify step failed with `FAIL:` lines: the registry answered and the
+     row is wrong. Run the line above. A zero-row read is the parse or the
+     name, never the publish. If the latest row is still the previous version,
+     the publish did not take; use the publish line in CLAUDE.md ("Registry
+     verification reads a NESTED row").
+   - The install or the publish step failed: the verify step never ran. Run
+     the line above first; publish by hand only if it does not read `PASS`.
+   - The verify step failed with no `FAIL:` line (a traceback, a usage
+     error): the script broke, and nothing was learned about the registry.
+     Run the line above; fix the script in a PR.
+3. The issue records what was run and what it printed.
 
 ## 4. PyPI quarantine or index trouble
 
@@ -127,9 +214,12 @@ PyPI has the version and cannot be re-uploaded. Do not yank from a script.
   the install still fails. On 1.108.319 the job's own probe did exactly that and
   skipped the GitHub release and the registry publish. **The only reliable
   readiness signal for an install is the install.**
-  ⚠ If a re-run keeps failing, `uv pip install "jcodemunch-mcp==X.Y.Z"` in a
-  scratch venv is the same question asked by hand; a 404 from the JSON API is
-  evidence of nothing either way.
+  ⚠ If a re-run keeps failing, `uv pip install --refresh-package jcodemunch-mcp
+  "jcodemunch-mcp==X.Y.Z"` in a scratch venv is the same question asked by
+  hand; a 404 from the JSON API is evidence of nothing either way. ⚠ Without
+  `--refresh-package`, `uv` answers from the index page it cached on the first
+  ask, and both indexes send `max-age=600`: one ask before propagation is ten
+  minutes of the same "no such version" (LEDGER L-93).
 - **Test PyPI down**: `release: test pypi` fails; re-dispatch later. There is
   no skip switch by design.
 
@@ -286,8 +376,10 @@ draft becomes ready only when the PR gate, the `selfcheck` check and the
 reviewer verdict are all green; otherwise it carries `agent:incomplete`.
 Merging is yours.
 
-**Read the digest.** One issue per ISO week, `inbound digest <week>`,
-labelled `inbound:digest`, Mondays 06:45 UTC. Every number in it is
+**Read the digest.** (2026-10-21) The weekly digest is produced outside this
+repository and is no longer posted as an issue; the workflow runs only when
+dispatched by hand, and then opens one issue per ISO week, `inbound digest <week>`,
+labelled `inbound:digest`. Every number in it is
 computed by `.github/inbound/digest.py` from the ledger branch; the model
 wrote at most the opening paragraph. `needs-human` items older than 7 days
 are listed there; each is a decision only you can make.
@@ -299,8 +391,10 @@ names the step. A security item is named by number only, everywhere.
 
 **Before the first run (once).** FINDINGS IN-3, IN-4, IN-6, IN-8: create
 the App `jcodemunch-inbound` (repository permissions: Contents, Issues,
-Pull requests read and write; Variables read; Metadata read; no webhook;
-installed on this repository only), store `INBOUND_APP_ID`,
+Pull requests read and write; Variables read; Metadata read; Actions read
+and write, to be granted only once C-26's safeguards are on `main`; no
+webhook; installed on this repository only; each workflow's token asks for
+a subset, and only the competitive feed's dispatch token asks for Actions), store `INBOUND_APP_ID`,
 `INBOUND_APP_PRIVATE_KEY` and `ANTHROPIC_API_KEY` as repository secrets,
 read the App's user id (`gh api "users/jcodemunch-inbound[bot]" --jq .id`)
 and check it against the `user.email` literal the five App-pushing
@@ -392,7 +486,12 @@ that question gets the same answer.
 **Weekly feed.** Sundays 04:00 UTC (`competitive-feed.yml`) reads each set
 member's latest release through registries on a read-only token, drafts a
 `competitive-idea` when a title carries a capability word, and dispatches
-one re-run when a release names a measured axis. It reads the ledger first
+one re-run when a release names a measured axis, with a token that holds
+Actions write and nothing else (C-26). Until the App holds Actions write,
+that dispatch fails with HTTP 403 (ledger L-217). The feed record is pushed
+to the ledger before the dispatch, so a release whose dispatch failed, or
+whose reason the feed refused, is already marked as re-run; start
+`competitive-run.yml` by hand for it. It reads the ledger first
 so one release is re-run once.
 
 **Something looks wrong.** Flip `INBOUND_ENABLED` off: each job re-reads

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -13,6 +14,8 @@ from urllib.parse import quote
 import httpx
 
 from ..security import resolve_within
+
+logger = logging.getLogger(__name__)
 
 # The packs are built by the jcodemunch-starter-packs CI job, which deploys to
 # jcodemunch.com. The legacy j.gravelle.us copy is no longer refreshed and served
@@ -144,6 +147,35 @@ def _clear_builder_paths(db_path: Path) -> None:
         pass
 
 
+def _install_telemetry_allowed() -> bool:
+    """Whether install-pack may post its install event (pack, version, platform).
+
+    ⚠⚠ jjg (2026-10-17, L-212): install-pack telemetry may only ever send LESS.
+    This used to post unless `JCODEMUNCH_SHARE_SAVINGS` was exactly "0", so an
+    opt-out spelled `false`/`off`/`no`, or `share_savings: false` in the config
+    file, still sent. The new condition is the old one AND the config's answer
+    (the same `share_savings` the savings counter reads), so it can never post
+    where the old one did not. ⚠ A config file the loader cannot parse, or a
+    `share_savings` of the wrong type, reads as the default (on), the answer
+    every other reader of the key gets; that sends no more than the old rule
+    did. Only an exception out of the read itself refuses the post.
+
+    ⚠⚠ `config.get` alone, never `load_config()`: the explicit load creates
+    `config.jsonc` when it is absent, and after a pack's `.db` lands in the
+    store that new file lacks `tool_surface` and pins a first-time user to
+    `full` (Practice 8; review of L-212). `get`'s own lazy load never writes.
+    """
+    if os.environ.get("JCODEMUNCH_SHARE_SAVINGS", "1") == "0":
+        return False
+    try:
+        from .. import config as _config
+
+        return bool(_config.get("share_savings", True))
+    except Exception:
+        logger.debug("install-pack: config unreadable; not sending install telemetry", exc_info=True)
+        return False
+
+
 def _storage_path() -> Path:
     """Return the global index directory."""
     return Path(os.environ.get("CODE_INDEX_PATH", str(Path.home() / ".code-index")))
@@ -158,13 +190,20 @@ def resolve_effective_license_key(explicit: Optional[str]) -> Optional[str]:
     ``license_key``. Without this, a customer who set ``license_key`` in
     ``config.jsonc`` (rather than passing ``--license`` every time) silently
     can't download the packs they paid for.
+
+    ⚠⚠ `create_missing=False` (L-215): the default load creates
+    `config.jsonc` when it is absent, and after a pack's `.db` lands in the
+    store that new file lacks `tool_surface` and pins a first-time user to
+    `full` (Practice 8). ⚠ The explicit load stays, rather than relying on
+    `config.get`'s lazy one: that fires only when nothing was ever loaded, so
+    an already-populated config would hide the file's `license_key`.
     """
     if explicit:
         return explicit
     try:
         from ..config import load_config
         from ..org.license import _license_key
-        load_config()  # idempotent; makes the config `license_key` visible
+        load_config(create_missing=False)  # re-reads the file, never writes one
         return _license_key() or None
     except Exception:
         return None
@@ -177,8 +216,12 @@ def _mask_license(key: str) -> str:
     return key[:4] + "****" + key[-4:]
 
 
-def _list_packs() -> int:
-    """Fetch and display the starter pack catalog."""
+def _list_packs(licensed: bool = False) -> int:
+    """Fetch and display the starter pack catalog.
+
+    `licensed`: a key passed on the command line (`--license`); a configured
+    key is found by `licence_key_configured`. Either one drops the sales line.
+    """
     # ⚠ No raise_for_status. It used to sit here, inside a `except httpx.HTTPError`
     # — and HTTPStatusError is a SUBCLASS of HTTPError, so every non-2xx response
     # was reported as "check your network connection" for a server that was up and
@@ -261,14 +304,17 @@ def _list_packs() -> int:
         licenses = pack.get("licenses") or []
         spdx = sorted({l.get("spdx", "") for l in licenses if l.get("spdx")})
         if spdx:
-            print(f"           {_DIM}Upstream licence: {', '.join(spdx)}{_RESET}")
+            print(f"           {_DIM}Upstream license: {', '.join(spdx)}{_RESET}")
         print(f"           jcodemunch-mcp install-pack {pack_id}")
         if download_url:
             print(f"           {_DIM}{download_url}{_RESET}")
         print()
 
     print(f"  {_DIM}Free packs require no license. Licensed packs require a jCodeMunch license.{_RESET}")
-    print(f"  {_DIM}Get a license: https://jcodemunch.com/#pricing{_RESET}")
+    from ..org.license import licence_key_configured
+
+    if not (licensed or licence_key_configured()):  # paid clients are never marketed to (jjg, 2026-10-20)
+        print(f"  {_DIM}Get a license: https://jcodemunch.com/?utm_source=cli&utm_medium=install&utm_campaign=starter-pack#pricing{_RESET}")
     print()
     return 0
 
@@ -469,19 +515,20 @@ def _install_pack(
                 print(f"    - {repo_name}")
         print()
 
-    # The pack carries each upstream's licence verbatim. Say where it landed and
+    # The pack carries each upstream's license verbatim. Say where it landed and
     # under what terms, so the answer does not depend on the user going looking.
     licenses = (manifest_data or {}).get("licenses") or []
     if licenses:
-        print("  Upstream licences (shipped with the pack):")
+        print("  Upstream licenses (shipped with the pack):")
         for entry in licenses:
             spdx = entry.get("spdx") or "see file"
             print(f"    - {entry.get('repo', '?')}: {spdx}")
         print(f"  {_DIM}Full text: {base / 'licenses'}{_RESET}")
         print()
 
-    # Opt-in telemetry
-    if os.environ.get("JCODEMUNCH_SHARE_SAVINGS", "1") != "0":
+    # Install telemetry: pack id, version and platform, off when savings
+    # sharing is off by any route (L-212).
+    if _install_telemetry_allowed():
         try:
             httpx.post(
                 f"{STARTER_PACK_API}?action=telemetry",
@@ -493,7 +540,7 @@ def _install_pack(
                 timeout=5,
             )
         except Exception:
-            pass
+            logger.debug("install-pack: install telemetry post failed", exc_info=True)
 
     return 0
 
@@ -506,6 +553,6 @@ def run_install_pack(
 ) -> int:
     """Entry point for the install-pack subcommand."""
     if list_packs or not pack_id:
-        return _list_packs()
+        return _list_packs(licensed=bool((license_key or "").strip()))
     effective_key = resolve_effective_license_key(license_key)
     return _install_pack(pack_id, license_key=effective_key, force=force)

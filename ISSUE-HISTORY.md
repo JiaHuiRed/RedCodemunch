@@ -2046,3 +2046,925 @@ Maintenance Practice 5 as it stood in CLAUDE.md before the 2026-09-26 haircut, v
    moving only the forensics — verified by asserting all nine policy numbers,
    six commands and seven prohibitions still resolve. **Write that check as a
    script; a rotation reviewed by eye is how a command goes missing.**
+
+## Current State rotation (2026-09-30, release 1.108.320)
+
+The 1.108.317 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.317):** **CI runs the harness on every change; publishing is a dispatched workflow** (five workflows; every PR-gate job a REQUIRED check on `main` by name; `enforce_admins` and `strict` ON; `release.yml` dispatched with a version, Test PyPI first, trusted publishing). ⚠⚠ The gate caught its own author four times before it merged and the pre-flight was wrong twice about a MAIN commit (C-13, C-14: the PR gate's jobs live on the PR's merge ref; main's witnesses are `main.yml`'s). ⚠ Windows runners are 3x this box on the full tier: `suite.full_seconds_ci_windows`, a platform-scoped Floor, not a loosening. Rules: the CI/CD section, `docs/cicd/`; forensics: `ISSUE-HISTORY.md` (rotated 2026-09-11).
+
+The 1.108.319 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.319 — **The numbers a competitor published about us were right, and so was the refusal we had shipped over twice.** An external benchmark (`amritessh/scalpel-fse2027-artifact`, reproducible from its own raw data) named two real defects in us. TypeScript and TSX never indexed an `abstract class` at all — the grammar spells it `abstract_class_declaration` and neither spec listed it, so every abstract class was absent and its methods lost their owner (#698). And `search_symbols` cut its page on score alone, so an exact-name match could be evicted OUTRIGHT — not ranked lower, absent — by same-named locals declared inside function bodies (#699); all three cut sites read one `(declaration rank, score)` key now, and locals are demoted, never filtered. ⚠⚠ **That rank needs BOTH a kind and an owner condition, and the first draft shipped the owner probe alone, passed its own suite, and left the reported case byte-for-byte unchanged** — the fixture could not express the other crowding shape, so re-run the REPORTED corpus through the product before calling a fix done. ⚠⚠ **W-16 is FIXED after two releases shipped over its refusal**: every per-repo cell in `README.md` and `benchmarks/README.md` derives from `benchmarks/jcm_reference.json`, and `tests/test_benchmark_tables_mirror_the_reference.py` gates the cells a reader quotes — `test_provenance.py` gated only the grand total, which is the figure everyone remembers to update. Also in the block, in full in `CHANGELOG.md`: `get_tectonic_map` partitions by Louvain instead of one plate holding two-thirds of the tree (#668) and discloses an untrustworthy co-churn signal (#667); changed paths resolve when the index is rooted below the git top level (#685); an unproducible triage result is escalated, not retried forever (#670); committing a tree no longer invalidates the full-tier stamp taken on it (#675); the inbound jobs that bill a model have their own switch and it is OFF. Forensics: `docs/workflows/FINDINGS.md`.
+
+The `Tests:` line's 1.108.317 count, verbatim:
+
+- ⚠ Prior (1.108.317): 9241 passed, 19 skipped, **0 failed** (9260 total; the skip count is 19 under `uv run` and 13 under `PYTHONPATH=src python -m pytest`, harness F-05).
+
+## Current State rotation (2026-10-01, release 1.108.321)
+
+The 1.108.318 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.318):** **The process is code that cannot skip a step, and the field is measured from result files.** Three layers: the workflows layer (`/feature` · `/fix-issue` · `/release` · `/review` · `/triage-issue` · `/benchmark-compare` · `/competitive-compare`, with hooks that refuse a commit without the fast tier, a PR without a full-tier stamp on THIS tree, and every irreversible verb), the inbound layer (nine headless jobs, OFF until `INBOUND_ENABLED`, the model never holding a write token) and the competitive tier (the nulls, jCodeMunch and nine adapters over pinned corpora in a sandbox, every FINDINGS number script-written from a result file). Forensics: `docs/workflows/FINDINGS.md`, `docs/inbound/FINDINGS.md`, `docs/competitive/FINDINGS.md`.
+
+The 1.108.320 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.320 — **A member the index never saw and a caller the search never found both read as nothing there.** Class members and class state are indexed and owned in the languages that dropped them (Java, Kotlin, Go, Rust, Dart, Ruby, PHP, Python, JS/TS, C/C++, Pascal, F#, Nim, Zig, Swift; Haskell extracted nothing at all; #713-#858). The delete and edit preflights stopped certifying an absence their search could not see: a dynamic import that can load the file (#876, L-70, L-73, L-75; `tools/_dynamic_boundary.py` is the one reach rule), a name no call site writes (#714, L-80, L-81; a `_stop_rule._UNSETTLED` verdict is never terminal), a call in another Unicode spelling (L-84: `check_references` folds line and import matches through NFKC), a differently-cased sibling (L-88), and a page of test mentions hiding the caller (L-89: `check_delete_safe` reads every file). ⚠⚠ **The definition-span exclusion is NEVER folded and matches the exact declared spelling** — an exclusion removes matches, and both a folded and a case-insensitive one certified a used method `safe_to_delete` at 1.0. ⚠⚠ **It shipped 14 days after 1.108.319**, with 124 PRs merged in between: nothing in the fix loop asked whether it was time to ship (Standing lesson 09-30). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.318 count, verbatim:
+
+- ⚠ Prior (1.108.318): 10185 passed, 24 skipped, **0 failed** (10209 total; the skip count is 24 under the full tier, harness F-05).
+
+## Current State rotation (2026-10-01, release 1.108.322)
+
+The 1.108.319 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.319):** **The numbers a competitor published about us were right, and so was the refusal we had shipped over twice.** TypeScript/TSX never indexed an `abstract class` (#698), and `search_symbols` could evict an exact-name match outright on score alone; all three cut sites read one `(declaration rank, score)` key (#699). ⚠⚠ **That rank needs BOTH a kind and an owner condition** — the owner probe alone passed its suite and left the reported case unchanged. ⚠⚠ **W-16:** every per-repo cell in `README.md` and `benchmarks/README.md` derives from `benchmarks/jcm_reference.json`, gated by `tests/test_benchmark_tables_mirror_the_reference.py`. Full text: `CHANGELOG.md`; the product half verbatim in `ISSUE-HISTORY.md` (2026-09-30).
+
+The 1.108.321 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.321 — **A call written with an escape is still a call.** A Java, C# or JavaScript call can spell a name with a Unicode escape, and the compiler reads the plain name; the reference search compared raw text and the delete preflight graded the called function `safe_to_delete` at 1.0 (L-86). `check_references._fold`, the one comparison every reference match goes through, decodes escapes before it compares. ⚠⚠ **A literal escape typed into a tool input reaches disk DECODED**: build escapes from `chr(92)` and assert the backslash reached the fixture (two drafts tested the plain spelling). Also the first release under the cadence gate (STANDARD N8, `release.unreleased_max_hours`), whose own tests failed on `main` for three merges because they inherited the runner's CI event (Standing lesson 10-01). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.319 count, verbatim:
+
+- ⚠ Prior (1.108.319): 10521 passed, 24 skipped, **0 failed** (10545 total).
+
+## Current State rotation (2026-10-01, release 1.108.323)
+
+The 1.108.320 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.320):** **A member the index never saw and a caller the search never found both read as nothing there.** Class members and state indexed in the languages that dropped them (#713-#858); the delete and edit preflights stopped certifying an absence their search could not see (a dynamic import, an unsearchable name, another Unicode spelling, a differently-cased sibling, a page of test mentions). ⚠⚠ **The definition-span exclusion is NEVER folded and matches the exact declared spelling.** Shipped 14 days after .319 (Standing lesson 09-30). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-01).
+
+The 1.108.322 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.322 — **The deletion investigator reads the match the search made.** `check_references` matches import names through `_fold`; the investigator filtered those rows again with a raw `target_name in names`, so an import in another Unicode form or written with an escape was dropped and `export_not_imported` read SATISFIED over a live importer (L-90). It reads `match_type` and compares no name of its own. ⚠⚠ **Never re-compare what `check_references` matched**; `find_references` still does, at two sites (L-95). First release cut inside the 2-hour cadence (N8). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.320 count, verbatim:
+
+- ⚠ Prior (1.108.320): 13905 passed, 25 skipped, **0 failed** (13930 total).
+
+## Current State rotation (2026-10-02, release 1.108.324)
+
+The 1.108.321 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.321):** **A call written with an escape is still a call.** `check_references._fold` decodes Unicode escapes before it compares, so an escaped Java, C# or JavaScript call is a reference and the delete preflight no longer grades the called function `safe_to_delete` (L-86). ⚠⚠ **A literal escape typed into a tool input reaches disk DECODED**: build escapes from `chr(92)` and assert the backslash reached the fixture. First release under the cadence gate (STANDARD N8; Standing lesson 10-01). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-01, release 1.108.322).
+
+The 1.108.323 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.323 — **An entry point has no importer, and that does not make it dead.** The deletion investigator called an importer dead when nothing imported it, so a name imported only by `main.py`, `package.json`'s `main`, a package `__init__.py` or a test read `export_not_imported` SATISFIED (L-94). `_split_importers_by_liveness` asks `find_dead_code` and keeps no answer of its own; only a file reported at the default confidence is dead. ⚠⚠ **It inherits that tool's gaps with its roots**: an undeclared non-Python entry point (L-102) still reads dead; fix it THERE. The root-level `tests/` gap (L-101) is fixed in `[Unreleased]`: `tools/_test_paths.is_test_file` is the ONE test-file rule. Also: `registry_verify.py` retries, reads every page inside a time budget and exits `UNREADABLE` for a read that got no answer (L-96, L-98, L-99; RUNBOOK 3a). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.321 count, verbatim:
+
+- ⚠ Prior (1.108.321): 13991 passed, 25 skipped, **0 failed** (14016 total).
+
+## Current State rotation (2026-10-02, release 1.108.325)
+
+The 1.108.322 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.322):** **The deletion investigator reads the match the search made.** It re-filtered `check_references`' import rows with a raw name comparison and dropped an import spelled in another Unicode form or with an escape (L-90); it reads `match_type` now. ⚠⚠ **Never re-compare what `check_references` matched**; `find_references` still does, at two sites (L-95). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-01, release 1.108.323).
+
+The 1.108.324 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.324 — **One rule says whether a path is a test file.** Six rules under `src/` answered it and no two agreed; the dead-code pair needed a slash before `tests/`, so a root-level test file read dead and the deletion investigator called a name it imports unimported (L-101). `tools/_test_paths.is_test_file` is the one rule (Key Files). ⚠⚠ **`check_delete_safe` and `check_edit_safe` read it to DOWNGRADE a blocking verdict**: `*_test.*`, `tests.py` and `*_tests/` are kept, so a production consumer named that way reads `test_coverage_only` / `safe_to_edit` (L-104, OPEN). Forensics: `docs/workflows/LEDGER.md`; harness F-41 (the local full tier sits a few seconds under its wall-clock Floor).
+
+The `Tests:` line's 1.108.322 count, verbatim:
+
+- ⚠ Prior (1.108.322): 13994 passed, 25 skipped, **0 failed** (14019 total).
+
+## Current State rotation (2026-10-02, release 1.108.326)
+
+The 1.108.323 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.323):** **An entry point has no importer, and that does not make it dead.** The deletion investigator's `_split_importers_by_liveness` asks `find_dead_code` and keeps no answer of its own (L-94). ⚠⚠ **It inherits that tool's gaps with its roots**: an undeclared non-Python entry point (L-102) still reads dead; fix it THERE. Also `registry_verify.py` retries, pages inside a budget and exits `UNREADABLE` for an unanswered read (L-96, L-98, L-99; RUNBOOK 3a). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-02, release 1.108.324).
+
+The 1.108.325 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.325 — **A lookup that found nothing is remembered.** `config._resolve_repo_key` documented a negative cache and never wrote one, so a `repo=` matching no index listed every index (opening every `.db`) on every call, and discovery asks once per candidate FILE (#960, @ebataeva). Both answers are cached; `forget_repo_resolutions()` runs on `IndexStore.save_index`/`delete_index`, and a miss expires after `_REPO_MISS_TTL_SECONDS` for a save made by another process. ⚠⚠ **A lookup writes NOTHING if a forget overtook its listing** (`_REPO_CACHE_GENERATION`); without it a miss written after a save hid the new index's project config. ⚠ The identifier is compared raw and many root PATHS past ~256 indexes are not all held (L-105). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.323 count, verbatim:
+
+- ⚠ Prior (1.108.323): 14049 passed, 25 skipped, **0 failed** (14074 total).
+
+## Current State rotation (2026-10-02, release 1.108.327)
+
+The 1.108.324 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.324):** **One rule says whether a path is a test file.** `tools/_test_paths.is_test_file` replaced six disagreeing rules; a root-level `tests/` no longer reads dead (L-101). ⚠⚠ **The delete and edit preflights read it to DOWNGRADE a blocking verdict**: `*_test.*`, `tests.py` and `*_tests/` are kept, so a production consumer named that way reads `test_coverage_only` / `safe_to_edit` (L-104, OPEN; Key Files). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-02, release 1.108.325).
+
+The 1.108.326 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.326 — **The `semantic` extra requires a `sentence-transformers` that does not run a local model's code.** Before 5.6.0 a LOCAL model directory ran its own Python with `trust_remote_code` off (GHSA-jhr6-gm9c-rqjv), and `embed_repo` hands `embed_model` to it. The `semantic`/`all` extras floor is `>=5.6.0`; the lock holds 6.1.0 and `urllib3` 2.8.0. `tests/test_semantic_extra_floor.py` reads `pyproject.toml`, tracked pin files and the lock. ⚠⚠ **The floor is install metadata**: an upgrade without the extra named keeps an old release and the call site does not check (L-108, OPEN). ⚠ The RAG baseline is not re-run under the new pin (L-106); three sandbox `.pins` hold an old `urllib3` (L-107). ⚠ The PR gate's audit reads the RUNTIME set only. Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.324 count, verbatim:
+
+- ⚠ Prior (1.108.324): 14125 passed, 25 skipped, **0 failed** (14150 total).
+
+## Current State rotation (2026-10-04, release 1.108.328)
+
+The 1.108.325 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.325):** **A lookup that found nothing is remembered.** `config._resolve_repo_key` caches hits and misses; `forget_repo_resolutions()` runs on `IndexStore.save_index`/`delete_index` (#960, @ebataeva). ⚠⚠ **A lookup writes NOTHING if a forget overtook its listing** (`_REPO_CACHE_GENERATION`). ⚠ The identifier is compared raw (L-105, OPEN). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-02, release 1.108.326).
+
+The 1.108.327 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.327 — **A local model path is refused when the installed `sentence-transformers` would run its code.** `tools/embed_repo._refuse_local_model_on_an_old_release` raises before `SentenceTransformer(...)` when `embed_model` is an existing path and the imported release is older than 5.6.0, a pre-release of it, or unreadable (L-108; GHSA-jhr6-gm9c-rqjv). A Hub name is not refused. ⚠⚠ **The message leads with the cause and the remedy**: `FailureLedger` keeps 300 characters and a path can fill them. ⚠⚠ `search_symbols(fusion=true)` names ANY failure of its similarity channel as the body key `semantic_channel_error` (declared in the compact encoder's `_JSON_BLOBS`), labels the channel `unavailable`, and does NOT cache that answer; a zero-row one stays `absent` (the v1.108.185 ruling). ⚠ jdoc and jdata have no such check (L-109). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.325 count, verbatim:
+
+- ⚠ Prior (1.108.325): 14142 passed, 25 skipped, **0 failed** (14167 total).
+
+## Current State rotation (2026-10-05, release 1.108.329)
+
+The 1.108.326 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.326):** **The `semantic` extra requires a `sentence-transformers` that does not run a local model's code.** The `semantic`/`all` extras floor is `>=5.6.0`; the lock holds 6.1.0 and `urllib3` 2.8.0; `tests/test_semantic_extra_floor.py` reads `pyproject.toml`, tracked pin files and the lock. ⚠ The RAG baseline is not re-run under the new pin (L-106); three sandbox `.pins` hold an old `urllib3` (L-107). ⚠ The PR gate's audit reads the RUNTIME set only. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-02, release 1.108.327).
+
+The 1.108.328 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.328 — **A file a `package.json` script runs is an entry point** (L-102). `tools/_entry_points.package_json_entries` is the one manifest reader of both dead-code tools and reads `scripts` as an ALLOWLIST: `[NAME=value] [npx|cross-env] RUNNER [flags its table knows] PATH`, twelve runners, every per-runner fact run against the installed binary; anything else roots NOTHING (rules: Key Files `_entry_points.py`; residue L-111). Also a repeat `index <subdir>` inside a git root is incremental (#961, @ebataeva). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.326 count, verbatim:
+
+- ⚠ Prior (1.108.326): 14177 passed, 25 skipped, **0 failed** (14202 total).
+
+## Current State rotation (2026-10-06, release 1.108.330)
+
+The 1.108.327 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.327):** **A local model path is refused when the installed `sentence-transformers` would run its code** (L-108; GHSA-jhr6-gm9c-rqjv). ⚠⚠ `search_symbols(fusion=true)` names any similarity-channel failure as `semantic_channel_error`, labels the channel `unavailable` and does not cache it; a zero-row one stays `absent`. ⚠ jdoc and jdata have no such check (L-109). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-04, release 1.108.328).
+
+The 1.108.329 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.329 — **The parse budget stops a slow parse** (L-114). `JCODEMUNCH_PARSE_BUDGET_SECONDS` is enforced inside `parse_file` (`parser/parse_budget.py`): one deadline per file, bound to every parser by `grammar_pack.get_parser`, ended by tree-sitter's own timeout; an over-budget file is skipped and named in `warnings` on every route, at any size. ⚠ Python-side time after the parse is NOT covered (L-116), and a Vue/Svelte plain `<script>` is slow there (L-115). Rules: the Env Vars row. Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.327 count, verbatim:
+
+- ⚠ Prior (1.108.327): 14213 passed, 25 skipped, **0 failed** (14238 total).
+
+## Current State rotation (2026-10-06, release 1.108.331)
+
+The 1.108.328 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.328):** **A file a `package.json` script runs is an entry point** (L-102): `tools/_entry_points.package_json_entries` reads `scripts` as an ALLOWLIST and anything else roots NOTHING (rules: Key Files `_entry_points.py`; residue L-111). Also a repeat `index <subdir>` inside a git root is incremental (#961, @ebataeva). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-05, release 1.108.329).
+
+The 1.108.330 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.330 — **The parse budget bounds a file's Python-side time** (L-116). No second thread waits on a parse: `parse_budget.checkpoint()` raises inside `parse_file` once the file's deadline (the parsing thread's own time) has passed, on every route, at any size. ⚠ One slow call (a whole-file regex, PyYAML) is not cut short (L-118), and loops are still slow BELOW the budget (L-115, L-117). Also a bare Python module name resolves to the script directory beside the importer (#972, @whakomatic; refusals and residue: L-120). Rules: the Env Vars row. Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.328 count, verbatim:
+
+- ⚠ Prior (1.108.328): 14684 passed, 25 skipped, **0 failed** (14709 total).
+
+## Current State rotation (2026-10-07, release 1.108.332)
+
+The 1.108.329 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.329):** **The parse budget stops a slow tree-sitter parse** (L-114): the deadline lives inside `parse_file` (`parser/parse_budget.py`), bound to every parser by `grammar_pack.get_parser` and ended by tree-sitter's own timeout (rules: the Env Vars row). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-06, release 1.108.330).
+
+The 1.108.331 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.331 — **A full re-index keeps the embedding metadata beside its vectors** (#522, @lsg1103275794). `save_index` deletes the index's own `meta` keys and leaves those starting with `embedding_store.META_KEY_PREFIX`. ⚠ `embed_repo` after a full re-index no longer re-embeds everything; `force=true` does. ⚠ The semantic top-up in `search_symbols` still checks no stored model (L-121), and stale or orphan vectors survive (L-122). Also `embed_repo`'s task-type gate has THREE states (#523): `None` is never recorded and is not a change, `""` is a recorded value, and vectors with no embedding metadata at all are still rebuilt (jjg, 2026-10-06), named by `rebuild_reason`. Also a Vue or Svelte `<script>`'s comment lookup is one table per parent node, linear where it was quadratic (L-115). Forensics: `CHANGELOG.md`, `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.329 count, verbatim:
+
+- ⚠ Prior (1.108.329): 14726 passed, 25 skipped, **0 failed** (14751 total).
+
+## Current State rotation (2026-10-07, release 1.108.333)
+
+The 1.108.330 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.330):** **The parse budget bounds a file's Python-side time** (L-116): `parse_budget.checkpoint()` raises inside `parse_file` once the file's deadline has passed, and every loop on the parse path starts with one (rules: the Env Vars row; residue L-117, L-118). Also a bare Python module name resolves to the script directory beside the importer (#972, @whakomatic; L-120). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-06, release 1.108.331).
+
+The 1.108.332 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.332 — **A macro's docstring is the comment directly above it** (L-126): `_PrecedingComments` (`parser/sql_preprocessor.py`) gives a dbt or Jinja/Twig directive the `{# #}` that ENDS where the text before it ends, less one whitespace-control mark per side. ⚠ `PARSER_GENERATION` is 10: a stored docstring moved on unchanged content. ⚠ Residue, each owing its own generation: L-129, L-130, L-131. Also three loops on the parse path are linear in the file (L-117; residue L-127, L-128). Forensics: `CHANGELOG.md`, `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.330 count, verbatim:
+
+- ⚠ Prior (1.108.330): 14783 passed, 25 skipped, **0 failed** (14808 total).
+
+## Current State rotation (2026-10-08, release 1.108.334)
+
+The 1.108.331 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.331):** **A full re-index keeps the embedding metadata beside its vectors** (#522, @lsg1103275794): `save_index` leaves the `meta` keys under `embedding_store.META_KEY_PREFIX`. ⚠ `embed_repo` after a full re-index re-embeds everything only on `force=true` (residue L-121, L-122). Also its task-type gate has THREE states (#523): `None` is never recorded and is not a change, `""` is a recorded value, and vectors with no embedding metadata are still rebuilt, named by `rebuild_reason`. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-07, release 1.108.332).
+
+The 1.108.333 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.333 — **The parse budget stops a slow parse again on a fresh install** (reported by Dave): `pyproject.toml` declares `tree-sitter>=0.25,<0.26`. ⚠⚠ **The range stops at the minor `uv.lock` pins, and `tests/test_tree_sitter_range_is_the_tested_range.py` fails when it admits a later one**: tree-sitter 0.26.0 removed `Parser.timeout_micros`, CI installs from the lock, and a user installs from the range, so the cancel guard never ran on what users got. Moving to a later tree-sitter means moving the lock first (0.26 is unsupported, L-133); the lock's `requires-dist` line is edited by hand with it. Also `init`'s index line reads the keys `index_folder` returns (`cli/init.py` `_index_summary`; it printed `? files, ? symbols`; residue L-134), and three more inputs gave a macro the wrong docstring (L-129, L-130, L-131; residue L-132). ⚠ `PARSER_GENERATION` is 11. Forensics: `CHANGELOG.md`, `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.331 count, verbatim:
+
+- ⚠ Prior (1.108.331): 14800 passed, 25 skipped, **0 failed** (14825 total).
+
+## Current State rotation (2026-10-08, release 1.108.335)
+
+The 1.108.332 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.332):** **A macro's docstring is the comment directly above it** (L-126): `_PrecedingComments` (`parser/sql_preprocessor.py`) gives a dbt or Jinja/Twig directive the `{# #}` that ENDS where the text before it ends, less one whitespace-control mark per side (`PARSER_GENERATION` 10). Also three loops on the parse path are linear in the file (L-117; residue L-127, L-128). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-07, release 1.108.333).
+
+The 1.108.334 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.334 — **A semantic search writes no vector of a second model** (L-121): `stale_reason` (`storage/embedding_store.py`) is THE rule for "do the stored vectors belong with the active model", and `embed_repo` and `search_symbols`' semantic top-up both ask it; a `set_many` caller in `src/` that does not fails `tests/test_semantic_topup_checks_the_stored_model.py`. ⚠⚠ **On a reason the search does NOT rebuild** (two clients on one store would re-embed it on every search): it writes nothing and returns `semantic_store_mismatch` in the body; `embed_repo` rebuilds. ⚠ **A stamp never outlives its vectors**: `clear()` removes the dimension/model/task-type rows, a writer drops a stamp beside no vectors with `drop_orphan_stamp()` (never `clear()`), and each writer decides from `read_meta(for_writer=True)`. Residue L-135, L-136, L-137. Forensics: `CHANGELOG.md`, `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.332 count, verbatim:
+
+- ⚠ Prior (1.108.332): 14861 passed, 25 skipped, **0 failed** (14886 total).
+
+## Current State rotation (2026-10-08, release 1.108.336)
+
+The 1.108.333 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.333):** **The parse budget stops a slow parse again on a fresh install** (reported by Dave): `pyproject.toml` declares `tree-sitter>=0.25,<0.26`. ⚠⚠ **The range stops at the minor `uv.lock` pins** (`tests/test_tree_sitter_range_is_the_tested_range.py`): 0.26.0 removed `Parser.timeout_micros` and is unsupported (L-133); move the lock first, and edit its `requires-dist` line by hand. Also `init`'s index line reads the keys `index_folder` returns. ⚠ `PARSER_GENERATION` is 11. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-08, release 1.108.334).
+
+The 1.108.335 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.335 — **A read-only open reads the file the path names** (L-137): `_uri` (`storage/generation.py`) escapes `%`, `#` and `?` in the path, and `readonly_uri` and the immutable fallback both build through it. ⚠⚠ **SQLite reads the string as a URI**: under a directory named `c#proj` the open was WRITABLE on a stray file `c` and `has_any()` answered False over stored vectors. ⚠ Escape those three only, `%` first; a test database in `tmp_path` cannot express this (`tests/test_readonly_uri_quotes_the_path.py`). Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.333 count, verbatim:
+
+- ⚠ Prior (1.108.333): 14948 passed, 25 skipped, **0 failed** (14973 total).
+
+## Current State rotation (2026-10-09, release 1.108.337)
+
+The 1.108.334 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.334):** **A semantic search writes no vector of a second model** (L-121): `stale_reason` (`storage/embedding_store.py`) is THE rule, and `embed_repo` and `search_symbols`' semantic top-up both ask it (`tests/test_semantic_topup_checks_the_stored_model.py`). ⚠⚠ **On a reason the search does NOT rebuild**: it writes nothing and returns `semantic_store_mismatch`; `embed_repo` rebuilds. ⚠ A stamp never outlives its vectors (`drop_orphan_stamp()`, never `clear()`). Residue L-135, L-136. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-08, release 1.108.335).
+
+The 1.108.336 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.336 — **A fusion search scores no query against another model's vectors** (L-135): `_search_symbols_fusion` asks `stale_reason` before it calls the provider and returns `semantic_store_mismatch`, the semantic exit's body (`_stale_store_mismatch`, `_width_store_mismatch`). ⚠⚠ **A function that calls `score_all` and never `stale_reason` fails `tests/test_semantic_topup_checks_the_stored_model.py`**; the L-121 scan was keyed on `set_many`, and this exit reads. ⚠ `_embed_task_types` (`tools/embed_repo.py`) is the ONE task-type rule for the writer that stamps and the exits that compare. Residue L-139, L-140, L-141. Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.334 count, verbatim:
+
+- ⚠ Prior (1.108.334): 14997 passed, 25 skipped, **0 failed** (15022 total).
+
+## Current State rotation (2026-10-09, release 1.108.338)
+
+The 1.108.335 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.335):** **A read-only open reads the file the path names** (L-137): `_uri` (`storage/generation.py`) escapes `%`, `#` and `?`, `%` first, and every read-only open builds through it. ⚠⚠ **SQLite reads the string as a URI**: under `c#proj` the open was WRITABLE on a stray file `c`. A test database in `tmp_path` cannot express this (`tests/test_readonly_uri_quotes_the_path.py`). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-08, release 1.108.336).
+
+The 1.108.337 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.337 — **A shutdown checkpoints a database without migrating it** (L-143): `checkpoint_db` (`storage/sqlite_store.py`) opens a PLAIN connection, checkpoints, and logs a `sqlite3.Error` at debug. ⚠⚠ **Never route it through `_connect`**: that connection creates the index schema or migrates, so a shutdown raised `no such table` on a database still being created and put index tables in `telemetry.db`. ⚠ It never raises; it runs from `finally` blocks (`tests/test_store_close_only_checkpoints.py`). Residue L-144. Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.335 count, verbatim:
+
+- ⚠ Prior (1.108.335): 15038 passed, 25 skipped, **0 failed** (15063 total).
+
+## Current State rotation (2026-10-09, release 1.108.339)
+
+The 1.108.336 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.336):** **A fusion search scores no query against another model's vectors** (L-135): `_search_symbols_fusion` asks `stale_reason` before it calls the provider and returns `semantic_store_mismatch`. ⚠⚠ **A function that calls `score_all` and never `stale_reason` fails `tests/test_semantic_topup_checks_the_stored_model.py`.** ⚠ `_embed_task_types` (`tools/embed_repo.py`) is the ONE task-type rule. Residue L-139, L-140, L-141. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-09, release 1.108.337).
+
+The 1.108.338 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.338 — **A .NET build tree and a NuGet restore tree stay out of the index** (#1001, @outoftheblue9): `obj/`/`bin/` are pruned only beside a `.csproj`/`.vbproj`/`.fsproj`, `packages/` only when a child holds its own `.nupkg`, `.vs/` always (`security.py`). ⚠⚠ **A solution file is NOT a marker**: a root `.sln` pruned a hand-written `bin/deploy.py` and `search_text` certified the absence. ⚠ Both rules prune on evidence the writer left, never on the name. `index_file` applies neither and `index_repo` only `.vs/` (L-142). Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.336 count, verbatim:
+
+- ⚠ Prior (1.108.336): 15056 passed, 25 skipped, **0 failed** (15081 total).
+
+## 2026-10-09: a cold-index Floor failure read as runner noise (#1005, LEDGER L-146 and L-147)
+
+The nightly of 2026-10-09 failed `index.cold_self_seconds` at 5.207 against a Floor of 5.2. Triage compared readings BETWEEN jobs, saw
+about 2x between runners, closed #1005 as runner variance and drafted a loosening of the Floor, twice. The second review of that draft
+divided each job's cold-index reading by another timing of the same job; over the 24 recorded CI runs
+(`harness/results/self_latency_ci_runs_*.json`) the ratio steps 1.29x to 1.36x between the nightlies of 2026-09-29 and 2026-09-30 with
+no overlap. #1005 was reopened with a correction and the loosening dropped (jjg). The cause was the dynamic-import scan of #876
+walking a file's syntax tree per name and per pass; fixed in #1011, released as 1.108.339. A local timing of the suspect commit on a fixed
+older copy of `src/` had shown too little to see: the cost was the new code on the new files. The Standing lesson dated 10-09 is the
+rule this earned.
+
+## Current State rotation (2026-10-10, release 1.108.340)
+
+The 1.108.337 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.337):** **A shutdown checkpoints a database without migrating it** (L-143): `checkpoint_db` (`storage/sqlite_store.py`) opens a PLAIN connection and never raises. ⚠⚠ **Never route it through `_connect`**, which creates the index schema or migrates. Residue L-144. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-09, release 1.108.338).
+
+The 1.108.339 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.339 — **The dynamic-import scan walks a Python file once** (L-147, #1005): `_python_dynamic_imports` (`parser/imports.py`) reads ONE node list with parent links. ⚠⚠ **Never answer a per-name question there with `ast.walk(tree)` or a pass over `all_nodes`**; `tests/test_dynamic_import_scan_walks_the_tree_once.py` counts visits and calls per node. ⚠ Output unchanged, no `PARSER_GENERATION` bump. Not recovered: a tenth of a cold index against pre-#876. Residue L-148, L-149. Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.337 count, verbatim:
+
+- ⚠ Prior (1.108.337): 15063 passed, 25 skipped, **0 failed** (15088 total).
+
+## Current State rotation (2026-10-11, release 1.108.341)
+
+The 1.108.338 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.338):** **A .NET build tree and a NuGet restore tree stay out of the index** (#1001, @outoftheblue9): `obj/`/`bin/` pruned only beside a project file, `packages/` only on its own `.nupkg` (`security.py`). ⚠⚠ **A solution file is NOT a marker.** Residue L-142. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-09, release 1.108.339).
+
+The `Tests:` line's 1.108.338 count, verbatim:
+
+- ⚠ Prior (1.108.338): 15138 passed, 25 skipped, **0 failed** (15163 total).
+
+## Current State rotation (2026-10-11, release 1.108.342)
+
+The 1.108.339 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.339):** **The dynamic-import scan walks a Python file once** (L-147, #1005). ⚠⚠ **Never answer a per-name question in `_python_dynamic_imports` with `ast.walk(tree)` or a pass over `all_nodes`.** Residue L-148, L-149. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-10, release 1.108.340).
+
+The `Tests:` line's 1.108.339 count, verbatim:
+
+- ⚠ Prior (1.108.339): 15173 passed, 25 skipped, **0 failed** (15198 total).
+
+## Current State rotation (2026-10-11, release 1.108.343)
+
+The 1.108.340 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.340):** **ASP.NET Web Forms is indexed, and a handler wired in markup is referenced** (#1012, @outoftheblue9): language `aspx` (never a `razor` alias), ten XML-shaped .NET extensions as `xml`. ⚠⚠ **`.config`/`.settings` stay UNMAPPED until connection strings are redacted.** ⚠ A markup regex is one C call no parse budget interrupts: anchor every name (`tests/test_aspx_review_guards.py`). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.340 count, verbatim:
+
+- ⚠ Prior (1.108.340): 15386 passed, 25 skipped, **0 failed** (15411 total).
+
+## Current State rotation (2026-10-11, release 1.108.344)
+
+The 1.108.341 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.341):** **The `index` CLI takes `--identity-mode`, and an existing directory is a local target however it is spelled** (#1017, @sKlat-beep): `_index_target_is_local` (`server.py`) is the one local-or-GitHub rule. ⚠⚠ **A URL-shaped target skips only the directory PROBE, on an ANCHORED match**; `://` anywhere in the string once moved `C://dir` to GitHub. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.341 count, verbatim:
+
+- ⚠ Prior (1.108.341): 15415 passed, 25 skipped, **0 failed** (15440 total).
+
+## Current State rotation (2026-10-11, release 1.108.345)
+
+The 1.108.342 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.342):** **`get_dead_code_v2`'s text fallback reads a file once** (L-150): `FileWords` (`tools/_call_graph.py`) answers which lines name a word. ⚠⚠ **Never answer a per-symbol question there with a pass over a file's text.** Residue L-152. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.342 count, verbatim:
+
+- ⚠ Prior (1.108.342): 15614 passed, 25 skipped, **0 failed** (15639 total).
+
+## Current State rotation (2026-10-12, release 1.108.346)
+
+The 1.108.343 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.343):** **`get_dead_code_v2` reads a file as text wherever its language records no call** (L-155, L-152): `_files_read_as_text` asks the INDEX per file. ⚠⚠ **Never gate caller evidence on a repository-wide test, and never on `_CALL_NODE_TYPES`** (it names PHP and Dart, which record none). Residue L-154, L-157, L-159, L-160. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.343 count, verbatim:
+
+- ⚠ Prior (1.108.343): 15775 passed, 25 skipped, **0 failed** (15800 total).
+
+## Current State rotation (2026-10-12, release 1.108.347)
+
+The 1.108.344 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.344):** **`get_dead_code_v2` asks every other text-read code file for a caller, import edge or not** (L-157): `_CallersElsewhere`. ⚠⚠ **The answer is kept per NAME**; per function it cost files times functions. ⚠ Weakest evidence in the tool, toward not reporting: limits in L-161. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.344 count, verbatim:
+
+- ⚠ Prior (1.108.344): 15809 passed, 25 skipped, **0 failed** (15834 total).
+
+## Current State rotation (2026-10-12, release 1.108.348)
+
+The 1.108.345 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.345):** **A name that starts or ends in a mark is matched as a token** (L-154): `word_rule.py` (Key Files). ⚠ Not a superset of the old rule; limits in L-163. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.345 count, verbatim:
+
+- ⚠ Prior (1.108.345): 16024 passed, 25 skipped, **0 failed** (16049 total).
+
+## Current State rotation (2026-10-12, release 1.108.349)
+
+The 1.108.346 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.346):** **A call through a receiver records the METHOD, never the receiver** (L-159): `_extract_call_name` reads the grammar's callee fields. ⚠⚠ **Never fall back to an identifier inside the callee.** `PARSER_GENERATION` 12. Residue L-158, L-164. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.346 count, verbatim:
+
+- ⚠ Prior (1.108.346): 16062 passed, 25 skipped, **0 failed** (16087 total).
+
+## Current State rotation (2026-10-12, release 1.108.350)
+
+The 1.108.347 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.347):** **A call inside a Rust macro invocation or `macro_rules!` body is recorded** (L-164): `_record_macro_calls`. ⚠⚠ **Each token is read ONCE, from the macro node down; never ask a node for its parent** (two versions were quadratic). `PARSER_GENERATION` 13. Residue L-165. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.347 count, verbatim:
+
+- ⚠ Prior (1.108.347): 16111 passed, 25 skipped, **0 failed** (16136 total).
+
+## Current State rotation (2026-10-12, release 1.108.351)
+
+The 1.108.348 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.348):** **`get_dead_code_v2` counts a call from another file where the language needs no import** (L-165): `LANGUAGES_CALLED_ACROSS_FILES_WITHOUT_AN_IMPORT`. ⚠⚠ **Python, JS and TS stay out.** ⚠ By name: hides an uncalled function behind any call of its name. Residue L-166. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.348 count, verbatim:
+
+- ⚠ Prior (1.108.348): 16128 passed, 25 skipped, **0 failed** (16153 total).
+
+## Current State rotation (2026-10-12, release 1.108.352)
+
+The 1.108.349 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.349):** **A Java `super(...)` records the superclass's constructor** (L-166): `_record_super_constructor_calls` reads the class node DOWN. `PARSER_GENERATION` 14. ⚠ `__init__`, `constructor` and `initialize` still read `no_callers`: L-167. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.349 count, verbatim:
+
+- ⚠ Prior (1.108.349): 16157 passed, 25 skipped, **0 failed** (16182 total).
+
+## Current State rotation (2026-10-12, release 1.108.353)
+
+The 1.108.350 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.350):** **The watcher follows a HEAD move that changed no file** (#1040): `_reconcile_head_move` runs the ordinary incremental index. ⚠⚠ **Never a bare SHA rewrite**: it marks unread files `fresh`. ⚠ Reads under `.git` are bounded and in `SECURITY.md`. Residue L-168. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.350 count, verbatim:
+
+- ⚠ Prior (1.108.350): 16204 passed, 25 skipped, **0 failed** (16229 total).
+
+## Current State rotation (2026-10-13, release 1.108.354)
+
+The 1.108.351 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.351):** **Creating a class counts as a call of its constructor** (L-167): `constructors_as_their_classes` hands `get_dead_code_v2` each `__init__`/`constructor` as its class. ⚠⚠ **A subclass joins its base only from the base's file or an importer** (by name across the index was quadratic). ⚠ Ruby not covered: L-172. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.351 count, verbatim:
+
+- ⚠ Prior (1.108.351): 16243 passed, 25 skipped, **0 failed** (16268 total).
+
+## Current State rotation (2026-10-13, release 1.108.355)
+
+The 1.108.352 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.352):** **An initialiser outside every function is read for callers** (L-169): `_residue_text` keeps the lines of `STATE_KINDS` symbols. ⚠⚠ **A line a function or method holds stays out** (zod loses 265 rows, not 158, without it). ⚠ Text, not calls: L-173. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.352 count, verbatim:
+
+- ⚠ Prior (1.108.352): 16285 passed, 25 skipped, **0 failed** (16310 total).
+
+## Current State rotation (2026-10-13, release 1.108.356)
+
+The 1.108.353 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.353):** **A C# `new Made()` records the class it creates** (L-170): `object_creation_expression` is a C# call node. `PARSER_GENERATION` 15. ⚠ A target-typed `new()`, `: base(...)` and an attribute record nothing: L-174. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.353 count, verbatim:
+
+- ⚠ Prior (1.108.353): 16321 passed, 25 skipped, **0 failed** (16346 total).
+
+## Current State rotation (2026-10-13, release 1.108.357)
+
+The 1.108.354 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.354):** **A Go call the grammar reads as a conversion is recorded** (L-171): `type_conversion_expression` is a Go call node (`Generic[int](1)`, `fs[i](1)`). `PARSER_GENERATION` 16. ⚠ A real conversion to a generic type records the type's name: L-174. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.354 count, verbatim:
+
+- ⚠ Prior (1.108.354): 16376 passed, 25 skipped, **0 failed** (16401 total).
+
+## Current State rotation (2026-10-13, release 1.108.358)
+
+The 1.108.355 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.355):** **A bare Ruby method call is recorded** (L-172): `_record_bare_ruby_calls` reads each method in source order; a bare name is a call unless a local of that name exists by then. `PARSER_GENERATION` 17. ⚠ Code outside every method is not read: L-174. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.355 count, verbatim:
+
+- ⚠ Prior (1.108.355): 16457 passed, 25 skipped, **0 failed** (16482 total).
+
+## Current State rotation (2026-10-13, release 1.108.359)
+
+The 1.108.356 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.356):** **A JavaScript call through a string key records the method** (L-173): `_js_string_key_name` reads `t["m"]()` as `m` in JS, TS and TSX. `PARSER_GENERATION` 18. ⚠ Any other key, and every other language's subscript, records the container: L-174. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.356 count, verbatim:
+
+- ⚠ Prior (1.108.356): 16607 passed, 25 skipped, **0 failed** (16632 total).
+
+## Current State rotation (2026-10-13, release 1.108.360)
+
+The 1.108.357 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.357):** **The generated agent policy no longer orders the index for everything** (L-175): `cli/policy.py` says where each route is cheaper; `resolve_repo` and `plan_turn` are conditional. ⚠ An installed policy is never rewritten; the start-up instructions and hooks still steer to the index: L-175. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.357 count, verbatim:
+
+- ⚠ Prior (1.108.357): 16711 passed, 25 skipped, **0 failed** (16736 total).
+
+## Current State rotation (2026-10-14, release 1.108.361)
+
+The 1.108.358 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.358):** **A multi-line Python import records its names** (L-176): `_py_from_clause` reads the whole `from x import (...)`. `PARSER_GENERATION` 19. **The surface offer reaches the user once** in the first `resolve_repo` answer (`surface_notice`, SECURITY.md). ⚠ Other languages' grouped imports: L-177. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.358 count, verbatim:
+
+- ⚠ Prior (1.108.358): 16772 passed, 25 skipped, **0 failed** (16797 total).
+
+## Current State rotation (2026-10-14, release 1.108.362)
+
+The 1.108.359 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.359):** **`diagnose` writes one local report** (`diagnose.py`): a fixed list of keys AND values, no path or repo name. Two local per-tool counters (`storage/tool_counters.py`, `_tool_counters.json`, SECURITY.md). ⚠ Residue: L-179, L-181. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.359 count, verbatim:
+
+- ⚠ Prior (1.108.359): 16844 passed, 25 skipped, **0 failed** (16869 total).
+
+## Current State rotation (2026-10-14, release 1.108.363)
+
+The 1.108.360 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.360):** **A Web Forms attribute is read in every value form** (#1067, @outoftheblue9): one quote-aware pass per tag in both readers. `.xsd`/`.wsdl` stay capped everywhere, as `build_consumed` or the neutral `schema_consumer`. `PARSER_GENERATION` 20. ⚠ Tags are still split quote-blind: L-182. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.360 count, verbatim:
+
+- ⚠ Prior (1.108.360): 16926 passed, 25 skipped, **0 failed** (16951 total).
+
+## Current State rotation (2026-10-15, release 1.108.364)
+
+The 1.108.361 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.361):** **An installed policy is refreshed only when asked** (`cli/policy_refresh.py`): `claude-md --refresh` shows the diff, asks, keeps a backup and replaces only the block (`policy_block_span`, shared with `init` and the drift check). `policy_notice` once per policy text (SECURITY.md). ⚠ `uninstall` keeps its own boundary: L-186. `///` summaries unwrapped (#1075, @outoftheblue9), `PARSER_GENERATION` 21. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.361 count, verbatim:
+
+- ⚠ Prior (1.108.361): 16978 passed, 25 skipped, **0 failed** (17003 total).
+
+## Current State rotation (2026-10-15, release 1.108.365)
+
+The 1.108.362 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.362):** **A `migrations` package is indexed** (`security.is_generated_migrations_directory`): only a dir holding a generated-named entry is skipped (`generated_migrations`). Start-up `instructions` match the policy (#1079). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.362 count, verbatim:
+
+- ⚠ Prior (1.108.362): 17169 passed, 25 skipped, **0 failed** (17194 total).
+
+## Current State rotation (2026-10-15, release 1.108.366)
+
+The 1.108.363 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.363):** **Hooks name the install that ran** (`install_layout.own_executable`): never PATH first, never a relative launch path, never uv's cache (`init` says which). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.363 count, verbatim:
+
+- ⚠ Prior (1.108.363): 17197 passed, 25 skipped, **0 failed** (17222 total).
+
+## Current State rotation (2026-10-15, release 1.108.367)
+
+The 1.108.364 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.364):** **SQL procedures, triggers and constraints are symbols; a script parses one batch at a time** (#1080, #1081, @outoftheblue9). Ranking ignores git blame (`properties_are_search_terms`), `PARSER_GENERATION` 24. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.364 count, verbatim:
+
+- ⚠ Prior (1.108.364): 17423 passed, 25 skipped, **0 failed** (17448 total).
+
+## Current State rotation (2026-10-15, release 1.108.368)
+
+The 1.108.365 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.365):** **git blame is off by default** (L-189); with it on, a provider whose properties aren't vocabulary (`properties_are_search_terms`) adds nothing to a file summary. SECURITY.md lists it. No `PARSER_GENERATION` bump. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.365 count, verbatim:
+
+- ⚠ Prior (1.108.365): 17438 passed, 25 skipped, **0 failed** (17463 total).
+
+## Current State rotation (2026-10-15, release 1.108.369)
+
+The 1.108.366 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.366):** **env vars stay supported** (L-193, #1098): the loader logs no deprecation and no doc promises a 2.0 removal (`tests/test_env_vars_stay_supported.py`). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.366 count, verbatim:
+
+- ⚠ Prior (1.108.366): 17442 passed, 25 skipped, **0 failed** (17467 total).
+
+## Current State rotation (2026-10-16, release 1.108.370)
+
+The 1.108.367 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.367):** **a session lists only its own workspace's indexes** (`tools/_visibility.py`, `repo_visibility`, ruling 5): an exact id still loads anything; home or a root lists all. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.367 count, verbatim:
+
+- ⚠ Prior (1.108.367): 17456 passed, 25 skipped, **0 failed** (17481 total).
+
+## Current State rotation (2026-10-16, release 1.108.371)
+
+The 1.108.368 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.368):** **a context provider that runs out of time runs again on the next index** (L-190): the cut is stored as `context_metadata.providers_cut` and every delta save keeps it. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.368 count, verbatim:
+
+- ⚠ Prior (1.108.368): 17476 passed, 25 skipped, **0 failed** (17501 total).
+
+## Current State rotation (2026-10-16, release 1.108.372)
+
+The 1.108.369 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.369):** **indexing a drive root keeps its files** (L-197, `path_prefix.dir_prefix`); LSP starts rust-analyzer with build scripts off (L-198); branch deltas never ran (L-196). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.369 count, verbatim:
+
+- ⚠ Prior (1.108.369): 17486 passed, 25 skipped, **0 failed** (17511 total).
+
+## Current State rotation (2026-10-16, release 1.108.373)
+
+The 1.108.370 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.370):** **seven import forms record the names they import** (L-177): PHP group use, Kotlin `as`, Scala selectors, Haskell lists, Dart `show`, destructuring `require`, Python `import \`; `PARSER_GENERATION` 25. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.370 count, verbatim:
+
+- ⚠ Prior (1.108.370): 17538 passed, 25 skipped, **0 failed** (17563 total).
+
+## Current State rotation (2026-10-16, release 1.108.374)
+
+The 1.108.371 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.371):** **a schema's dead-code advice follows the right evidence** (L-184): Razor and Blazor count as .NET, a bare `.fs` does not (`_entry_points.has_dotnet_evidence`). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.371 count, verbatim:
+
+- ⚠ Prior (1.108.371): 17558 passed, 25 skipped, **0 failed** (17583 total).
+
+## Current State rotation (2026-10-17, release 1.108.375)
+
+The 1.108.372 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.372):** **uninstall keeps your own section after the policy** (L-186): `uninstall` asks `policy.policy_block_span`, whose start is a real heading past a BOM and fences. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.372 count, verbatim:
+
+- ⚠ Prior (1.108.372): 17579 passed, 25 skipped, **0 failed** (17604 total).
+
+## Current State rotation (2026-10-17, release 1.108.376)
+
+The 1.108.373 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.373):** **claude-md --refresh can write the policy your server uses** (L-185): the notice marker records the server's policy SETTINGS, never text; `--match-server` rebuilds with `policy.policy_for`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.373 count, verbatim:
+
+- ⚠ Prior (1.108.373): 17595 passed, 25 skipped, **0 failed** (17620 total).
+
+## Current State rotation (2026-10-18, release 1.108.377)
+
+The 1.108.374 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.374):** **a Python virtualenv is skipped whatever its folder is called** (L-206): `security.is_virtualenv_site_packages_directory` prunes only `site-packages` under a root whose `pyvenv.cfg` has `home`; also #1117 audit reliability (lilubot). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.374 count, verbatim:
+
+- ⚠ Prior (1.108.374): 17702 passed, 25 skipped, **0 failed** (17727 total).
+
+## Current State rotation (2026-10-18, release 1.108.378)
+
+The 1.108.375 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.375):** **a typo can no longer switch off a protective setting** (L-207): `config.BOOL_ENV_TYPO_KEEPS_DEFAULT` keeps six default-on switches on for an unrecognised env value; every other boolean reads as before (pinned). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.375 count, verbatim:
+
+- ⚠ Prior (1.108.375): 17815 passed, 25 skipped, **0 failed** (17840 total).
+
+## Current State rotation (2026-10-19, release 1.108.379)
+
+The 1.108.376 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.376):** **install-pack honours every savings opt-out** (L-212): `install_pack._install_telemetry_allowed` posts only when the old check AND `config.get("share_savings")` allow it; also a once-per-install licence line in `init`/`install`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.376 count, verbatim:
+
+- ⚠ Prior (1.108.376): 17886 passed, 25 skipped, **0 failed** (17911 total).
+
+## Current State rotation (2026-10-19, release 1.108.380)
+
+The 1.108.377 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.377):** **a text search earns no savings credit** (L-180): `search_text`/`check_references` earn zero in the receipt and the meter; the receipt total reads Modeled gross savings; also L-142, L-144, L-149, L-209. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.377 count, verbatim:
+
+- ⚠ Prior (1.108.377): 17976 passed, 25 skipped, **0 failed** (18001 total).
+
+## CLAUDE.md rotation (2026-10-19, before release 1.108.381): "Reproducing CI's environment" forensics
+
+Verbatim as they stood in `CLAUDE.md`; the rule (read the skip count) and the command stay there.
+
+⚠⚠ **Caught mid-release, and the near-miss is the lesson: it returned EXIT 0
+and the totals reconciled EXACTLY** (8,740 + 18 new tests = 8,758) — the two
+things "green" normally means here. Meanwhile `passed` fell 8,721 → 8,634 and
+`skipped` rose **19 → 124**: 105 tests silently did not execute, because
+`watchfiles` (the `[watch]` extra CI installs BY NAME) was absent.
+
+⚠ Third instance of one family, and CONTRIBUTING.md already carries the
+sentence: *CI installs with `uv sync` and never runs the command the docs give a
+human, so the thing we test is not the thing they do.* The first was
+`pip install -e ".[test]"` (an extra no repo declares); the second was
+`-n 4 --dist loadfile` under a bare `python -m pytest`, which collects nothing
+and exits 0. [[pipes-and-missing-xdist-both-report-exit-zero]]
+
+## Current State rotation (2026-10-19, release 1.108.381)
+
+The 1.108.378 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.378):** **install-pack's licence lookup writes no config file** (L-215): `resolve_effective_license_key` re-reads with `load_config(create_missing=False)`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.378 count, verbatim:
+
+- ⚠ Prior (1.108.378): 17985 passed, 25 skipped, **0 failed** (18010 total).
+
+## Current State rotation (2026-10-19, release 1.108.382)
+
+The 1.108.379 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.379):** **a spawned agent no longer waits minutes for its jCodeMunch briefing** (#1139): `cli/hooks/briefing.py` hydrates at most the deepest indexed root containing the cwd, only under `HYDRATE_MAX_SYMBOLS`; an unmatched cwd briefs no repo; PageRank stops at `BUDGET_SECONDS`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.379 count, verbatim:
+
+- ⚠ Prior (1.108.379): 18056 passed, 25 skipped, **0 failed** (18081 total).
+
+## Current State rotation (2026-10-19, release 1.108.383)
+
+The 1.108.380 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.380):** **compacting a session no longer waits on a large index's landmarks** (L-219): the hook size rule and budget live in `cli/hooks/_common.py`; `_iter_loaded_repos(size_capped=, stop_at=)` applies them before each load, and the PreCompact landmarks section names every index it skipped. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.380 count, verbatim:
+
+- ⚠ Prior (1.108.380): 18066 passed, 25 skipped, **0 failed** (18091 total).
+
+## Current State rotation (2026-10-19, release 1.108.384)
+
+The 1.108.381 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.381):** **one repository's index can no longer replace or stand in for another's** (GHSA-xxx4-frv5-chp2, @mich3333): `SQLiteIndexStore._guard_slot`, called by `_db_path`/`_content_dir` and the facade's `_slot`, refuses a slot whose index records another repository; saves re-check under `BEGIN IMMEDIATE`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.381 count, verbatim:
+
+- ⚠ Prior (1.108.381): 18082 passed, 25 skipped, **0 failed** (18107 total).
+
+## Current State rotation (2026-10-19, release 1.108.385)
+
+The 1.108.382 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.382):** **a task capsule's risk entry carries the PR's real risk score** (L-61): `assemble_task_context._stage_risk` reads `get_pr_risk_profile`'s `risk_score`/`risk_level`/`signal_breakdown`, keeps a withheld score `None` with `unmeasurable_axes`, and caps `unresolvable_files` at 20 with its total. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.382 count, verbatim:
+
+- ⚠ Prior (1.108.382): 18112 passed, 25 skipped, **0 failed** (18137 total).
+
+## Current State rotation (2026-10-20, release 1.108.386)
+
+The 1.108.383 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.383):** **refreshing summaries no longer erases complexity and the call graph** (#1161, @SlimLemon): `SQLiteIndexStore.update_symbol_summaries` is a one-column UPDATE, guarded by `content_hash`, that evicts the index cache; `summarize_repo` writes only changed summaries and reports `not_written`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.383 count, verbatim:
+
+- ⚠ Prior (1.108.383): 18119 passed, 25 skipped, **0 failed** (18144 total).
+
+## Current State rotation (2026-10-21, release 1.108.387)
+
+The 1.108.384 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.384):** **the watcher no longer polls trees nothing indexes** (#1163, @yagiii1344): `index_folder._directory_prune_reason` is the one directory rule for discovery and `watcher._watch_directories`; a gitignored or extra-ignored directory is pruned only when the matcher ignores two probe descendants and no `!` reaches it. Also L-226: `update_symbol_summaries` notifies `storage/write_listeners.py`, and `search_symbols` evicts the repo (in-process; cross-process is L-228). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.384 count, verbatim:
+
+- ⚠ Prior (1.108.384): 18139 passed, 25 skipped, **0 failed** (18164 total).
+
+## Current State rotation (2026-10-21, release 1.108.388)
+
+The 1.108.385 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.385):** **a summary written by another process reaches this one's searches** (L-228, L-229): `update_symbol_summaries` advances a `summaries_generation` meta counter in its transaction, `CodeIndex.summaries_generation` carries it (in `selective.EXACT_FIELDS`), and it is the last element of `search_symbols`' cache key. Also L-224: `save_index` pre-warms the cache with `_symbol_to_dict`, so a same-process read keeps `ecosystem_context`; and #1172's README line 3 and registry description. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.385 count, verbatim:
+
+- ⚠ Prior (1.108.385): 18145 passed, 25 skipped, **0 failed** (18170 total).
+
+## Current State rotation (2026-10-21, release 1.108.389)
+
+The 1.108.386 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.386):** **the AI summary prompt can carry each symbol's own source, opt-in** (#1175, #1179, @skibadubskiybadubs): `summarizer_body_chars` (default 0) adds up to that many characters of the symbol's INDEXED text plus its decorators to the prompt; a non-local provider gets them only with `allow_remote_summarizer`; redaction runs before the cut. Also #1177 (Flask `methods=` read by `decorator-routes`) #1178 (`Context:` lines in first-seen order), and L-227 (#1182: the deferred summary writes one column). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.386 count, verbatim:
+
+- ⚠ Prior (1.108.386): 18265 passed, 25 skipped, **0 failed** (18290 total).
+
+## Current State rotation (2026-10-21, release 1.108.390)
+
+The 1.108.387 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.387):** **a licensed install is not shown a sales line** (2026-10-20: paid clients are never marketed to): `org.license.licence_key_configured` (reads `JCODEMUNCH_LICENSE_KEY` or `license_key`, never validates, so `init` makes no network call) gates `init`'s $79 line and `install-pack`'s "Get a license"; `license` and `license --json` show the pricing link only when no key is set (`license_status_json`). Also certifi and Pillow lock updates. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.387 count, verbatim:
+
+- ⚠ Prior (1.108.387): 18280 passed, 25 skipped, **0 failed** (18305 total).
+
+## Current State rotation (2026-10-21, release 1.108.391)
+
+The 1.108.388 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.388):** **the license names jMunch, LLC, and the product says "license"**: LICENSE 1.2, effective 2026-10-21, copyright jMunch, LLC, terms and SPDX identifier unchanged (#1191, digest pin moved); "licence" respelled outside identifiers, quotations and released history, and a rejected key gets a support pointer (#1192). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.388 count, verbatim:
+
+- ⚠ Prior (1.108.388): 18284 passed, 25 skipped, **0 failed** (18309 total).
+
+## Current State rotation (2026-10-22, release 1.108.392)
+
+The 1.108.389 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.389):** **the core tools load up front where clients defer MCP tools** (#1197): `_apply_always_load` marks `_instruction_tool_names(surface)` with `_meta["anthropic/alwaysLoad"]` (one list for both); stdio startup `_indexed_here` (resolve_repo, 1.5 s, source_root must contain cwd) makes the note say "is indexed (N files)"; the counter hook names `order` and its load step (#1188); `cli.policy` resolves the surface like the server (#1189). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.389 count, verbatim:
+
+- ⚠ Prior (1.108.389): 18330 passed, 24 skipped, **0 failed** (18354 total).
+
+## Current State rotation (2026-10-22, release 1.108.393)
+
+The 1.108.390 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.390):** **the local embedding model is pinned and checked before it is used** (#1201): `local_encoder.download_model` fetches `MODEL_REVISION` and checks each file against `MODEL_SHA256` (fails closed on a missing digest); a fetch goes to `<name>.part` and `os.replace`s only after it matches; a mismatching file on disk is removed and re-fetched. The search-time load does not re-hash; the sentence-transformers route is not pinned. Size now stated as about 90 MB. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.390 count, verbatim:
+
+- ⚠ Prior (1.108.390): 18339 passed, 24 skipped, **0 failed** (18363 total).
+
+## Current State rotation (2026-10-22, release 1.108.394)
+
+The 1.108.391 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.391):** **a question about how code works ranks the code above its tests** (#1207): `scoring.query_idf` weights plain-word function words in a multi-word query at `FUNCTION_WORD_WEIGHT`; `test_file_factor` (`TEST_SYMBOL_WEIGHT`) applies only where a caller RANKS, verdicts read the raw score. Also #1204 (#1202): `checkout_boundary.separate_checkout_between(worktrees=True)` keeps a nested worktree out of the parent's index in resolve_repo and the hooks; #1205: CLI backups are `cli/backup.backup_path`; #1208: the ubuntu 3.10 CI leg has its own wall Floor. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.391 count, verbatim:
+
+- ⚠ Prior (1.108.391): 18417 passed, 24 skipped, **0 failed** (18441 total).
+
+## Current State rotation (2026-10-22, release 1.108.395)
+
+The 1.108.392 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.392):** **a warning in a tool's answer survives the compact encoding** (#1212): `schema_driven.UNIVERSAL_BODY_JSON` / `is_universal_body_key` (`negative_evidence` and any key containing "warning") ride every encoder as `__json.<key>` and are restored on decode; `encode_response` decodes and compares the contract keys and falls back to JSON if one is lost. Also #1210: `scoring.rank_factor` returns `(weight, reason)`, `non_code_file` at `NON_CODE_WEIGHT` for config and stylesheet symbols unless the query names them; #1211: call-hierarchy rows carry `via`, depth is re-derived along it, `direct_caller_count`, encoder `ch2`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.392 count, verbatim:
+
+- ⚠ Prior (1.108.392): 18479 passed, 24 skipped, **0 failed** (18503 total).
+
+## Current State rotation (2026-10-23, release 1.108.396)
+
+The 1.108.393 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.393):** **a default install adds nothing to the model's context** (#1218): `_silent_hooks` (PostToolUse, PreCompact, TaskCompleted) are the default; `_guidance_hooks` need `init --guidance`, policy pastes `--policy`; an install keeps what it has; `init --remove-guidance` strips both with backups; `config --check` treats their absence as opt-in. Also #1217: `scoring.is_data_symbol` fields and UPPER_CASE constants weighted at `DATA_KIND_WEIGHT` unless the query names values; benchmark reference re-captured with an approved rise (`--accept-rise`, reference-only; STANDARD Regression 6). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.393 count, verbatim:
+
+- ⚠ Prior (1.108.393): 18537 passed, 24 skipped, **0 failed** (18561 total).
+
+## Current State rotation (2026-10-24, release 1.108.397)
+
+The 1.108.394 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.394):** **index_dependency validates package paths** (#1220): npm/PyPI names and `top_level.txt` entries are name-validated; every package dir and its metadata must resolve inside the repo and not be or contain a store root (`_is_store`, `_metadata_in_repo`); the snapshot is one dir directly under `deps/` and is rebuilt; `_copy_snapshot` runs `should_exclude_file` + binary + host-gitignore; `index_folder(paths_honor_gitignore=True)` applies the ancestor `.gitignore` to `paths=`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.394 count, verbatim:
+
+- ⚠ Prior (1.108.394): 18584 passed, 24 skipped, **0 failed** (18608 total).
+
+## Current State rotation (2026-10-25, release 1.108.398)
+
+The 1.108.395 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.395):** **a text match says which function it is in** (#1222): `tools/_enclosing.attach_enclosing_symbols` adds `in: {id, line, end_line}` to search_text and check_references matches (innermost span; on a tie the later, deeper symbol; kinds from `STATE_KINDS`); search_text body carries `truncated`, `timed_out` and an empty-scope `note`; encoding `st3`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.395 count, verbatim:
+
+- ⚠ Prior (1.108.395): 18593 passed, 25 skipped, **0 failed** (18618 total).
+
+## Current State rotation (2026-10-26, release 1.108.399)
+
+The 1.108.396 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.396):** **the first search on a large repository resolves each import once** (#1224): `parser/imports.resolve_specifier` hands its importer-independent tail to `_resolve_tail`, memoized per (specifier, frozenset of files, alias map) for every importer that is not `.gleam` (the one tail step that reads the importer); `_get_sql_stems` keys by the caller's frozenset; `clear_resolution_caches()` (called by `invalidate_cache`) clears both. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.396 count, verbatim:
+
+- ⚠ Prior (1.108.396): 18625 passed, 24 skipped, **0 failed** (18649 total).
+
+## Current State rotation (2026-10-27, release 1.108.400)
+
+The 1.108.397 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.397):** **a cut search names the files it left off, and file_pattern takes braces** (#1226): `tools/search_text._file_patterns` expands brace groups (as-written pattern always kept; nesting, an unclosed brace or > `MAX_BRACE_ALTERNATIVES` (32) match as written); a truncated page adds `more_files` (cap `MORE_FILES_CAP` 20) + `more_files_total`/`_truncated`/`_complete`, counted by `_count_matches` with the page's own line test (bytes prefilter only on ASCII files); encoding `st4`. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.397 count, verbatim:
+
+- ⚠ Prior (1.108.397): 18648 passed, 24 skipped, **0 failed** (18672 total).

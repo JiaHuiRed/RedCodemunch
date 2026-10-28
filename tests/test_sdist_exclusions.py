@@ -47,6 +47,8 @@ EXCLUDED_DIRS = [
     "vscode-extension/out",
     "docs/competitive",
     "benchmarks/competitive",
+    "munch-bench/results",
+    "server",
 ]
 
 # Paths that must SURVIVE the build. Without these the test would pass on a

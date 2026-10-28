@@ -583,8 +583,8 @@ Three things worth knowing before scheduling it:
 
 * **The budget bounds when a run ENDS, not what it costs while it runs.** A slice
   running flat out still saturates a core. `--pause-ms` is what lowers the duty
-  cycle. Python cannot preempt a running parse (tree-sitter is C), so the same
-  limit applies here as to `JCODEMUNCH_PARSE_BUDGET_SECONDS`.
+  cycle. The budget is checked between batches, so a batch in progress finishes
+  first; one file's parse is bounded separately by `JCODEMUNCH_PARSE_BUDGET_SECONDS`.
 * **AI summaries are off by default here**, unlike `index_folder`. A scheduled
   background job must not bill a paid summarizer API without being asked.
 * **A `parser_generation` upgrade is only claimed when the whole corpus has been
@@ -693,7 +693,7 @@ Set `JCODEMUNCH_LAUNCH_ID` (or the suite-generic `MUNCH_LAUNCH_ID`) in the serve
 | `check_references` | Quick dead-code check: is an identifier referenced anywhere? Combines import + content search | `repo`, `identifier`, `identifiers`, `search_content`, `max_content_results` |
 | `get_dependency_graph` | File-level dependency graph up to 3 hops; direction = imports, importers, or both | `repo`, `file`, `direction`, `depth` |
 | `get_blast_radius` | Which files break if this symbol changes? Returns confirmed/potential impacted files, `overall_risk_score`, `direct_dependents_count`; set `include_depth_scores=true` for `impact_by_depth` grouped by BFS layer; `include_source=true` returns source snippets and nearby symbols per entry (capped by `source_budget`); `decorator_filter` restricts to symbols with a given decorator | `repo`, `symbol`, `depth`, `include_depth_scores`, `include_source`, `source_budget`, `decorator_filter` |
-| `get_call_hierarchy` | Callers and callees of a symbol, N levels deep (AST-derived on v8+ indexes, text heuristic fallback) | `repo`, `symbol_id`, `direction`, `depth` |
+| `get_call_hierarchy` | Callers and callees of a symbol, N levels deep (AST-derived on v8+ indexes, text heuristic fallback). Only depth-1 rows are direct; a deeper row names the row it is reached from (`via`), and `direct_caller_count` / `callers_by_depth` sit beside `caller_count`, which counts every depth | `repo`, `symbol_id`, `direction`, `depth` |
 | `get_impact_preview` | Transitive "what breaks?" analysis — follows call chains to show downstream impact | `repo`, `symbol_id` |
 | `get_hotspots` | Top-N high-risk symbols ranked by complexity x churn (git commit frequency) | `repo`, `top_n`, `days` |
 | `get_coupling_metrics` | Afferent/efferent coupling and instability for a module path | `repo`, `module_path` |
@@ -711,7 +711,7 @@ Set `JCODEMUNCH_LAUNCH_ID` (or the suite-generic `MUNCH_LAUNCH_ID`) in the serve
 
 | Tool | What it does | Key parameters |
 |------|--------------|----------------|
-| `plan_turn` | Opening-move router: runs BM25 + PageRank against a query, returns confidence level, recommended symbols/files, insertion point suggestions, and budget advisor | `repo`, `query`, `max_recommended` |
+| `plan_turn` | Router for a broad task: runs BM25 + PageRank against a query, returns confidence level, recommended symbols/files, insertion point suggestions, and budget advisor | `repo`, `query`, `max_recommended` |
 | `get_session_context` | Returns session history: files read, searches run, edits made, tool call counts — use to avoid re-reading the same files | — |
 | `get_session_snapshot` | Compact ~200-token markdown summary of session state (focus files, edits, searches, negative evidence) — designed for context injection after compaction | — |
 | `register_edit` | Post-edit cache invalidation: clears BM25 and search caches for edited files, optionally reindexes | `file_path`, `reindex` |

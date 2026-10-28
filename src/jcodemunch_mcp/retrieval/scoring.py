@@ -19,6 +19,7 @@ nothing warns. Patch `retrieval.scoring` instead.
 
 from __future__ import annotations
 
+import functools
 import math
 import re
 
@@ -154,6 +155,231 @@ def _tokenize(text: str) -> list[str]:
                     result.append(exp)
                     seen.add(exp)
     return result
+
+
+# --- Query words and test demotion (shared by every lexical scorer) -------- #
+# A natural-language question carries words that name no code: "How does
+# dependency injection work?" scored "how" and "does" as content, so every
+# test named ``test_*_does_not_*`` outranked the functions that implement the
+# concept. In a multi-word query these words count at FUNCTION_WORD_WEIGHT
+# (see `function_word_terms` and `query_idf`); nothing is removed from the
+# query or the index. A one-word query, an identifier's parts, and a query
+# made only of such words keep full weight, so ``is`` or ``do`` still resolve.
+QUERY_STOPWORDS = frozenset({
+    "a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "from", "with",
+    "and", "or", "as", "into", "about", "over",
+    "how", "what", "where", "why", "when", "which", "who", "whom", "whose",
+    "is", "are", "was", "were", "be", "been", "being", "am",
+    "do", "does", "did", "doing", "done",
+    "can", "could", "should", "would", "will", "shall", "may", "might", "must",
+    "it", "its", "this", "that", "these", "those", "there", "here",
+    "i", "we", "you", "me", "my", "our", "your",
+})
+
+
+# A plain word: letters only, all lower case or capitalised, with trailing
+# punctuation allowed. Anything else (`ndcg_at_k`, `getUser`, `os.path`,
+# `v2`) is an identifier, and every part of an identifier is content.
+_PLAIN_WORD_RE = re.compile(r"[A-Za-z][a-z]*[?.,!;:]*")
+
+# How much a function word counts in a multi-word query's lexical score,
+# relative to its corpus IDF. Not 0: "is valid" and "value of" are names
+# typed as words, and the exact names `is_valid` and `value_of` stay ahead of
+# their neighbours only through the "is" and "of" they contain. Small: in
+# "How does dependency injection work?" a test named `..._does_not_...` must
+# not outrank the code on "does".
+FUNCTION_WORD_WEIGHT = 0.25
+
+
+def query_terms(query: str) -> list[str]:
+    """Tokens a lexical scorer matches for ``query``: every token, in order.
+
+    Falls back to the lowered query when there are no tokens at all (the old
+    ``_tokenize(q) or [q.lower()]`` contract). Empty strings are never
+    returned: "" matches every filename. How much each token COUNTS is
+    `query_idf`'s job; nothing is removed here.
+    """
+    toks = [t for t in _tokenize(query) if t]
+    if toks:
+        return toks
+    low = (query or "").lower()
+    return [low] if low else []
+
+
+def function_word_terms(query: str) -> frozenset:
+    """The tokens of ``query`` that count as function words ("how", "does", ...).
+
+    Only in a multi-word query, only where they stand as plain words, and never
+    a token that is also part of an identifier in the same query. A one-word
+    query is a name: the "at" in ``ndcg_at_k`` and the "is" in ``is_valid`` are
+    content. A query made only of function words keeps them all at full weight.
+    """
+    words = (query or "").split()
+    if len(words) < 2:
+        return frozenset()
+    fw: set[str] = set()
+    content: set[str] = set()
+    for w in words:
+        plain = _PLAIN_WORD_RE.fullmatch(w) is not None
+        for tok in _tokenize(w):
+            if plain and tok in QUERY_STOPWORDS:
+                fw.add(tok)
+            else:
+                content.add(tok)
+    fw -= content
+    if not content:
+        return frozenset()
+    return frozenset(fw)
+
+
+def query_idf(idf: dict, query: str) -> dict:
+    """The IDF map one query is scored with: the corpus IDF of each query token,
+    with function words (`function_word_terms`) at `FUNCTION_WORD_WEIGHT`.
+
+    Every lexical scorer reads IDF only for the query's own tokens, so this
+    small map stands in for the corpus map and the shared cache is never edited.
+    """
+    fw = function_word_terms(query)
+    out: dict = {}
+    for t in query_terms(query):
+        v = idf.get(t, 0.0)
+        out[t] = v * FUNCTION_WORD_WEIGHT if t in fw else v
+    return out
+
+
+# Words that make a query ABOUT tests; with one present, test code is what
+# the caller wants and is not demoted.
+_TEST_INTENT = frozenset({
+    "test", "tests", "testing", "spec", "specs", "fixture", "fixtures",
+    "mock", "mocks", "pytest", "unittest", "conftest",
+})
+
+# Multiplier on a test-file symbol's lexical score for a query that is not
+# about tests. Test suites outnumber the code they exercise and repeat its
+# vocabulary in their names, so without this a conceptual question returns
+# tests first. 0.25 is a chosen value, checked (not tuned) on the pinned
+# fastapi questions, where it cleared tests from the top 10; no other value was
+# compared. The miniature of that case is tests/test_conceptual_query_ranking.py.
+# A test still ranks when nothing in the source matches, and only RANKING reads
+# the reduced score (see `_bm25_score`).
+TEST_SYMBOL_WEIGHT = 0.25
+
+
+def has_test_intent(terms: list[str]) -> bool:
+    return any(t in _TEST_INTENT for t in terms)
+
+
+def test_file_factor(sym: dict, terms: list[str]) -> float:
+    """1.0, or `TEST_SYMBOL_WEIGHT` for a symbol in a test file when the query
+    is not about tests. The file check is `_test_paths.is_test_file`, the one
+    test-file rule, cached on the symbol dict."""
+    if has_test_intent(terms):
+        return 1.0
+    flag = sym.get("_is_test")
+    if flag is None:
+        # The shared rule itself, imported here because importing ``tools``
+        # at module level would cycle back into this module.
+        from ..tools._test_paths import is_test_file as _shared_test_rule  # noqa: PLC0415
+
+        flag = bool(_shared_test_rule(sym.get("file") or ""))
+        sym["_is_test"] = flag
+    return TEST_SYMBOL_WEIGHT if flag else 1.0
+
+
+# Languages whose symbols are settings, data or styling rather than code: a
+# workflow's env keys, a pyproject table, a CSS selector. Settings files can
+# hold as many symbols as the code beside them, and a common word in a key
+# (`UV_RESOLUTION` for "resolution") fills a code question's top results with
+# them. Every name here is one `parser/languages.py` produces (a test holds
+# that). Left out on purpose: `hcl` and `openapi`, whose symbols are
+# infrastructure and API definitions a code question may be asking about.
+_CONFIG_LANGUAGES = frozenset({"yaml", "toml", "json", "xml"})
+_STYLE_LANGUAGES = frozenset({"css", "scss", "sass", "less", "styl"})
+NON_CODE_LANGUAGES = _CONFIG_LANGUAGES | _STYLE_LANGUAGES
+
+# Words that make a query ABOUT configuration, or about styling; with one
+# present, that group of languages is not weighted (and only that group: a
+# question about the CI workflow is not a question about the stylesheet).
+_CONFIG_INTENT = frozenset({
+    "config", "configuration", "configure", "yaml", "yml", "toml", "json", "xml",
+    "workflow", "workflows", "ci", "setting", "settings", "pyproject", "manifest", "env",
+})
+_STYLE_INTENT = frozenset({
+    "css", "scss", "sass", "less", "styl", "stylus", "style", "styles", "stylesheet",
+    "selector", "selectors",
+})
+
+# Words that make a query ABOUT values; with one present no field or constant
+# is weighted.
+_DATA_INTENT = frozenset({
+    "field", "fields", "constant", "constants", "attribute", "attributes",
+    "property", "properties", "variable", "variables", "setting", "settings",
+    "value", "values",
+})
+
+# Multipliers for a NON_CODE_LANGUAGES symbol and for a data symbol (see
+# `is_data_symbol`). 0.5 is a chosen value, checked on the pinned fastapi
+# questions: it cleared every settings-file symbol from their top 5 while
+# "python version matrix" still ranked a workflow key first, which 0.25 did
+# not. The data weight reuses the value; on "context bind" it moved a field
+# and an UPPER_CASE constant out of the top 5. Only RANKING reads the reduced score; verdicts,
+# confidence and absence read the raw one.
+NON_CODE_WEIGHT = 0.5
+DATA_KIND_WEIGHT = 0.5
+
+
+def is_data_symbol(sym: dict) -> bool:
+    """A field, or a constant whose name is written as one (UPPER_CASE).
+
+    The kind alone is not enough: JavaScript and TypeScript index every
+    module-level `const` as a constant, so `const app = express()` and
+    `const router = express.Router()` are kind ``constant`` and are the code a
+    routing question is asking about. The UPPER_CASE spelling is the
+    convention for a value across languages."""
+    kind = sym.get("kind")
+    if kind == "field":
+        return True
+    if kind != "constant":
+        return False
+    name = (sym.get("name") or "").rsplit(".", 1)[-1].lstrip("_")
+    # A cased letter is required: a name in a script with no case (CJK, for
+    # one) equals its own upper-case form and says nothing about convention.
+    return any(c.isupper() for c in name) and name == name.upper()
+
+
+def rank_factor(sym: dict, terms: list[str]) -> tuple[float, str | None]:
+    """The ranking multiplier for ``sym`` on this query, and why.
+
+    One reason applies, the first that matches: ``test_file``
+    (`test_file_factor`), ``non_code_file`` (a NON_CODE_LANGUAGES symbol on a
+    query with no configuration, or styling, word) or ``data_kind``
+    (`is_data_symbol`, on a query with no value word). ``(1.0, None)``
+    otherwise."""
+    weight = test_file_factor(sym, terms)
+    if weight != 1.0:
+        return weight, "test_file"
+    lang = (sym.get("language") or "").lower()
+    if lang in NON_CODE_LANGUAGES:
+        intent = _CONFIG_INTENT if lang in _CONFIG_LANGUAGES else _STYLE_INTENT
+        if any(t in intent for t in terms):
+            return 1.0, None
+        return NON_CODE_WEIGHT, "non_code_file"
+    if is_data_symbol(sym) and not any(t in _DATA_INTENT for t in terms):
+        return DATA_KIND_WEIGHT, "data_kind"
+    return 1.0, None
+
+
+@functools.lru_cache(maxsize=256)
+def identity_query(query: str) -> str:
+    """The query as the identity (exact-name) channel reads it: EVERY token.
+
+    Function words are down-weighted only in the lexical score (`query_idf`);
+    the identity channel matches names, so "is valid" and "value of" are
+    compared with `is_valid` and `value_of` in full. Same value the scorers
+    used before `query_terms` existed. Cached: it runs once per
+    scored symbol.
+    """
+    return " ".join(_tokenize(query) or [(query or "").lower()])
 
 
 def _sym_tokens(sym: dict) -> list[str]:

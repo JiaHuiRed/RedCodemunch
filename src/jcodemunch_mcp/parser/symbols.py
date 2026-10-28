@@ -4,6 +4,8 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Optional
 
+from . import parse_budget
+
 
 @dataclass
 class Symbol:
@@ -30,6 +32,14 @@ class Symbol:
     max_nesting: int = 0           # Max bracket-nesting depth relative to opening brace
     param_count: int = 0           # Number of parameters in the signature
     call_references: list[str] = field(default_factory=list)  # Called names from AST call_expression nodes
+
+    def __post_init__(self) -> None:
+        # ⚠ The parse budget's Python-side checkpoint (L-116): a parser that
+        # builds symbols is stopped here whatever its loop looks like. The
+        # walkers that build none carry their own (`parse_budget`'s docstring).
+        # Outside a `parse_file` call (a parse-cache hit, `get_file_outline`)
+        # it is one attribute read and no clock.
+        parse_budget.checkpoint()
 
 
 
@@ -84,6 +94,13 @@ KIND_ORDER: tuple[str, ...] = (
     # existing position is bytes a client has already cached, and a reorder is
     # a full-rate schema rewrite for every user.
     "variable",   # Module-scope mutable bindings: JS/TS `let`/`var`, Go `var`
+    # Appended: positions are cached bytes.
+    "procedure",
+    "trigger",    # parent: same-file table id only
+    "table",
+    "view",
+    "index",
+    "constraint", # parent: the constrained table's id
 )
 
 VALID_KINDS: frozenset[str] = frozenset(KIND_ORDER)
@@ -126,6 +143,15 @@ REPRESENTATIVE_KIND_RANK: dict[str, int] = {
     "function": 1,
     "method": 2,
     "type": 3,
+    # SQL (#1080): a routine is a callable, so it ranks with them; a table, view
+    # or index ranks where `type` did, which is where every SQL object ranked
+    # before it had its own word. Without these a schema (still `type`)
+    # represented a file over the tables it creates.
+    "procedure": 1,
+    "trigger": 2,
+    "table": 3,
+    "view": 3,
+    "index": 3,
     **{kind: 4 for kind in STATE_KINDS},
 }
 
@@ -139,6 +165,22 @@ def plural_kind(kind: str, count: int) -> str:
     if count == 1:
         return kind
     return _IRREGULAR_PLURALS.get(kind, kind + "s")
+
+CALLABLE_KINDS: frozenset[str] = frozenset({
+    "function", "method", "procedure", "trigger",
+})
+
+TYPE_LIKE_KINDS: frozenset[str] = frozenset({
+    "type", "class", "table", "view",
+})
+
+
+def is_callable_kind(kind: str) -> bool:
+    return kind in CALLABLE_KINDS
+
+
+def is_type_like_kind(kind: str) -> bool:
+    return kind in TYPE_LIKE_KINDS
 
 
 def make_symbol_id(file_path: str, qualified_name: str, kind: str = "") -> str:

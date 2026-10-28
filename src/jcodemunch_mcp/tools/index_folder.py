@@ -35,10 +35,22 @@ from ..security import (
     get_extra_ignore_patterns,
     get_respect_cachedir_tag,
     get_skip_directories,
+    get_skip_msbuild_output,
+    get_skip_nuget_packages,
+    get_skip_virtualenvs,
+    get_skip_generated_migrations,
     is_cache_directory,
+    is_dotnet_project_dir,
+    is_msbuild_output_directory,
+    is_msbuild_output_path,
+    is_nuget_packages_directory,
+    is_virtualenv_site_packages_directory,
+    is_generated_migrations_directory,
     SKIP_FILES
 )
+from .. import path_prefix
 from ..storage import IndexStore
+from ..storage.sqlite_store import PROVIDERS_CUT_KEY
 from ..storage.git_root import (
     IdentityModeAmbiguous,
     IdentityModeConflict,
@@ -240,6 +252,7 @@ def _maybe_apply_adaptive(folder_path: str, result: dict) -> None:
 def get_filtered_files(path: str) -> Generator[str, None, None]:
     """Generator function to filter directories and files"""
     skip_dirs_regex = _build_skip_dirs_regex(repo=path)
+    skip_migrations = get_skip_generated_migrations(repo=path)
     # Use os.walk with followlinks=False to avoid infinite loops caused by
     # NTFS junctions or symlinks pointing back to ancestor directories.
     for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
@@ -251,6 +264,7 @@ def get_filtered_files(path: str) -> Generator[str, None, None]:
             dir for dir in dirnames
             if not skip_dirs_regex.match(dir)
             and not is_linked_worktree(dpath / dir)
+            and not (skip_migrations and is_generated_migrations_directory(dir, dpath / dir))
         ]
         for file in filenames:
             if not SKIP_FILES_REGEX.search(file):
@@ -426,7 +440,7 @@ class _IndexFilters:
     bundle rather than baked into it.
     """
     root: Path
-    root_prefix: str         # str(root) + os.sep
+    root_prefix: str         # path_prefix.dir_prefix(str(root))
     root_str_norm: str       # os.path.normcase(str(root))
     root_prefix_norm: str    # os.path.normcase(root_prefix)
     follow_symlinks: bool = False
@@ -437,6 +451,29 @@ class _IndexFilters:
     check_binary: bool = True
     check_filename: bool = True
     respect_cachedir_tag: bool = True
+    skip_msbuild_output: bool = True
+    skip_nuget_packages: bool = True
+    skip_virtualenvs: bool = True
+    skip_generated_migrations: bool = True
+
+
+def _config_skip_flags(repo: str) -> dict:
+    """The skip switches a project's config sets, read once for one walk root.
+
+    The full walk and the watcher's fast path both take their switches from here,
+    so a switch added to one route cannot be missing from the other.
+    """
+    return {
+        "respect_cachedir_tag": get_respect_cachedir_tag(repo=repo),
+        "skip_msbuild_output": get_skip_msbuild_output(repo=repo),
+        "skip_nuget_packages": get_skip_nuget_packages(repo=repo),
+        "skip_virtualenvs": get_skip_virtualenvs(repo=repo),
+        "skip_generated_migrations": get_skip_generated_migrations(repo=repo),
+    }
+
+
+# L-197: the containment prefix comes from the one rule (path_prefix.py).
+_dir_prefix = path_prefix.dir_prefix
 
 
 def _build_index_filters(
@@ -450,13 +487,17 @@ def _build_index_filters(
     check_binary: bool = True,
     check_filename: bool = True,
     respect_cachedir_tag: bool = True,
+    skip_msbuild_output: bool = True,
+    skip_nuget_packages: bool = True,
+    skip_virtualenvs: bool = True,
+    skip_generated_migrations: bool = True,
 ) -> _IndexFilters:
     """Bundle pre-computed filter config for ``_should_index_file``.
 
     ``root`` must already be resolved by the caller.
     """
     root_str = str(root)
-    root_prefix = root_str + os.sep
+    root_prefix = _dir_prefix(root_str)
     return _IndexFilters(
         root=root,
         root_prefix=root_prefix,
@@ -470,7 +511,186 @@ def _build_index_filters(
         check_binary=check_binary,
         check_filename=check_filename,
         respect_cachedir_tag=respect_cachedir_tag,
+        skip_msbuild_output=skip_msbuild_output,
+        skip_nuget_packages=skip_nuget_packages,
+        skip_virtualenvs=skip_virtualenvs,
+        skip_generated_migrations=skip_generated_migrations,
     )
+
+
+def _walk_filter_config(
+    root: Path,
+    *,
+    max_size: Optional[int] = None,
+    extra_ignore_patterns: Optional[list[str]] = None,
+    follow_symlinks: bool = False,
+    per_file: bool = False,
+) -> _IndexFilters:
+    """The filter config the full walk applies under ``root``.
+
+    ONE assembly of the walk's inputs: the size cap, the merged ignore patterns
+    (env, global, project ``.jcodemunch.jsonc`` and per-call, issue #300) and the
+    skip switches, each read with ``repo=root``. `discover_local_files` uses it,
+    and `index_file` uses it with ``per_file=True`` so the skip-directory rules
+    that the walk applies by pruning are applied to one path instead (L-142).
+    ``forced_paths`` is left empty; the caller decides when the package.json
+    scan is worth paying for.
+    """
+    root = root.resolve()
+    repo = str(root)
+    effective_extra = get_extra_ignore_patterns(extra_ignore_patterns, repo=repo)
+    extra_spec = None
+    if effective_extra:
+        try:
+            extra_spec = pathspec.PathSpec.from_lines("gitignore", effective_extra)
+        except Exception:
+            logger.debug("Invalid extra_ignore_patterns for %s", repo, exc_info=True)
+    return _build_index_filters(
+        root=root,
+        follow_symlinks=follow_symlinks,
+        max_size=get_max_file_size(max_size, repo=repo),
+        extra_spec=extra_spec,
+        skip_dirs_regex=_build_skip_dirs_regex(repo=repo) if per_file else None,
+        check_binary=True,
+        check_filename=True,
+        **_config_skip_flags(repo),
+    )
+
+
+def _directory_prune_reason(
+    name: str,
+    parent: str,
+    filenames,
+    cfg: "_IndexFilters",
+    skip_dirs_regex: "re.Pattern",
+    gitignore_specs: list,
+    root_str: str,
+    dotnet_here: Optional[bool] = None,
+) -> Optional[str]:
+    """Why the walk does not descend into ``parent/name``, or None to descend.
+
+    THE ONE directory rule. Discovery prunes with it, and so does the watcher's
+    census (`watcher._watch_directories`), so the census can be neither
+    stricter than discovery (an indexed file nobody watches) nor looser (a tree
+    polled that nothing indexes; #1163, 96,191 polled entries, 77% in four
+    gitignored trees). ``filenames`` is ``parent``'s own entries, already
+    walked, which the .NET marker reads with no IO. ``gitignore_specs`` must
+    already hold ``parent``'s own `.gitignore`, so a pattern there prunes its
+    child directories.
+
+    The order is behaviour-neutral, since a directory matching any rule is
+    pruned; cheap string checks run before the rules that cost an open() or a
+    stat, and the gitignore rules run last so a directory both rules match
+    keeps its historical count.
+    """
+    if skip_dirs_regex.match(name):
+        return "skip_dir"
+    path = Path(parent) / name
+    if is_linked_worktree(path):
+        return "nested_worktree"
+    if dotnet_here is None:
+        dotnet_here = is_dotnet_project_dir(filenames)
+    if cfg.skip_msbuild_output and dotnet_here and is_msbuild_output_directory(name, filenames):
+        return "msbuild_output"
+    if cfg.respect_cachedir_tag and is_cache_directory(path):
+        return "cache_dir"
+    if cfg.skip_virtualenvs and is_virtualenv_site_packages_directory(name, parent):
+        return "virtualenv"
+    if cfg.skip_nuget_packages and is_nuget_packages_directory(name, path):
+        return "nuget_packages"
+    if cfg.skip_generated_migrations and is_generated_migrations_directory(name, path):
+        return "generated_migrations"
+    # A directory a `.gitignore` or the extra patterns name, pruned only when
+    # the per-file verdict would ignore EVERYTHING below it (#1163).
+    # `index_file` and the watcher fast path judge one file at a time; pruning
+    # a directory holding a file they accept makes the walk disagree with them
+    # (L-142: `index_file` reports success, the next walk deletes the file).
+    # A directory match alone is not enough, and two shapes broke it in review:
+    # a `!` pattern re-including a file below (`outdir/**` + `!outdir/keep.py`),
+    # and `x/*`, which matches `x/sub/` but not `x/sub/a.py`. So the matcher
+    # itself is asked about descendants at two depths (`_DESCENDANT_PROBES`),
+    # and no spec reaching the directory may hold a negation. The trailing
+    # "/" lets a directory-only pattern (`vcpkg/`) match.
+    dir_str = os.path.join(parent, name)
+    if (
+        gitignore_specs
+        and not _a_negation_reaches(dir_str, gitignore_specs)
+        and all(
+            _is_gitignored_fast(dir_str + "/" + probe, gitignore_specs)
+            for probe in ("",) + _DESCENDANT_PROBES
+        )
+    ):
+        return "gitignored_dir"
+    if cfg.extra_spec is not None and not _spec_has_negation(cfg.extra_spec):
+        rel = os.path.relpath(dir_str, root_str).replace("\\", "/")
+        if all(cfg.extra_spec.match_file(rel + "/" + probe) for probe in ("",) + _DESCENDANT_PROBES):
+            return "extra_ignore_dir"
+    return None
+
+
+# Names no pattern is written against: a file directly below a directory and
+# one a level deeper. A pattern that ignores the directory but not these (`x/*`)
+# leaves it walked, so the per-file verdict decides each file as before.
+_DESCENDANT_PROBES = ("jcm-probe-0", "jcm-probe-0/jcm-probe-1")
+
+
+def _spec_has_negation(spec) -> bool:
+    return any(getattr(p, "include", True) is False for p in spec.patterns)
+
+
+def _a_negation_reaches(dir_str: str, specs: list) -> bool:
+    """Whether any spec whose directory contains ``dir_str`` holds a `!` pattern."""
+    norm = os.path.normcase(dir_str + "/")
+    for dir_prefix, spec in specs:
+        if norm.startswith(os.path.normcase(dir_prefix)) and _spec_has_negation(spec):
+            return True
+    return False
+
+
+def _load_dir_gitignore(dirpath: str, filenames, specs: list) -> None:
+    """Append ``dirpath``'s own `.gitignore` to ``specs``, as both walks do."""
+    if ".gitignore" not in filenames:
+        return
+    try:
+        content = (Path(dirpath) / ".gitignore").read_text(encoding="utf-8", errors="replace")
+        spec = pathspec.PathSpec.from_lines("gitignore", content.splitlines())
+        specs.append((_dir_prefix(str(Path(dirpath).resolve())), spec))
+    except Exception:
+        logger.debug("unreadable .gitignore in %s", dirpath, exc_info=True)
+
+
+def _framework_ignore_patterns(profile) -> list[str]:
+    """``profile``'s ignore patterns, which the walk merges into
+    ``extra_ignore_patterns``; empty for no profile. The walk detects the
+    profile at the index root (the git root after the v1.96 retarget) and
+    applies the patterns relative to the walk root; `index_file` does the same.
+    """
+    if not profile:
+        return []
+    logger.info(
+        "Framework profile '%s' active — adding %d ignore patterns",
+        profile.name,
+        len(profile.ignore_patterns),
+    )
+    return list(profile.ignore_patterns)
+
+
+def _gitignore_specs_on_path(root: Path, file_path: Path) -> list[tuple[str, "pathspec.PathSpec"]]:
+    """The ``.gitignore`` specs the walk from ``root`` holds when it reaches ``file_path``.
+
+    The walk reads the ``.gitignore`` of every directory it descends through,
+    root first; for one file that is ``root`` and each directory down to the
+    file's parent. ``file_path`` must be under ``root``; both resolved.
+    """
+    specs: list[tuple[str, "pathspec.PathSpec"]] = []
+    directory = root
+    for part in ("",) + file_path.parent.relative_to(root).parts:
+        if part:
+            directory = directory / part
+        spec = _load_gitignore(directory)
+        if spec is not None:
+            specs.append((_dir_prefix(str(directory.resolve())), spec))
+    return specs
 
 
 def _should_index_file(
@@ -492,7 +712,8 @@ def _should_index_file(
       - ``ok=False``: caller must skip. ``reason`` is one of the
         ``skip_counts`` keys (``skip_file``, ``symlink``,
         ``symlink_escape``, ``path_traversal``, ``skip_dir``,
-        ``nested_worktree``, ``gitignore``, ``extra_ignore``, ``secret``,
+        ``nested_worktree``, ``cache_dir``, ``msbuild_output``,
+        ``nuget_packages``, ``virtualenv``, ``generated_migrations``, ``gitignore``, ``extra_ignore``, ``secret``,
         ``wrong_extension``, ``too_large``, ``unreadable``, ``binary``).
         ``rel_path`` may
         be empty if rejection happened before path resolution.
@@ -571,6 +792,26 @@ def _should_index_file(
             # the back door. Third entry point, same rule as #429.
             if cfg.respect_cachedir_tag and is_cache_directory(ancestor):
                 return False, "cache_dir", rel_path, None
+            # MSBuild output and NuGet restore trees, same third-entry-point rule.
+            # Both are name-gated inside the predicate, so a component that is not
+            # called `obj`/`bin`/`packages` costs one string compare and no IO.
+            if cfg.skip_msbuild_output and is_msbuild_output_path(ancestor):
+                return False, "msbuild_output", rel_path, None
+            # A Python virtualenv's installed packages (`site-packages` under a root
+            # whose `pyvenv.cfg` proves it, L-206); name-gated, so other components
+            # cost one string compare. Same order as the walk.
+            if cfg.skip_virtualenvs and is_virtualenv_site_packages_directory(
+                ancestor.name, ancestor.parent
+            ):
+                return False, "virtualenv", rel_path, None
+            if cfg.skip_nuget_packages and is_nuget_packages_directory(
+                ancestor.name, ancestor
+            ):
+                return False, "nuget_packages", rel_path, None
+            if cfg.skip_generated_migrations and is_generated_migrations_directory(
+                ancestor.name, ancestor
+            ):
+                return False, "generated_migrations", rel_path, None
 
     # 8. Gitignore (string-prefix specs, walk-order)
     if gitignore_specs and _is_gitignored_fast(resolved_str, gitignore_specs):
@@ -809,6 +1050,57 @@ def _resolve_active_providers(folder_path: Path, context_providers: bool) -> lis
     return active
 
 
+# L-190: a provider the budget cut leaves its context off the stored symbols.
+# The index records it under PROVIDERS_CUT_KEY, and the next full pass over the
+# whole tree re-parses every file to run it again. A pass that re-reads only
+# part of the tree (`paths=`, a watched edit, `index_file`, a subdir walk, a
+# branch delta) keeps the record; `incremental_save` carries it for every
+# delta writer.
+
+
+def _provider_cut_names(folder_path: Path) -> list[str]:
+    """Providers the budget cut on this process's latest discovery for the folder."""
+    skips = _PROVIDER_SKIPS.get(str(folder_path)) or []
+    return sorted({
+        str(s["provider"]) for s in skips
+        if s.get("reason") == "budget_exceeded" and s.get("provider")
+    })
+
+
+def _stored_provider_cut(index) -> list[str]:
+    """Providers an index records as cut; [] for none or an unreadable value."""
+    meta = getattr(index, "context_metadata", None) or {}
+    value = meta.get(PROVIDERS_CUT_KEY) if isinstance(meta, dict) else None
+    return sorted({str(v) for v in value}) if isinstance(value, list) else []
+
+
+def _stamp_provider_cut(
+    meta: Optional[dict], cut: list[str], existing, *, carry_existing: bool
+) -> Optional[dict]:
+    """Return context metadata that records `cut`, clearing a stored cut it ends.
+
+    An incremental save REPLACES `context_metadata` when given a dict and keeps
+    the stored one when given None, so a pass with no provider metadata of its
+    own starts from the stored dict (`carry_existing`) rather than wiping it. A
+    full save starts from nothing, as it always has.
+    """
+    if not cut and not _stored_provider_cut(existing):
+        return meta
+    if meta is not None:
+        out = dict(meta)
+    elif carry_existing:
+        out = dict(getattr(existing, "context_metadata", None) or {})
+    else:
+        out = {}
+    if cut:
+        out[PROVIDERS_CUT_KEY] = sorted(cut)
+        return out
+    # A healed record leaves no empty key behind; a full save starting from
+    # nothing goes back to None, as it was before any cut.
+    out.pop(PROVIDERS_CUT_KEY, None)
+    return out if (out or meta is not None or carry_existing) else None
+
+
 def _attach_provider_skips(result: dict, folder_path: Path) -> None:
     """Surface budget-skipped / failed context providers on an index result."""
     skips = _PROVIDER_SKIPS.get(str(folder_path)) or []
@@ -823,6 +1115,8 @@ def _attach_provider_skips(result: dict, folder_path: Path) -> None:
                 f"{skip.get('seconds')}s and was skipped. Symbols are indexed but "
                 f"carry no {skip['provider']} context, and its import edges "
                 f"(route mounts, template renders) are missing from the graph. "
+                f"The index records the cut, and the next index_folder re-parses "
+                f"every file so the provider runs again. "
                 f"Raise JCODEMUNCH_PROVIDER_BUDGET_SECONDS to let it finish, or "
                 f"set context_providers=false to stop paying for it."
             )
@@ -928,7 +1222,7 @@ def _rel_to_root(abs_path: Path, root: Path) -> Optional[str]:
         # Last resort: normcase both (Windows drive-letter/short-name casing).
         r_norm = os.path.normcase(str(root_resolved))
         p_norm = os.path.normcase(str(resolved))
-        prefix = r_norm if r_norm.endswith(os.sep) else r_norm + os.sep
+        prefix = _dir_prefix(r_norm)
         if p_norm.startswith(prefix):
             return str(resolved)[len(prefix):].replace("\\", "/")
     except OSError:
@@ -1050,12 +1344,32 @@ def _refresh_git_head_if_advanced(store, owner, name, folder_path, stored_head):
         return ""
 
 
+def _explicit_path_is_gitignored(walk_root: Path, file_path: Path, cache: Optional[dict] = None) -> bool:
+    """Is ``file_path`` excluded by a .gitignore between ``walk_root`` and it?
+
+    ``cache`` maps a directory to its chain, so a long list of files in a few
+    directories reads each .gitignore once.
+    """
+    parent = file_path.parent
+    if cache is not None and parent in cache:
+        specs = cache[parent]
+    else:
+        try:
+            specs = _gitignore_specs_on_path(walk_root, file_path)
+        except ValueError:
+            return False
+        if cache is not None:
+            cache[parent] = specs
+    return bool(specs) and _is_gitignored_fast(str(file_path), specs)
+
+
 def resolve_explicit_paths(
     walk_root: Path,
     paths: list,
     max_files: Optional[int],
     max_size: Optional[int] = None,
     follow_symlinks: bool = False,
+    honor_gitignore: bool = True,
 ) -> tuple[list[Path], list[str], dict[str, int], list[str]]:
     """Materialise a caller-supplied list of paths into the (files, warnings,
     skip_counts, requested_rels) shape that the standard indexing pipeline
@@ -1074,9 +1388,13 @@ def resolve_explicit_paths(
     non-existent paths, symlink escapes, oversize files, secret/credential
     files, and binary files are rejected with per-entry warnings. The
     security-relevant filters (symlink, secret, binary, size) mirror the full
-    walk; unlike the walk, explicit paths deliberately opt past gitignore and
-    skip-directory rules so a caller can name a generated/ignored source file
-    on purpose (e.g. ``index_dependency`` indexing a ``dist/`` snapshot).
+    walk, and so does .gitignore: a listed file that a .gitignore between
+    ``walk_root`` and the file excludes is skipped, because a gitignored file
+    can hold credentials the secret patterns do not name. Skip-directory rules
+    still do not apply, so a caller can name a generated source file.
+    ``honor_gitignore=False`` is for ``index_dependency`` alone, which indexes
+    its own filtered snapshot of a package whose .gitignore often lists
+    ``dist/``.
 
     Used by ``index_folder(paths=...)`` so agents can re-index exactly the
     files they already know about (git-diff list, edited-files list,
@@ -1094,6 +1412,7 @@ def resolve_explicit_paths(
     seen: set = set()
 
     cap = max_files if max_files is not None else 10_000_000
+    gitignore_cache: dict = {}
 
     for raw in paths:
         if len(files) >= cap:
@@ -1135,8 +1454,14 @@ def resolve_explicit_paths(
             warnings.extend(sub_warnings)
             for k, v in sub_skip.items():
                 skip_counts[k] = skip_counts.get(k, 0) + v
+            # The subtree walk reads the .gitignore files inside ``p``; the
+            # ones above it, up to ``walk_root``, are applied here.
+            above = _gitignore_specs_on_path(walk_root, p) if honor_gitignore and p != walk_root else []
             for f in sub_files:
                 fr = f.resolve()
+                if above and _is_gitignored_fast(str(fr), above):
+                    skip_counts["gitignore"] = skip_counts.get("gitignore", 0) + 1
+                    continue
                 if fr not in seen:
                     seen.add(fr)
                     files.append(f)
@@ -1159,11 +1484,16 @@ def resolve_explicit_paths(
         # secrets/*.yaml, credentials.json) was indexed and later served
         # unredacted by the source-dump tools, while the full walk refused it.
         # The explicit-paths branch must apply the same secret filter the walk
-        # does; it intentionally still opts past gitignore/skip-dir so callers
-        # can name generated/ignored source files on purpose.
+        # does; .gitignore is applied below, and skip-dir rules are not, so a
+        # caller can name a generated source file on purpose.
         if is_secret_file(_rel, repo=str(walk_root)):
             warnings.append(f"Skipped secret file: {_rel}")
             skip_counts["secret"] = skip_counts.get("secret", 0) + 1
+            continue
+
+        if honor_gitignore and _explicit_path_is_gitignored(walk_root, p, gitignore_cache):
+            warnings.append(f"Skipped gitignored file: {_rel}")
+            skip_counts["gitignore"] = skip_counts.get("gitignore", 0) + 1
             continue
 
         if get_language_for_path(str(p)) is None and p.suffix not in LANGUAGE_EXTENSIONS:
@@ -1232,7 +1562,8 @@ def discover_local_files(
     _repo_key = str(root)
     max_size = get_max_file_size(max_size, repo=_repo_key)
     max_files = get_max_folder_files(max_files, repo=_repo_key)
-    respect_cachedir_tag = get_respect_cachedir_tag(repo=_repo_key)
+    # The skip switches ride on `filter_cfg` below (`_config_skip_flags`), and
+    # the directory rule reads them there (`_directory_prune_reason`).
     files = []
     warnings = []
     oversize: list[str] = []
@@ -1240,6 +1571,12 @@ def discover_local_files(
     skip_counts: dict[str, int] = {
         "skip_dir": 0,
         "nested_worktree": 0,
+        "msbuild_output": 0,
+        "nuget_packages": 0,
+        "virtualenv": 0,
+        "generated_migrations": 0,
+        "gitignored_dir": 0,
+        "extra_ignore_dir": 0,
         "skip_file": 0,
         "symlink": 0,
         "symlink_escape": 0,
@@ -1259,46 +1596,21 @@ def discover_local_files(
     # the walk below (P8: single os.walk pass instead of two).
     gitignore_str_specs: list[tuple[str, pathspec.PathSpec]] = []
 
-    # Pre-compute root path strings (root is already resolved above).
-    # Normalized variants use os.path.normcase for case-insensitive comparison
-    # on Windows (no-op on POSIX).
-    root_str = str(root)
-    root_prefix = root_str + os.sep
-    root_str_norm = os.path.normcase(root_str)
-    root_prefix_norm = os.path.normcase(root_prefix)
+    root_str = str(root)  # root is already resolved above
 
-    # Merge env-var global, project-level, and per-call patterns, then build
-    # spec. Passing repo=str(folder_path) so .jcodemunch.jsonc overrides land
-    # (issue #300, reported by @domis86).
-    effective_extra = get_extra_ignore_patterns(
-        extra_ignore_patterns, repo=str(folder_path)
+    # Build per-file filter config once (#306). ``per_file=False`` leaves
+    # ``skip_dirs_regex`` None because ``os.walk`` below prunes those
+    # directories before any of their files reach the helper. `index_file`
+    # builds the same config with ``per_file=True`` (L-142).
+    filter_cfg = _walk_filter_config(
+        root,
+        max_size=max_size,
+        extra_ignore_patterns=extra_ignore_patterns,
+        follow_symlinks=follow_symlinks,
     )
-    extra_spec = None
-    if effective_extra:
-        try:
-            extra_spec = pathspec.PathSpec.from_lines("gitignore", effective_extra)
-        except Exception:
-            pass
-
     # Pre-scan package.json files; their `main`/`module`/`exports`/`bin`
     # targets get the size-cap exemption. Built once before the walk.
-    forced_paths = _scan_package_json_forced_paths(root)
-
-    # Build per-file filter config once. Shared with the watcher fast path
-    # via ``_should_index_file`` (see #306). ``skip_dirs_regex`` is None
-    # here because ``os.walk`` below prunes those directories before any
-    # of their files reach the helper — keeping behaviour identical.
-    filter_cfg = _build_index_filters(
-        root=root,
-        follow_symlinks=follow_symlinks,
-        max_size=max_size,
-        extra_spec=extra_spec,
-        forced_paths=forced_paths,
-        skip_dirs_regex=None,
-        check_binary=True,
-        check_filename=True,
-        respect_cachedir_tag=respect_cachedir_tag,
-    )
+    filter_cfg.forced_paths = _scan_package_json_forced_paths(root)
 
     skip_dirs_regex = _build_skip_dirs_regex(repo=str(root))
 
@@ -1309,54 +1621,32 @@ def discover_local_files(
 
     for dirpath, dirnames, filenames in os.walk(str(root), followlinks=False, onerror=_count_walk_error):
         dpath = Path(dirpath)
-        # Prune directories that should always be skipped before descending.
-        # Nested linked worktrees (`.git` FILE → `.git/worktrees/<name>`,
-        # e.g. Claude Code's `<repo>/.claude/worktrees/`) are separate
-        # working trees whose near-duplicate checkouts would pollute this
-        # index and burn the max_folder_files cap (#372).
-        pruned = []
-        worktrees = []
-        caches = []
+        # This directory's own .gitignore first: it applies to the files below
+        # AND prunes the child directories it names (#1163).
+        _load_dir_gitignore(dirpath, filenames, gitignore_str_specs)
+        # Prune before descending, by the one directory rule the watcher's
+        # census also asks (`_directory_prune_reason`). Nested linked worktrees
+        # (#372), MSBuild output, CACHEDIR-tagged caches, virtualenv
+        # site-packages (L-206), NuGet restore trees, generated migrations, and
+        # directories a .gitignore or the extra ignore patterns name.
         kept = []
+        rel_dir = None
+        # `filenames` is this directory's entries, already walked, so the .NET
+        # marker costs no IO, and is read once for all its children.
+        dotnet_here = is_dotnet_project_dir(filenames)
         for d in dirnames:
-            if skip_dirs_regex.match(d):
-                pruned.append(d)
-            elif is_linked_worktree(dpath / d):
-                worktrees.append(d)
-            # A directory that declares ITSELF a cache, per the Cache Directory
-            # Tagging Specification. Checked last because it costs an open() and
-            # the two rules above are string/stat work; ordering is behaviour-
-            # neutral since a directory matching an earlier rule is pruned
-            # either way.
-            elif respect_cachedir_tag and is_cache_directory(dpath / d):
-                caches.append(d)
-            else:
+            why = _directory_prune_reason(
+                d, dirpath, filenames, filter_cfg, skip_dirs_regex,
+                gitignore_str_specs, root_str, dotnet_here,
+            )
+            if why is None:
                 kept.append(d)
-        if pruned or worktrees or caches:
-            rel_dir = os.path.relpath(dirpath, root_str)
-            for d in pruned:
-                skip_counts["skip_dir"] += 1
-                logger.debug("SKIP skip_dir: %s", os.path.join(rel_dir, d))
-            for d in worktrees:
-                skip_counts["nested_worktree"] += 1
-                logger.debug(
-                    "SKIP nested_worktree: %s", os.path.join(rel_dir, d)
-                )
-            for d in caches:
-                skip_counts["cache_dir"] += 1
-                logger.debug("SKIP cache_dir: %s", os.path.join(rel_dir, d))
+                continue
+            skip_counts[why] = skip_counts.get(why, 0) + 1
+            if rel_dir is None:
+                rel_dir = os.path.relpath(dirpath, root_str)
+            logger.debug("SKIP %s: %s", why, os.path.join(rel_dir, d))
         dirnames[:] = kept
-
-        # Load .gitignore for this directory BEFORE filtering its files so
-        # that patterns defined here apply to siblings in the same directory.
-        if ".gitignore" in filenames:
-            gitignore_path = dpath / ".gitignore"
-            try:
-                content = gitignore_path.read_text(encoding="utf-8", errors="replace")
-                spec = pathspec.PathSpec.from_lines("gitignore", content.splitlines())
-                gitignore_str_specs.append((str(dpath.resolve()) + os.sep, spec))
-            except Exception:
-                pass
 
         for filename in filenames:
             file_path = dpath / filename
@@ -1450,6 +1740,7 @@ def index_folder(
     identity_mode: str = "config",
     force_reparse: bool = False,
     max_size: Optional[int] = None,
+    paths_honor_gitignore: bool = True,
 ) -> dict:
     """Index a local folder containing source code.
 
@@ -1734,17 +2025,17 @@ def index_folder(
                     )
                     return
 
-                # Update only the symbol summaries (empty change lists → INSERT OR REPLACE updates existing rows)
+                # Write the summaries and nothing else (L-227). A whole-row
+                # `incremental_save(new_symbols=...)` wrote back every field of
+                # the objects it was handed, so a summarizer returning rebuilt
+                # symbols stored zeros over complexity and call references, the
+                # #1161 shape. The UPDATE is guarded by `content_hash`, so a body
+                # changed meanwhile keeps its row.
                 try:
-                    store.incremental_save(
-                        owner=owner, name=repo_name,
-                        changed_files=[], new_files=[], deleted_files=[],
-                        new_symbols=summarized,
-                        raw_files={},
-                    )
+                    written = store.update_summaries_from_symbols(owner, repo_name, summarized)
                     logger.info(
-                        "Deferred AI summarization gen=%d saved %d symbols for %s",
-                        gen, len(summarized), repo_full,
+                        "Deferred AI summarization gen=%d saved %d of %d summaries for %s",
+                        gen, written, len(summarized), repo_full,
                     )
                 except Exception as e:
                     logger.warning("Deferred summarization failed for %s: %s", repo_full, e)
@@ -1814,7 +2105,7 @@ def index_folder(
                         "gitignore", _gi_content.splitlines()
                     )
                     _fast_gitignore_specs.append(
-                        (str(folder_path.resolve()) + os.sep, _gi_spec)
+                        (_dir_prefix(str(folder_path.resolve())), _gi_spec)
                     )
             except Exception:
                 pass
@@ -1864,9 +2155,7 @@ def index_folder(
                 ),
                 check_binary=False,
                 check_filename=True,
-                respect_cachedir_tag=get_respect_cachedir_tag(
-                    repo=str(Path(walk_root).resolve())
-                ),
+                **_config_skip_flags(str(Path(walk_root).resolve())),
             )
 
             # Branch detection for watcher fast-path
@@ -2129,6 +2418,13 @@ def index_folder(
                 _fast_phase("parse")
                 git_head = _get_git_head(folder_path) or ""
                 incr_context_metadata = collect_metadata(active_providers) if active_providers else None
+                # A delta keeps the stored cut; a discovery run on a cache miss
+                # may add one of its own (L-190).
+                incr_context_metadata = _stamp_provider_cut(
+                    incr_context_metadata,
+                    sorted(set(_stored_provider_cut(existing_index)) | set(_provider_cut_names(folder_path))),
+                    existing_index, carry_existing=True,
+                )
                 _fast_phase("git_head")
 
                 # Merge mtime-only updates so they're persisted alongside real changes
@@ -2233,14 +2529,7 @@ def index_folder(
         # ── Standard path: full directory discovery ──
         # Detect framework profile and merge its ignore patterns before discovery
         _framework_profile = detect_framework(folder_path)
-        _profile_ignore: list[str] = []
-        if _framework_profile:
-            _profile_ignore = _framework_profile.ignore_patterns
-            logger.info(
-                "Framework profile '%s' active — adding %d ignore patterns",
-                _framework_profile.name,
-                len(_profile_ignore),
-            )
+        _profile_ignore = _framework_ignore_patterns(_framework_profile)
 
         _merged_ignore = list(extra_ignore_patterns or []) + _profile_ignore
 
@@ -2262,6 +2551,7 @@ def index_folder(
                 max_files=max_files,
                 max_size=max_size,
                 follow_symlinks=follow_symlinks,
+                honor_gitignore=paths_honor_gitignore,
             )
         else:
             source_files, discover_warnings, skip_counts = discover_local_files(
@@ -2440,6 +2730,12 @@ def index_folder(
         # ── Branch-aware indexing ──
         # Detect current git branch. If a base index exists and we're on a
         # different branch, save as a branch delta instead of overwriting the base.
+        # ⚠⚠ DORMANT (L-196, jjg 2026-10-15): no full save records the base's
+        # branch, so `_base_branch` falls back to the current one and delta mode
+        # never starts; and no reader composes a branch view. The index follows
+        # the checked-out tree, which is what every reader assumes
+        # (tests/test_index_follows_the_checked_out_tree.py). Enabling the
+        # writer without the read path would serve a stale base on a branch.
         _current_branch = _get_git_branch(folder_path)
         _is_branch_delta = False
         _base_branch: str = ""
@@ -2543,6 +2839,33 @@ def index_folder(
                     "Racket config (racket_definition_forms / racket_langs) changed since this "
                     "index was built; every file was re-parsed once so the declarations apply."
                 )
+        elif (
+            (_cut_before := _stored_provider_cut(existing_index))
+            and paths is None
+            and not _is_branch_delta
+            and _merge_with_existing is None
+        ):
+            # L-190: a provider the budget cut on an earlier pass left its
+            # context off every file, and an incremental pass re-reads only the
+            # changed ones, so the gap would outlive the slow moment that made
+            # it. Re-parse everything once so the provider runs again. Only a
+            # pass over the whole tree can clear the record, so a targeted pass
+            # (`paths=`), a subdir walk and a branch delta (whose index inherits
+            # the base's metadata and cannot save its own) keep it instead.
+            incremental = False
+            rebuild_reason = "context_provider_cut"
+            logger.warning(
+                "index_folder context_provider_cut — %s/%s: %s cut by the provider "
+                "budget on the last pass; re-parsing every file so it runs again",
+                owner, repo_name, ", ".join(_cut_before),
+            )
+            warnings.append(
+                f"Context provider(s) {', '.join(_cut_before)} ran out of time on the last "
+                f"index pass, so their context was missing from this index; every file was "
+                f"re-parsed so they run again. A provider that runs out of time on every pass "
+                f"makes every index_folder a full re-parse: raise "
+                f"JCODEMUNCH_PROVIDER_BUDGET_SECONDS or set context_providers=false."
+            )
 
         # Discovery pass — resolve rel_paths and collect mtimes without
         # reading file contents (P2-5: avoids 200MB-1GB allocation
@@ -2627,11 +2950,22 @@ def index_folder(
         except ImportError:
             pass
 
-        # Repeat walks of a recorded subdir can diff incrementally, provided
-        # deletions are restricted to that subdir.
-        _subdir_incremental = (
-            _merge_with_existing is not None
-            and walk_prefix in (existing_index.source_roots or [])
+       # Incremental path: detect changes using mtime fast-path.  Disabled
+       # when v1.96 subdir-merge mode is active (`_merge_with_existing`)
+       # because the new walk only covers `walk_prefix` while the existing
+       # index covers other subdirs — incremental's "changed/new/deleted"
+       # accounting against the full existing file set would mis-attribute
+       # carryover files as deleted.
+       #
+       # Exception: a RE-walk of a subdir already recorded in `source_roots`.
+       # Scoping `deleted` to `walk_prefix` removes the mis-attribution, and
+       # `incremental_save` leaves every unlisted (carried) file untouched, so
+       # a scheduled `index <subdir>` no longer re-parses the whole subdir.
+       _subdir_incremental = (
+           _merge_with_existing is not None
+           and not _is_branch_delta
+           and walk_prefix in (getattr(_merge_with_existing, "source_roots", None) or [])
+       )
         )
         if incremental and existing_index is not None and (
             _merge_with_existing is None or _subdir_incremental
@@ -2747,6 +3081,13 @@ def index_folder(
 
             git_head = _get_git_head(folder_path) or ""
             incr_context_metadata = collect_metadata(active_providers) if active_providers else None
+            # An incremental pass re-reads only changed files, so a stored cut
+            # stays until a full pass clears it; a new cut joins it (L-190).
+            incr_context_metadata = _stamp_provider_cut(
+                incr_context_metadata,
+                sorted(set(_stored_provider_cut(existing_index)) | set(_provider_cut_names(folder_path))),
+                existing_index, carry_existing=True,
+            )
 
             # ── Optional LSP enrichment (incremental path) ──
             try:
@@ -2915,6 +3256,8 @@ def index_folder(
                 # content eligible for GC after this iteration
                 continue
             try:
+                # `parse_file` enforces the per-file budget itself, on this thread
+                # (L-114 the parse, L-116 the Python side).
                 symbols = parse_file(content, rel_path, language, source_bytes=content_bytes, repo=str(folder_path))
                 if symbols:
                     all_symbols.extend(symbols)
@@ -2964,26 +3307,29 @@ def index_folder(
                     if existing_index.file_hashes.get(f) == h
                 }
                 if _folder_unchanged_files:
-                    _folder_existing_summaries = {
-                        (s["file"], s["name"], s["kind"]): s["summary"]
-                        for s in existing_index.symbols
-                        if s.get("summary") and s.get("file") in _folder_unchanged_files
-                    }
+                    from . import _indexing_pipeline
+                    _folder_existing_summaries = _indexing_pipeline.preservable_summaries(
+                        existing_index.symbols, _folder_unchanged_files
+                    )
                     logger.info(
                         "index_folder full — %d/%d files unchanged, %d summaries preserved",
                         len(_folder_unchanged_files), len(file_hashes),
                         len(_folder_existing_summaries) if _folder_existing_summaries else 0,
                     )
 
+            # summarizer_body_chars sends the text just written to the content cache.
+            def _cached_source(rel: str) -> Optional[str]:
+                return store.read_cached_source(owner, repo_name, rel)
+
             if _folder_existing_summaries and _folder_unchanged_files:
                 from ._indexing_pipeline import _split_for_summarization
                 _needs_summary, _already_summarized = _split_for_summarization(
                     all_symbols, _folder_existing_summaries, _folder_unchanged_files
                 )
-                _summarized = summarize_symbols(_needs_summary, use_ai=use_ai_summaries, repo=str(folder_path)) if _needs_summary else []
+                _summarized = summarize_symbols(_needs_summary, use_ai=use_ai_summaries, repo=str(folder_path), source_for=_cached_source) if _needs_summary else []
                 all_symbols = _summarized + _already_summarized
             else:
-                all_symbols = summarize_symbols(all_symbols, use_ai=use_ai_summaries, repo=str(folder_path))
+                all_symbols = summarize_symbols(all_symbols, use_ai=use_ai_summaries, repo=str(folder_path), source_for=_cached_source)
 
         # Generate file-level summaries (single-pass grouping) using shared helpers
         file_symbols_map = defaultdict(list)
@@ -3003,6 +3349,18 @@ def index_folder(
                 full_context_metadata.update(profile_meta)
             else:
                 full_context_metadata = profile_meta
+
+        # A full pass over the whole tree re-ran every provider over every
+        # file, so its cuts replace the stored record. A subdir walk carries
+        # files it never re-read and a branch delta saves no metadata of its
+        # own, so those keep the record and add to it (L-190).
+        _cut_now = set(_provider_cut_names(folder_path))
+        if _merge_with_existing is not None or _is_branch_delta:
+            _cut_now |= set(_stored_provider_cut(existing_index))
+        full_context_metadata = _stamp_provider_cut(
+            full_context_metadata, sorted(_cut_now),
+            existing_index, carry_existing=False,
+        )
 
         # Extract package names from manifest files
         _pkg_names: list[str] = []

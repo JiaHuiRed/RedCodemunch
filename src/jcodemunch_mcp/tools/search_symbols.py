@@ -36,6 +36,11 @@ from ..retrieval.scoring import (  # noqa: F401,E402
     _stem,
     _sym_tokens,
     _tokenize,
+    query_idf as _query_idf,
+    query_terms as _query_terms,
+    identity_query,
+    rank_factor,
+    test_file_factor,
 )
 from ._utils import (
     resolve_repo,
@@ -198,6 +203,13 @@ def result_cache_invalidate_repo(repo_key: str) -> int:
     return evicted
 
 
+# The cache key holds `indexed_at`, which a summary-only write leaves alone, so
+# the store tells this cache directly (L-226; `storage/write_listeners.py`).
+from ..storage import write_listeners as _write_listeners  # noqa: E402
+
+_write_listeners.register(lambda owner, name: result_cache_invalidate_repo(f"{owner}/{name}"))
+
+
 # ---------------------------------------------------------------------------
 # Abbreviation map: bidirectional code abbreviation <-> full form.
 # Built once at import time.
@@ -341,7 +353,7 @@ def _ledger_identity_rows(
     confidence of every non-fusion search. That is its own change with its own
     justification, not a side effect of recording a column.
     """
-    query_joined = " ".join(query_terms)
+    query_joined = identity_query(raw_query) if raw_query else " ".join(query_terms)
     rows: list[dict] = []
     for i, score in enumerate(scores):
         row: dict = {"score": score}
@@ -363,8 +375,10 @@ def _bm25_score(sym: dict, query_terms: list[str], idf: dict[str, float], avgdl:
     tf_raw = sym["_tf"]
     dl = sym["_dl"]
 
-    # Identity channel: exact/prefix match on symbol name or ID
-    query_joined = " ".join(query_terms)
+    # Identity channel: exact/prefix match on symbol name or ID. It reads EVERY
+    # token of the query (`identity_query`), not the filtered `query_terms`, so
+    # "is valid" still meets `is_valid` in full.
+    query_joined = identity_query(raw_query) if raw_query else " ".join(query_terms)
     score: float = _identity_score(sym, query_joined, raw_query)
 
     K = _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / max(avgdl, 1.0))
@@ -380,6 +394,10 @@ def _bm25_score(sym: dict, query_terms: list[str], idf: dict[str, float], avgdl:
     if centrality and score > 0:
         score += centrality.get(sym.get("file", ""), 0.0)
 
+    # Raw relevance. A caller that RANKS multiplies by `rank_factor`; a
+    # caller asking whether anything matched (the low-confidence threshold,
+    # confidence, plan_turn's grade) reads this value unchanged, so demoting a
+    # test never reads as "this feature may not exist".
     return score
 
 
@@ -402,7 +420,7 @@ def _bm25_breakdown(sym: dict, query_terms: list[str], idf: dict[str, float], av
         "summary": _tokenize(sym.get("summary", "")) * _FIELD_REPS["summary"],
         "docstring": _tokenize(sym.get("docstring", "")) * _FIELD_REPS["docstring"],
     }
-    out: dict[str, float] = {}
+    out: dict[str, float | str] = {}
     for fname, ftoks in fields.items():
         tf_raw: dict[str, int] = {}
         for t in ftoks:
@@ -413,9 +431,16 @@ def _bm25_breakdown(sym: dict, query_terms: list[str], idf: dict[str, float], av
             if tf > 0 and idf.get(term, 0.0) > 0:
                 field_score += idf[term] * (tf * (_BM25_K1 + 1)) / (tf + K)
         out[fname] = round(field_score, 3)
-    query_joined = " ".join(query_terms)
+    query_joined = identity_query(raw_query) if raw_query else " ".join(query_terms)
     identity = _identity_score(sym, query_joined, raw_query)
     out["identity"] = identity
+    weight, reason = rank_factor(sym, query_terms)
+    if weight != 1.0:
+        # The row's `score` is the fields plus identity times this weight.
+        out["rank_weight"] = weight
+        out["rank_weight_reason"] = reason
+        if reason == "test_file":
+            out["test_weight"] = weight  # the 1.108.391 key, kept for callers that read it
     if identity >= 50.0:
         out["identity_type"] = "exact"
     elif identity >= 40.0:
@@ -736,6 +761,13 @@ def search_symbols(
             semantic_weight,
             token_budget,
             fusion,
+            # LAST, so the journal's positional reads (repo, indexed_at, query
+            # at 0-2) are unchanged: the summary generation, which a summary
+            # write advances while leaving indexed_at alone. It is read from
+            # the .db, so another process's write reaches this key too, and a
+            # journal entry restored after an offline refresh never matches
+            # (L-228, L-229).
+            getattr(index, "summaries_generation", ""),
         )
         _cached = _result_cache_get(_cache_key)
         if _cached is not None:
@@ -836,13 +868,15 @@ def search_symbols(
             }
 
     # BM25 corpus stats — cached on CodeIndex, computed once per index load
-    query_terms = _tokenize(query) or [query.lower()]
+    query_terms = _query_terms(query)
     # Guard: empty string in query_terms causes "" to match every filename
     query_terms = [t for t in query_terms if t]
     # Single-flight: concurrent cold searches must not each build the
     # full-corpus BM25 state (#370), nor observe a half-published one (#490).
     cache = ensure_bm25_cache(index)
     idf = cache["idf"]
+    # Function words count at FUNCTION_WORD_WEIGHT for this query; the cache is untouched.
+    idf = _query_idf(idf, query)
     avgdl = cache["avgdl"]
     centrality = cache["centrality"]
     inverted = cache["inverted"]
@@ -965,6 +999,9 @@ def search_symbols(
     heap: list[tuple[tuple[int, float], bytes, dict]] = []
     candidates_scored = 0
     max_bm25_score = 0.0
+    # Symbol id -> (raw score - ranked score), for the weighted rows only,
+    # so confidence can grade the raw relevance of the rows it is shown.
+    _raw_lift: dict[str, float] = {}
     # The exact-name forms for this query, or None for a prose query. Resolved
     # once; `search_symbols` must not own a second definition of "exact"
     # (see retrieval.query_shape.exact_needles).
@@ -982,12 +1019,16 @@ def search_symbols(
             if decorator and not any(decorator.lower() in d.lower() for d in (sym.get("decorators") or [])):
                 continue
 
-        score = _bm25_score(sym, query_terms, idf, avgdl, centrality, raw_query=query)
-        if score <= 0:
+        raw_score = _bm25_score(sym, query_terms, idf, avgdl, centrality, raw_query=query)
+        if raw_score <= 0:
             continue
+        # Rank by the weighted score (`rank_factor`); grade "did anything match" by the raw one.
+        score = raw_score * rank_factor(sym, query_terms)[0]
+        if score != raw_score:
+            _raw_lift[sym["id"]] = raw_score - score
 
-        if score > max_bm25_score:
-            max_bm25_score = score
+        if raw_score > max_bm25_score:
+            max_bm25_score = raw_score
         candidates_scored += 1
 
         # Compute sort key based on sort_by strategy
@@ -1046,7 +1087,10 @@ def search_symbols(
     # the response entries so _meta.confidence grades on real gap/strength instead
     # of flat-lining at the no-score neutral default (V6).
     # The heap key is (declaration rank, score); confidence grades the SCORE.
-    _conf_scores = [hs for (_, hs), _, _ in _sorted_heap]
+    _conf_scores = [
+        hs if sort_by == "centrality" else hs + _raw_lift.get(e.get("id", ""), 0.0)
+        for (_, hs), _, e in _sorted_heap
+    ]
     heap_count = len(scored_results)  # save before budget packing
 
     # §1.2: Materialize full-detail payload BEFORE packing so byte_length reflects
@@ -1335,6 +1379,34 @@ def search_symbols(
     return result
 
 
+def _stale_store_mismatch(reason: str, meta: Optional[dict], model: str) -> dict:
+    """The `semantic_store_mismatch` body for a `stale_reason` answer.
+
+    One builder for every exit that scores a query vector against the stored
+    vectors (LEDGER L-135: the fusion exit scored them and asked nothing).
+    """
+    out: dict = {"reason": reason, "active_model": model}
+    if (meta or {}).get("model"):
+        out["stored_model"] = (meta or {})["model"]
+    out["remedy"] = "embed_repo rebuilds the stored vectors with the active model"
+    return out
+
+
+def _width_store_mismatch(model: str, stored_dim: int, active_dim: int) -> dict:
+    """The body where no model name can be compared and the widths differ.
+
+    ``stored_dim`` is the width of the stored VECTORS (`EmbeddingMatrix.dim`),
+    not of the dimension row, which can outlive them.
+    """
+    return {
+        "reason": "embedding_dimension_mismatch",
+        "active_model": model,
+        "stored_dimension": stored_dim,
+        "active_dimension": active_dim,
+        "remedy": "embed_repo(force=True) rebuilds the store at one width",
+    }
+
+
 def _search_symbols_semantic(
     *,
     index,
@@ -1374,9 +1446,9 @@ def _search_symbols_semantic(
     When ``semantic_only=True`` the BM25 component is skipped entirely (w=1).
     When ``semantic_weight=0.0`` the result is identical to pure BM25.
     """
-    from .embed_repo import embed_texts, _sym_text, EMBED_BATCH_SIZE, _gemini_task_aware
+    from .embed_repo import embed_texts, _sym_text, EMBED_BATCH_SIZE, _embed_task_types
     from ..retrieval import subject_state as _subject_state
-    from ..storage.embedding_store import EmbeddingStore
+    from ..storage.embedding_store import EmbeddingStore, stale_reason
     import logging as _logging
 
     _logger = _logging.getLogger(__name__)
@@ -1390,17 +1462,36 @@ def _search_symbols_semantic(
         pass
 
     # Determine task types (Gemini only; no-op for other providers).
-    query_task_type: Optional[str] = None
-    doc_task_type: Optional[str] = None
-    if provider == "gemini" and _gemini_task_aware():
-        query_task_type = "CODE_RETRIEVAL_QUERY"
-        doc_task_type = "RETRIEVAL_DOCUMENT"
+    query_task_type, doc_task_type = _embed_task_types(provider)
+
+    # ── What built the stored vectors ──────────────────────────────────────
+    # LEDGER L-121: this exit embedded every symbol with no vector under the
+    # ACTIVE model and wrote it, comparing nothing; `embed_repo`, the other
+    # vector writer, has compared since #500. One semantic search after a model
+    # change left two widths in the store. Both writers ask `stale_reason` now.
+    #
+    # ⚠ On a reason this exit does NOT rebuild. A search is a read, and two
+    # clients on one store with different providers would re-embed the whole
+    # repo on every search from the other. It writes nothing, calls the
+    # provider for nothing and scores no similarity (a query vector from one
+    # model against another model's vectors ranks by noise when the widths
+    # happen to agree), and says so in the body. `embed_repo` rebuilds.
+    db_path = store._sqlite._db_path(owner, name)
+    emb_store = EmbeddingStore(db_path)
+    stored_meta = emb_store.read_meta()
+    store_mismatch: Optional[dict] = None
+    _stale = stale_reason(stored_meta, model, doc_task_type or "")
+
+    if _stale:
+        store_mismatch = _stale_store_mismatch(_stale, stored_meta, model)
 
     # ── Get query embedding ────────────────────────────────────────────────
-    try:
-        query_vec = embed_texts([query], provider, model, task_type=query_task_type)[0]
-    except Exception as exc:
-        return {"error": f"Failed to embed query: {exc}"}
+    query_vec: list = []
+    if store_mismatch is None:
+        try:
+            query_vec = embed_texts([query], provider, model, task_type=query_task_type)[0]
+        except Exception as exc:
+            return {"error": f"Failed to embed query: {exc}"}
 
     # ── Load / lazily compute symbol embeddings ────────────────────────────
     # v1.108.223 (#399, @vondecron): the matrix is decoded and L2-normalised
@@ -1408,20 +1499,29 @@ def _search_symbols_semantic(
     # and re-parsing every stored vector on every semantic query. It also
     # replaces `get_all()` with a read-only load, so this path no longer bumps
     # the .db mtime as a side effect of reading it (same defect class as .185).
-    db_path = store._sqlite._db_path(owner, name)
-    emb_store = EmbeddingStore(db_path)
     from ..storage import embedding_matrix as _embed_matrix
-    matrix = _embed_matrix.get_matrix(db_path)
+    matrix = _embed_matrix.get_matrix(db_path) if store_mismatch is None else None
+    if matrix is not None and matrix.dim != len(query_vec):
+        # No stored model name to compare (a store from before #500), or no
+        # readable metadata: the width decides. It is the width of the stored
+        # VECTORS, not of the dimension row, which can outlive them; and it is
+        # checked here, before the top-up, so a store with no missing symbol
+        # is covered and no batch is paid for first.
+        store_mismatch = _width_store_mismatch(model, matrix.dim, len(query_vec))
+        matrix = None
     embedded_ids = matrix.id_set if matrix is not None else set()
 
-    missing = [s for s in index.symbols if s["id"] not in embedded_ids]
+    missing = (
+        [s for s in index.symbols if s["id"] not in embedded_ids]
+        if store_mismatch is None else []
+    )
+    new_emb: dict[str, list[float]] = {}
     # CF-66: a failed top-up batch left its symbols scored lexically only, with
     # the cause in the log and nothing in the response. Same loop as
     # embed_repo's, same ledger; disclosed as the body field `semantic_topup`.
     from ..embeddings.failures import FailureLedger
     topup_failures = FailureLedger()
     if missing:
-        new_emb: dict[str, list[float]] = {}
         for bi in range(0, len(missing), EMBED_BATCH_SIZE):
             batch = missing[bi : bi + EMBED_BATCH_SIZE]
             try:
@@ -1435,16 +1535,51 @@ def _search_symbols_semantic(
                 _logger.warning("semantic: embedding batch %d failed: %s", bi // EMBED_BATCH_SIZE, exc)
                 topup_failures.record(exc, items=len(batch))
         if new_emb:
-            if emb_store.get_dimension() is None:
-                dim = len(next(iter(new_emb.values())))
-                emb_store.set_dimension(dim, model)
-                emb_store.set_task_type(doc_task_type or "")
-            emb_store.set_many(new_emb)
+            dim = len(next(iter(new_emb.values())))
+            # Read AGAIN at the write, over the connection that writes. The
+            # reading at the top is read-only and older than the provider
+            # calls above: another client may have rebuilt the store since,
+            # and under some storage paths the read-only reading sees nothing
+            # at all (LEDGER L-137). Deciding the write from it deleted and
+            # overwrote vectors this call had not seen (review round 6).
+            at_write = emb_store.read_meta(for_writer=True)
+            _stale_now = stale_reason(at_write, model, doc_task_type or "")
+            if at_write is None:
+                stored_dim = emb_store.get_dimension()
+            elif at_write["has_vectors"]:
+                stored_dim = at_write["dimension"]
+            else:
+                # An empty store has no stamp to honour: rows left by a store
+                # emptied before `clear()` removed them go before the re-stamp.
+                emb_store.drop_orphan_stamp()
+                stored_dim = None
+            if _stale_now:
+                store_mismatch = _stale_store_mismatch(_stale_now, at_write, model)
+                new_emb = {}
+            elif stored_dim is not None and stored_dim != dim:
+                # A last check at the write. The matrix check above answers
+                # first whenever the stored vectors could be loaded.
+                store_mismatch = {
+                    "reason": "embedding_dimension_mismatch",
+                    "active_model": model,
+                    "stored_dimension": stored_dim,
+                    "active_dimension": dim,
+                    "remedy": "embed_repo(force=True) rebuilds the store at one width",
+                }
+                new_emb = {}
+            else:
+                if stored_dim is None:
+                    emb_store.set_dimension(dim, model)
+                    emb_store.set_task_type(doc_task_type or "")
+                emb_store.set_many(new_emb)
 
     # Cosine for every embedded symbol, in one vectorised pass. `matrix` was
     # loaded before the top-up above, so vectors embedded just now are scored
     # individually rather than forcing a full re-decode for a handful of rows.
-    cos_by_id: dict[str, float] = matrix.score_all(query_vec) if matrix is not None else {}
+    cos_by_id: dict[str, float] = (
+        matrix.score_all(query_vec)
+        if matrix is not None and store_mismatch is None else {}
+    )
     if missing and new_emb:
         for _sid, _vec in new_emb.items():
             cos_by_id[_sid] = _cosine_similarity(query_vec, _vec)
@@ -1463,7 +1598,7 @@ def _search_symbols_semantic(
     # Identity-inclusive max (== the old max_bm25, since _bm25_score == lex + idn),
     # kept only for the negative-evidence threshold below so that check is unchanged.
     max_bm25 = 0.0
-    query_joined = " ".join(query_terms)
+    query_joined = identity_query(query)
 
     for sym in index.symbols:
         if has_filters:
@@ -1479,14 +1614,16 @@ def _search_symbols_semantic(
         if semantic_only:
             lex = idn = 0.0
         else:
-            lex = _bm25_score_no_identity(sym, query_terms, idf, avgdl, centrality)
+            raw_lex = _bm25_score_no_identity(sym, query_terms, idf, avgdl, centrality)
             idn = _identity_score(sym, query_joined, raw_query=query)
+            # The threshold reads raw relevance; the ranking reads the weighted one (`rank_factor`).
+            if raw_lex + idn > max_bm25:
+                max_bm25 = raw_lex + idn
+            lex = raw_lex * rank_factor(sym, query_terms)[0]
         if lex > max_lex:
             max_lex = lex
         if idn > max_id:
             max_id = idn
-        if lex + idn > max_bm25:
-            max_bm25 = lex + idn
 
         cos = cos_by_id.get(sym["id"], 0.0)
         if cos > max_cos:
@@ -1639,6 +1776,10 @@ def _search_symbols_semantic(
         }
         topup_failures.disclose(topup)
         result["semantic_topup"] = topup
+    if store_mismatch:
+        # In the BODY for the same reason (L-121): every row here was ranked
+        # without the semantic channel, and `semantic_only` has no row at all.
+        result["semantic_store_mismatch"] = store_mismatch
     from ..retrieval.confidence import attach_confidence as _attach_confidence
     from ..retrieval.confidence import extract_ledger_features as _ledger_feats
     from ..retrieval.freshness import FreshnessProbe as _FreshnessProbe
@@ -1684,7 +1825,7 @@ def _search_symbols_semantic(
         query=query,
         returned_ids=[r.get("id", "") for r in scored_results],
         confidence=result["_meta"].get("confidence"),
-        semantic_used=True,
+        semantic_used=store_mismatch is None,
         repo_is_stale=_probe.repo_is_stale,
         **_feat,
     )
@@ -1748,6 +1889,9 @@ def _search_symbols_semantic(
             "a semantic ranking scores similarity rather than looking a name up, "
             "so a symbol can be present in the index and still fall at or below "
             "zero against this query vector."
+            if store_mismatch is None else
+            "the semantic channel did not run (see semantic_store_mismatch), so "
+            "no stored vector was compared with this query."
         ),
     )
     meta["verdict"] = _vres["verdict"]
@@ -1767,6 +1911,8 @@ def _search_symbols_semantic(
             "remedy": "embed_repo(force=True) rebuilds the store at one width",
         }
         meta["verdict"]["channels"]["semantic"] = "partial"
+    if store_mismatch:
+        meta["verdict"]["channels"]["semantic"] = "unavailable"
     negative_evidence = _vres["negative_evidence"]
     if negative_evidence is not None:
         result["negative_evidence"] = negative_evidence
@@ -1906,6 +2052,8 @@ def _search_symbols_fusion(
     #  embed_repo.embed_texts; the earlier EmbeddingStore(base_path=)/get_all(owner,name)/
     #  _embed_texts forms all raised and were swallowed, so this channel never ran.)
     similarity_used = False
+    similarity_error: Optional[dict] = None
+    store_mismatch: Optional[dict] = None
     try:
         # v1.108.185: read-only, because the plain read wrote. `_connect` runs a
         # WAL pragma and a CREATE-TABLE script on every connection, so probing for
@@ -1916,26 +2064,53 @@ def _search_symbols_fusion(
         # v1.108.223 (#399): still read-only, and now decoded once per store
         # stamp rather than once per query.
         from ..storage import embedding_matrix as _embed_matrix
-        matrix = _embed_matrix.get_matrix(store._sqlite._db_path(owner, name))
+        _emb_db_path = store._sqlite._db_path(owner, name)
+        matrix = _embed_matrix.get_matrix(_emb_db_path)
         if matrix is not None:
-            from .embed_repo import _detect_provider, embed_texts
+            from .embed_repo import _detect_provider, _embed_task_types, embed_texts
             provider = _detect_provider()
             if provider:
-                q_emb = embed_texts([query], provider[0], provider[1])
-                if q_emb and q_emb[0]:
-                    from ..retrieval.signal_fusion import (
-                        build_similarity_channel_from_scores,
-                    )
-                    sim_ch = build_similarity_channel_from_scores(
-                        matrix.score_all(q_emb[0])
-                    )
-                    channels.append(sim_ch)
-                    similarity_used = True
-    except Exception:
+                # LEDGER L-135: what built the stored vectors, asked before the
+                # provider is called. This exit embedded the query with the
+                # ACTIVE model and scored it against whatever was stored: an
+                # empty channel reported as `ok` where the widths differed, and
+                # a ranking by two models' vectors where they agreed. Same rule
+                # and same body as the semantic exit (L-121). Read-only, so the
+                # .185 mtime guard above still holds.
+                from ..storage.embedding_store import EmbeddingStore, stale_reason
+                _doc_task_type = _embed_task_types(provider[0])[1]
+                _stored_meta = EmbeddingStore(_emb_db_path).read_meta()
+                _stale = stale_reason(_stored_meta, provider[1], _doc_task_type or "")
+                if _stale:
+                    store_mismatch = _stale_store_mismatch(_stale, _stored_meta, provider[1])
+                else:
+                    q_emb = embed_texts([query], provider[0], provider[1])
+                    if q_emb and q_emb[0] and matrix.dim != len(q_emb[0]):
+                        # No stored model name to compare: the width decides.
+                        store_mismatch = _width_store_mismatch(
+                            provider[1], matrix.dim, len(q_emb[0])
+                        )
+                    elif q_emb and q_emb[0]:
+                        from ..retrieval.signal_fusion import (
+                            build_similarity_channel_from_scores,
+                        )
+                        sim_ch = build_similarity_channel_from_scores(
+                            matrix.score_all(q_emb[0])
+                        )
+                        channels.append(sim_ch)
+                        similarity_used = True
+    except Exception as exc:
         import logging as _logging
         _logging.getLogger(__name__).debug(
             "fusion similarity channel unavailable", exc_info=True
         )
+        # The channel was attempted and failed. Saying `off` here read the same as a
+        # repo with no embeddings, and dropped a refusal's reason (L-108): a local
+        # model on an old sentence-transformers is refused inside `embed_texts`.
+        from ..embeddings.failures import FailureLedger
+        _ledger = FailureLedger()
+        _ledger.record(exc)
+        similarity_error = _ledger.rows()[0]
 
     # Fuse
     fused = fuse(channels, smoothing=smoothing, weights=weights)
@@ -2132,6 +2307,13 @@ def _search_symbols_fusion(
     # weakens the RANKING and cannot manufacture a false absence. That asymmetry is
     # exactly what the semantic exit lacked, and it is why there is no
     # `absence_unprovable` here.
+    #
+    # ⚠ That holds when the similarity channel was ATTEMPTED AND FAILED too
+    # (L-108): the fused set is still every candidate the lexical and identity
+    # passes scored, so `absent` stays reachable and is the same corpus fact the
+    # lexical path reports. What the caller is owed is the label and the cause:
+    # `semantic: unavailable` and `semantic_channel_error`, beside the verdict.
+    # tests/test_embed_model_version_floor.py pins that pair on a zero-row call.
     from ..retrieval.verdict import retrieval_verdict_for_index as _rv
     _vres = _rv(
         index,
@@ -2145,9 +2327,20 @@ def _search_symbols_fusion(
         query_terms=query_terms,
         scope=file_pattern,
         state_before=state_before,
-        semantic_channel="ok" if similarity_used else "off",
+        semantic_channel=(
+            "ok" if similarity_used
+            else "unavailable" if similarity_error or store_mismatch else "off"
+        ),
     )
     meta["verdict"] = _vres["verdict"]
+    if store_mismatch:
+        # In the result, not `_meta`, for the reason given below.
+        result["semantic_store_mismatch"] = store_mismatch
+    if similarity_error:
+        # In the result, not `_meta`: `meta_fields: []` is the default and strips `_meta`.
+        result["semantic_channel_error"] = {
+            "type": similarity_error["type"], "message": similarity_error["message"],
+        }
     if _vres["negative_evidence"] is not None:
         # Parity with this tool's other exits: the same question must not get a
         # differently-honest answer depending on which ranking mode ran.
@@ -2165,7 +2358,12 @@ def _search_symbols_fusion(
             )
 
     _attach_index_truncation(result.get("_meta"), index)
-    if cacheable and cache_key is not None:
+    # A failed channel is not cached: the key holds neither provider nor library
+    # version, so a replay would assert the failure for a call that never had it,
+    # including after the upgrade the refusal tells the user to run.
+    # Nor is a store mismatch: `embed_repo` is the remedy it names, and a replay
+    # after the rebuild would keep refusing a store that is now in order.
+    if cacheable and cache_key is not None and not similarity_error and not store_mismatch:
         from ..retrieval import subject_state as _subject
         _result_cache_put(
             cache_key,

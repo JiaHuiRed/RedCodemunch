@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Callable, NamedTuple, Optional, cast
 
 from ..parser.symbols import Symbol
 from ..path_map import parse_path_map, remap
+from .embedding_store import META_KEY_PREFIX as _EMBED_META_PREFIX
 from .generation import readonly_uri
 
 # Cache of base_path strings that have already had mkdir called — avoids
@@ -29,6 +30,11 @@ if TYPE_CHECKING:
     from .index_store import CodeIndex
 
 logger = logging.getLogger(__name__)
+
+# `context_metadata` key naming the context providers a time budget cut on the
+# last full pass (L-190). Written by `tools/index_folder.py`; a delta save keeps
+# it (see `_incremental_save_locked`), and only a full save can end it.
+PROVIDERS_CUT_KEY = "providers_cut"
 
 # Repos whose JSON index already failed migration schema validation this
 # process. A stale/corrupt JSON index (e.g. a starter pack's `.pack/<id>`)
@@ -113,6 +119,9 @@ CREATE TABLE IF NOT EXISTS runtime_calls (
     p95_ms      REAL,
     first_seen  TEXT,
     last_seen   TEXT,
+    content_hash TEXT,
+    git_head    TEXT,
+    ingest_id   TEXT,
     PRIMARY KEY (symbol_id, source)
 );
 
@@ -249,13 +258,78 @@ _INIT_PRAGMAS = [
     "PRAGMA journal_mode = WAL",
 ]
 
-# SQLite files in ~/.code-index/ that are NOT per-repo indexes — list_repos
-# must skip these so they don't get phantom-resolved as repos (and worse,
-# get auto-initialised with the code-index schema by _connect()).
-# org_savings.db is the team-SKU org-rollup store (see org/store.py); without
-# this it surfaced as a bogus `local/org_savings` card (sym 0, no source_root)
-# that could never be deleted.
-_NON_REPO_DB_FILES = frozenset({"telemetry.db", "org_savings.db"})
+# What a SQLite file in the storage directory IS, decided by what is in it
+# (LEDGER L-144). ⚠⚠ Never by its name: the name denylist this replaces
+# (`telemetry.db`, `org_savings.db`) had a one-name copy in `token_tracker`
+# that omitted the second, and it said nothing about the parse cache, a
+# half-built index, or the next store someone adds. Every listing reader
+# (`list_repos` here and in `IndexStore`, `list_source_roots`, `diagnose`,
+# `token_tracker._runtime_signal_summary`) asks this one rule.
+INDEX_DB_INDEX = "index"          # `meta` carries a `repo`: a finished index
+INDEX_DB_DAMAGED = "damaged"      # index tables with rows, `meta` lost its rows
+INDEX_DB_NOT_INDEX = "not_index"  # anything else, including a half-built index
+
+
+def _classify_index_conn(conn: sqlite3.Connection) -> str:
+    """Classify an open connection's database; see ``classify_index_db``."""
+    tables = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if "meta" in tables:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'repo'").fetchone()
+        if row is not None and row[0]:
+            return INDEX_DB_INDEX
+    # ⚠ No `repo` row is three things: an index whose meta was lost (its rows,
+    # its table, or another index table with it; kept visible so it can be
+    # re-indexed, the sqlite_missing_meta / sqlite_corrupt contract), an index
+    # still being written for the first time, and a foreign store an earlier
+    # release's `_connect` filled with EMPTY index tables plus two meta rows
+    # (this box's telemetry.db and org_savings.db). Only the first holds
+    # anything worth listing, and rows are the tell. ⚠ `files` alone is too
+    # generic a name to vouch for an index, so it counts only beside
+    # `symbols`; `symbols` holding rows counts alone.
+    if "symbols" in tables:
+        for table in ("symbols", "files"):
+            if table in tables and conn.execute(
+                f"SELECT 1 FROM {table} LIMIT 1"
+            ).fetchone():
+                return INDEX_DB_DAMAGED
+    return INDEX_DB_NOT_INDEX
+
+
+def classify_index_db(db_path: Path) -> str:
+    """Whether ``db_path`` is a code index, read-only and by content.
+
+    Returns ``INDEX_DB_INDEX``, ``INDEX_DB_DAMAGED`` or ``INDEX_DB_NOT_INDEX``.
+    Raises ``sqlite3.DatabaseError`` when the file cannot be read as SQLite;
+    each caller decides what an unreadable file means to it.
+    """
+    from .generation import connect_readonly
+
+    conn = connect_readonly(db_path)
+    try:
+        return _classify_index_conn(conn)
+    finally:
+        conn.close()
+
+
+def _create_schema(conn: sqlite3.Connection) -> None:
+    """Run ``_SCHEMA_SQL`` as ONE transaction (LEDGER L-144).
+
+    ⚠ In autocommit each statement committed on its own, so a second
+    connection opened during a first index saw `meta` with no other table
+    and `_connect` ran every migration against it (L-143's
+    `no such table: files`). IMMEDIATE takes the write lock up front, so a
+    second creator waits on `busy_timeout` and then finds every
+    `IF NOT EXISTS` satisfied; a DEFERRED transaction could instead fail
+    with a stale snapshot, which the busy handler does not retry.
+    """
+    try:
+        conn.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA_SQL + "\nCOMMIT;")
+    except sqlite3.Error:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 # Directory name the starter-pack builder clones into on its CI machine
 # (`build_pack.py`: tempfile.gettempdir() / "jcm-pack-clones" / <owner>-<repo>).
@@ -639,6 +713,9 @@ def _migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
             p95_ms      REAL,
             first_seen  TEXT,
             last_seen   TEXT,
+            content_hash TEXT,
+            git_head    TEXT,
+            ingest_id   TEXT,
             PRIMARY KEY (symbol_id, source)
         );
         CREATE INDEX IF NOT EXISTS idx_runtime_calls_last_seen ON runtime_calls(last_seen);
@@ -813,6 +890,102 @@ def _unlink_retry(path: Path, retries: int = 3, delay: float = 0.1) -> bool:
     return False  # unreachable, but satisfies type checkers
 
 
+class IndexIdentityConflict(ValueError):
+    """The index slot for a repository already holds a different repository.
+
+    An index's file is named ``f"{owner}-{name}"`` after sanitising, and both
+    halves may contain hyphens, so two repositories can share one slot
+    (``foo-bar/baz`` and ``foo/bar-baz``). The store refuses to write, serve
+    or delete across that boundary rather than letting one repository's index
+    be used for another's.
+    """
+
+    def __init__(self, requested: str, stored: str, *, unreadable_path: str = ""):
+        self.requested, self.stored = requested, stored
+        self.unreadable = bool(unreadable_path)
+        if unreadable_path:
+            # Fail closed, and say so plainly: there may be no second
+            # repository at all, only a file that could not be opened.
+            super().__init__(
+                f"could not read which repository the index file {unreadable_path} "
+                f"belongs to, so {requested} is not written, served or deleted there. "
+                "Close other programs holding the file, or remove it and re-index."
+            )
+            return
+        super().__init__(
+            f"the index slot for {requested} already holds {stored}; "
+            f"refusing to write, serve or delete {requested} there. "
+            "Two repositories whose owner/name pairs join to the same "
+            "'<owner>-<name>' cannot both be indexed in one storage directory."
+        )
+
+
+def _identity_key(owner: str, name: str) -> tuple[str, str]:
+    """How two spellings of one repository compare: each half sanitised the way
+    the slot name is, then casefolded (GitHub owner and repository names are
+    case-insensitive). The halves stay SEPARATE, which is what tells
+    ``foo-bar/baz`` from ``foo/bar-baz`` when their slot names are equal."""
+    import re
+
+    def part(v: str) -> str:
+        return re.sub(r"-+", "-", re.sub(r"[^A-Za-z0-9._-]", "-", v)).strip("-").casefold()
+
+    return part(owner), part(name)
+
+
+def _read_identity(conn) -> Optional[str]:
+    row = conn.execute("SELECT value FROM meta WHERE key = 'repo'").fetchone()
+    value = row[0] if row else None
+    return value if isinstance(value, str) and "/" in value else None
+
+
+def _stored_identity(db_path: Path) -> tuple[bool, Optional[str]]:
+    """The ``repo`` an existing index file records.
+
+    Returns ``(readable, identity)``. Three answers, and the difference is
+    load-bearing:
+      - ``(True, "<owner>/<name>")``: the repository this index belongs to;
+      - ``(True, None)``: the file records no repository (an index from before the
+        identity was recorded, a file with no ``meta`` table, or a corrupt
+        file that a re-index must be able to repair) -- never a conflict;
+      - ``(False, None)``: the file exists and could not be read at all. Callers
+        FAIL CLOSED on it, because the next writer could be another
+        repository's, and a cached "unknown" would leave the slot open until
+        the file next changed.
+    A refused read-only open is retried on a plain connection before giving up.
+    """
+    if not db_path.exists():
+        return True, None
+    from .generation import connect_readonly
+
+    for opener in (connect_readonly, lambda p: sqlite3.connect(str(p))):
+        try:
+            conn = opener(db_path)
+        except (sqlite3.Error, OSError):
+            logger.debug("identity read: could not open %s", db_path, exc_info=True)
+            continue
+        try:
+            return True, _read_identity(conn)
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return True, None  # not an index with a meta table: nothing recorded
+            logger.debug("identity read failed on %s", db_path, exc_info=True)
+            continue
+        except sqlite3.DatabaseError:
+            return True, None  # corrupt: unreadable by every reader, repairable by a re-index
+        finally:
+            conn.close()
+    return False, None
+
+
+def _meta_names_other_repo(meta: dict, owner: str, name: str) -> bool:
+    """True when an index's own meta records a DIFFERENT repository. A missing
+    or malformed ``repo`` is UNKNOWN and returns False."""
+    stored = meta.get("repo")
+    if not (isinstance(stored, str) and "/" in stored):
+        return False
+    return _identity_key(*stored.split("/", 1)) != _identity_key(owner, name)
+
 
 def _default_base_path() -> Path:
     """Storage root when a caller names none: `CODE_INDEX_PATH`, else `~/.code-index`.
@@ -871,48 +1044,58 @@ class SQLiteIndexStore:
     # ── Connection helpers ──────────────────────────────────────────
 
     def _db_path(self, owner: str, name: str) -> Path:
-        """Path to the SQLite database file for a repo."""
+        """Path to the SQLite database file for a repo.
+
+        Raises ``IndexIdentityConflict`` when that file belongs to another
+        repository (``_guard_slot``). Every reader and writer of a slot reaches
+        it through this accessor or ``_content_dir``, which is why the identity
+        check lives HERE and not at the entry points: a guard at five methods
+        was walked round by the sixth.
+        """
         slug = self._repo_slug(owner, name)
         path = self.base_path / f"{slug}.db"
         self._guard_slot(path, owner, name)
         return path
 
-    @staticmethod
-    def _check_identity(data: dict, owner: str, name: str, path: Path) -> None:
-        recorded = data.get("repo")
-        if not recorded and data.get("owner") and data.get("name"):
-            recorded = f"{data['owner']}/{data['name']}"
-        requested = f"{owner}/{name}"
-        if recorded and recorded != requested:
-            raise ValueError(f"Index slot {path} belongs to {recorded}, not {requested}")
+   # (str(db path), mtime_ns, size) -> the identity that file records, or
+   # None. Process-wide: keyed by the file's own stat, so a rewrite misses.
+   _slot_identity_cache: dict[str, tuple[int, int, Optional[str]]] = {}
 
-    def _guard_slot(self, db_path: Path, owner: str, name: str) -> None:
-        json_path = db_path.with_suffix(".json")
-        if json_path.exists():
-            try:
-                with json_path.open(encoding="utf-8") as source:
-                    data = json.load(source)
-            except OSError as exc:
-                raise ValueError(f"Cannot read index identity in {json_path}: {exc}") from exc
-            except ValueError:
-                data = None
-            if isinstance(data, dict):
-                self._check_identity(data, owner, name, json_path)
-        if not db_path.exists():
-            return
-        try:
-            conn = sqlite3.connect(readonly_uri(db_path), uri=True)
-            try:
-                if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
-                    return
-                data = dict(conn.execute("SELECT key, value FROM meta WHERE key IN ('repo', 'owner', 'name')"))
-            finally:
-                conn.close()
-        except sqlite3.OperationalError as exc:
-            raise ValueError(f"Cannot read index identity in {db_path}: {exc}") from exc
-        except sqlite3.DatabaseError:
-            return
-        self._check_identity(data, owner, name, db_path)
+   def _guard_slot(self, db_path: Path, owner: str, name: str) -> None:
+       """Refuse a slot whose index records a DIFFERENT repository.
+
+       A missing file, or one recording no identity, passes: an index written
+       before the identity was recorded must keep working. A file whose
+       identity cannot be read at all is refused, and that answer is never
+       cached. One ``stat`` per call on a cache hit.
+       """
+       key = str(db_path)
+       try:
+           st = os.stat(key)
+       except OSError:
+           return  # no file: nothing to belong to anyone
+       hit = SQLiteIndexStore._slot_identity_cache.get(key)
+       if hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+           stored = hit[2]
+       else:
+           readable, stored = _stored_identity(db_path)
+           if not readable:
+               # Never cached: a transient failure must not open the slot
+               # until the file next changes. Fail closed for every caller.
+               raise IndexIdentityConflict(
+                   f"{owner}/{name}", "", unreadable_path=key)
+           SQLiteIndexStore._slot_identity_cache[key] = (st.st_mtime_ns, st.st_size, stored)
+       if stored is not None and _meta_names_other_repo({"repo": stored}, owner, name):
+           raise IndexIdentityConflict(f"{owner}/{name}", stored)
+
+   @staticmethod
+   def _check_identity(data: dict, owner: str, name: str, path: Path) -> None:
+       recorded = data.get("repo")
+       if not recorded and data.get("owner") and data.get("name"):
+           recorded = f"{data['owner']}/{data['name']}"
+       requested = f"{owner}/{name}"
+       if recorded and recorded != requested:
+           raise ValueError(f"Index slot {path} belongs to {recorded}, not {requested}")
 
     def _connect(self, db_path: Path) -> sqlite3.Connection:
         """Open a connection with WAL pragmas and schema ensured on first visit."""
@@ -929,7 +1112,11 @@ class SQLiteIndexStore:
 
             # Lightweight check: table_info returns column list; empty = not initialised.
             if not conn.execute("PRAGMA table_info(meta)").fetchall():
-                conn.executescript(_SCHEMA_SQL)
+                try:
+                    _create_schema(conn)
+                except sqlite3.Error:
+                    conn.close()
+                    raise
             else:
                 # Existing DB — check if v4→v5 migration is needed
                 _ensure_index_store_deps()
@@ -960,6 +1147,14 @@ class SQLiteIndexStore:
 
         return conn
 
+    def _open_read(self, db_path: Path) -> sqlite3.Connection:
+        """A read-only connection that never initialises or migrates (L-144)."""
+        from .generation import connect_readonly
+
+        conn = connect_readonly(db_path)
+        conn.row_factory = sqlite3.Row  # _read_meta indexes by name
+        return conn
+
     def checkpoint_and_close(self, owner: str, name: str) -> None:
         """Compact WAL file on graceful shutdown. Call from server shutdown hook."""
         self.checkpoint_db(self._db_path(owner, name))
@@ -969,14 +1164,31 @@ class SQLiteIndexStore:
 
         Unlike checkpoint_and_close(), this does not require owner/name
         parsing — useful when iterating *.db files directly.
+
+        ⚠⚠ A PLAIN connection, never `_connect` (LEDGER L-143). `_connect` is
+        the indexer's connection: on a first visit it creates the index schema
+        or runs the version migrations. The shutdown hook globs every `*.db`
+        in the storage directory, so through `_connect` it raised
+        `no such table` on a database another thread or process was still
+        creating (the `meta` table exists, the version row does not, so every
+        migration ran against it), and it created the index tables inside any
+        other SQLite file there (`telemetry.db`). A checkpoint needs neither.
+
+        ⚠ Never raises. Two of its four callers are `finally` blocks at server
+        shutdown, where an exception replaces the one being handled and nobody
+        can act on it; the others are server start and the end of a one-shot
+        sync.
         """
         if not db_path.exists():
             return
-        conn = self._connect(db_path)
         try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        finally:
-            conn.close()
+            conn = sqlite3.connect(str(db_path), isolation_level=None)
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            logger.debug("WAL checkpoint skipped for %s", db_path, exc_info=True)
 
     def get_file_languages(self, owner: str, name: str) -> dict[str, str]:
         """Query only the files table for path→language mapping.
@@ -1370,6 +1582,10 @@ class SQLiteIndexStore:
             owner=base_index.owner,
             name=base_index.name,
             indexed_at=delta.get("indexed_at", base_index.indexed_at),
+            # The branch carries the base's summaries, so it carries the base's
+            # summary generation too (L-228 review: "" here would make two
+            # different generations compare equal).
+            summaries_generation=getattr(base_index, "summaries_generation", ""),
             source_files=composed_source_files,
             languages=lang_counts,
             symbols=composed_symbols,
@@ -1459,20 +1675,10 @@ class SQLiteIndexStore:
         if file_hashes is None:
             file_hashes = {fp: _file_hash(content) for fp, content in raw_files.items()}
 
-        # Serialize symbols
-        serialized_symbols = [
-            {"id": s.id, "file": s.file, "name": s.name, "qualified_name": s.qualified_name,
-             "kind": s.kind, "language": s.language, "signature": s.signature,
-             "docstring": s.docstring, "summary": s.summary, "decorators": s.decorators,
-             "keywords": s.keywords, "parent": s.parent, "line": s.line,
-             "end_line": s.end_line, "byte_offset": s.byte_offset,
-             "byte_length": s.byte_length, "content_hash": s.content_hash,
-             "cyclomatic": getattr(s, "cyclomatic", 0) or 0,
-             "max_nesting": getattr(s, "max_nesting", 0) or 0,
-             "param_count": getattr(s, "param_count", 0) or 0,
-             "call_references": getattr(s, "call_references", []) or []}
-            for s in symbols
-        ]
+        # Serialize symbols with the helper whose shape matches a row read
+        # back from disk: this list becomes the index the cache pre-warms
+        # below, and a hand-written copy left out `ecosystem_context` (L-224).
+        serialized_symbols = [self._symbol_to_dict(s) for s in symbols]
 
         # Compute languages from file_languages if not provided
         file_languages = file_languages or {}
@@ -1553,10 +1759,24 @@ class SQLiteIndexStore:
         self._guard_slot(db_path, owner, name)
         conn = self._connect(db_path)
         try:
-            conn.execute("BEGIN")
+            # ⚠ The indexwrite lock is keyed by owner/name, so two COLLIDING
+            # identities hold different locks and do not serialise there. The
+            # write lock SQLite takes on BEGIN IMMEDIATE is per FILE, so reading
+            # the stored identity inside this transaction is what closes the
+            # race between the slot check in `_db_path` and this write. On a
+            # conflict, close() without commit rolls the transaction back.
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT value FROM meta WHERE key = 'repo'").fetchone()
+            if row is not None and _meta_names_other_repo({"repo": row[0]}, owner, name):
+                raise IndexIdentityConflict(f"{owner}/{name}", row[0])
             conn.execute("DELETE FROM symbols")
             conn.execute("DELETE FROM files")
-            conn.execute("DELETE FROM meta")
+            # The embedding store keeps its own rows in `meta`, and this save
+            # keeps `symbol_embeddings`, so its rows stay with its vectors (#522).
+            conn.execute(
+                "DELETE FROM meta WHERE substr(key, 1, ?) != ?",
+                (len(_EMBED_META_PREFIX), _EMBED_META_PREFIX),
+            )
 
             self._write_meta(conn, index)
 
@@ -1625,7 +1845,12 @@ class SQLiteIndexStore:
         _ensure_index_store_deps()
         # Sanitize name so "my project (v2)" maps to the same .db as save_index
         safe_name = self._safe_repo_component(name, "name")
-        db_path = self._db_path(owner, name)
+       try:
+           db_path = self._db_path(owner, safe_name)
+       except IndexIdentityConflict as e:
+           # Never serve another repository's index under this name.
+           logger.warning("%s", e)
+           return None
         if not db_path.exists():
             return None
 
@@ -1661,6 +1886,14 @@ class SQLiteIndexStore:
                 try:
                     meta = self._read_meta(conn)
                     if not meta:
+                        return None
+                    if _meta_names_other_repo(meta, owner, name):
+                        # Never serve another repository's index under this
+                        # name. Not cached, so the refusal repeats each call.
+                        logger.warning(
+                            "Index slot for %s/%s holds %s; not serving it",
+                            owner, name, meta.get("repo"),
+                        )
                         return None
 
                     try:
@@ -1753,7 +1986,10 @@ class SQLiteIndexStore:
         if branch:
             return None
         safe_name = self._safe_repo_component(name, "name")
-        db_path = self._db_path(owner, name)
+       try:
+           db_path = self._db_path(owner, safe_name)
+       except IndexIdentityConflict:
+           return None  # load_index refuses it, and says why
         if not db_path.exists():
             return None
 
@@ -1784,6 +2020,8 @@ class SQLiteIndexStore:
                 meta = self._read_meta(conn)
                 if not meta:
                     return None
+                if _meta_names_other_repo(meta, owner, name):
+                    return None  # load_index refuses it, and says why
                 try:
                     stored_version = int(meta.get("index_version", "0"))
                 except (TypeError, ValueError):
@@ -1859,8 +2097,24 @@ class SQLiteIndexStore:
         from .index_store import IndexLoadStatus
 
         safe_name = self._safe_repo_component(name, "name")
-        db_path = self._db_path(owner, name)
+
         repo_id = f"{owner}/{safe_name}"
+        try:
+            db_path = self._db_path(owner, safe_name)
+        except IndexIdentityConflict as e:
+            # Present, but another repository's: not loadable under this name,
+            # and the four runtime tools that gate on this status stop here.
+            return IndexLoadStatus(
+                repo=repo_id,
+                owner=owner,
+                name=safe_name,
+                backend="sqlite",
+                index_present=False,
+                loadable=False,
+                status="identity_conflict",
+                load_error=str(e),
+                hint="This repository cannot be indexed beside the one already in this slot.",
+            )
         if not db_path.exists():
             return IndexLoadStatus(
                 repo=repo_id,
@@ -1875,9 +2129,14 @@ class SQLiteIndexStore:
             )
 
         try:
-            conn = self._connect(db_path)
+            # ⚠ Read-only (L-144): inspecting is a read, and `_connect` would
+            # create the schema in whatever file sits at this name.
+            conn = self._open_read(db_path)
             try:
-                meta = self._read_meta(conn)
+                has_meta = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'"
+                ).fetchone()
+                meta = self._read_meta(conn) if has_meta else {}
                 if not meta:
                     return IndexLoadStatus(
                         repo=repo_id,
@@ -1961,9 +2220,13 @@ class SQLiteIndexStore:
             )
 
     def has_index(self, owner: str, name: str) -> bool:
-        """Return True if a .db file exists for this repo."""
+        """Return True if a .db file exists for this repo. Another repository's
+        index in this slot is not this repository's: False."""
         safe_name = self._safe_repo_component(name, "name")
-        return self._db_path(owner, name).exists()
+       try:
+           return self._db_path(owner, safe_name).exists()
+       except IndexIdentityConflict:
+           return False
 
     def incremental_save(
         self,
@@ -2018,6 +2281,188 @@ class SQLiteIndexStore:
                 file_hashes, file_mtimes, package_names, file_cap_status,
             )
 
+    def update_symbol_summaries(
+        self, owner: str, name: str, summaries: dict[str, tuple[str, str]]
+    ) -> int:
+        """Write new summaries for existing symbols and touch nothing else.
+
+        #1161: a summary refresh went through `incremental_save`, which
+        rewrites whole symbol rows from Symbol objects, and every field the
+        caller had not rebuilt (`cyclomatic`, `max_nesting`, `param_count`,
+        and `call_references` in `data`) was stored as NULL. An UPDATE of the
+        one column cannot clobber the others.
+
+        `summaries` maps a symbol id to `(summary, content_hash)`, the hash
+        of the body the summary was written from. A row whose hash no longer
+        matches (a re-index changed the body while the summaries were being
+        made) or whose id is gone is skipped. Returns the rows written.
+        """
+        db_path = self._db_path(owner, name)
+        if not db_path.exists() or not summaries:
+            return 0
+
+        from . import process_locks
+        lock_target = f"{owner}/{name}"
+        storage_root = str(self.base_path)
+        with process_locks.held(
+            "indexwrite", lock_target, storage_root, wait_seconds=60.0
+        ) as got_lock:
+            if not got_lock:
+                detail = process_locks.current_holder_diagnostic(
+                    "indexwrite", lock_target, storage_root,
+                )
+                raise RuntimeError(
+                    f"Could not acquire index-write lock for {lock_target} "
+                    f"after 60s{detail}"
+                )
+            # The .db as it stood before this write, sampled under `indexwrite`
+            # (the symbol writers take it; `set_coverage`,
+            # `stamp_parser_generation` and `heal_pack_index_paths` do not,
+            # LEDGER L-230) and BEFORE connecting, because
+            # opening a connection creates the -wal sidecar and moves the very
+            # mtime compared: the cache may be patched only if it was loaded at
+            # exactly this state (review of L-227, round 2).
+            pre_mtime_ns = _db_mtime_ns(db_path)
+            conn = self._connect(db_path)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT value FROM meta WHERE key = 'repo'").fetchone()
+                if row is not None and _meta_names_other_repo({"repo": row[0]}, owner, name):
+                    raise IndexIdentityConflict(f"{owner}/{name}", row[0])
+                changed = 0
+                written: dict[str, str] = {}
+                # Advance the summary generation in the same transaction, so
+                # every process's next load carries a new value and a cache
+                # key holding it misses (L-228). A counter, not a timestamp:
+                # two writes in one clock tick must still differ.
+                gen_row = conn.execute(
+                    "SELECT value FROM meta WHERE key = 'summaries_generation'"
+                ).fetchone()
+                try:
+                    generation = int(gen_row[0]) + 1 if gen_row is not None else 1
+                except (TypeError, ValueError):
+                    generation = 1
+                for sid, (summary, content_hash) in summaries.items():
+                    cur = conn.execute(
+                        "UPDATE symbols SET summary = ? WHERE id = ? "
+                        "AND COALESCE(content_hash, '') = COALESCE(?, '')",
+                        (summary, sid, content_hash),
+                    )
+                    if cur.rowcount:
+                        changed += cur.rowcount
+                        written[sid] = summary
+                if changed:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta (key, value) VALUES ('summaries_generation', ?)",
+                        (str(generation),),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            # The in-process index cache holds the old summaries. Patch the
+            # warm entry with the rows written instead of evicting it: the
+            # deferred summary thread calls this after every watched edit, and
+            # an eviction handed the next query a full reload that the
+            # whole-row save it replaced had avoided (review of L-227; the #370
+            # cold-hydration cost). Still under `indexwrite`, so no symbol
+            # writer in any process can move the .db between the write and the
+            # re-key. The three meta writers named above can, so the patch
+            # reads their keys back from the .db (L-230).
+            self._patch_cached_summaries(
+                owner, name, db_path, written, generation if changed else None, pre_mtime_ns
+            )
+        # The index's identity (`indexed_at`) did not move, so a result cache
+        # keyed on it would keep serving the old summaries (L-226).
+        if changed:
+            from . import write_listeners
+
+            write_listeners.notify(owner, name)
+        return changed
+
+    def _patch_cached_summaries(
+        self,
+        owner: str,
+        name: str,
+        db_path: Path,
+        written: dict[str, str],
+        generation: Optional[int],
+        pre_mtime_ns: int,
+    ) -> None:
+        """Re-put the warm base index with `written` summaries; evict when it cannot.
+
+        Called under `indexwrite`. Nothing written: the entry stays, because
+        the .db did not change. The cached entry is patched only if it was
+        loaded at `pre_mtime_ns`, the .db's state just before this write;
+        otherwise another writer moved the .db since this process loaded it,
+        and re-keying the old entry at the new mtime would hide that write, so
+        it is evicted (the gate `incremental_save` applies to its own patch).
+        A patch builds a NEW CodeIndex (readers holding the old object keep a
+        consistent snapshot) with the written symbols copied with their summary
+        and without their BM25 bags, keyed at the .db's new mtime. Branch
+        entries and any failure evict, which is never wrong, only slower.
+        """
+        import dataclasses
+
+        safe_name = self._safe_repo_component(name, "name")
+        if not written:
+            return
+        try:
+            with _cache_lock:
+                entry = _index_cache.get((owner, safe_name, ""))
+            if entry is None or entry.mtime_ns != pre_mtime_ns:
+                _cache_evict(owner, safe_name)
+                return
+            # Three meta writers do not take `indexwrite` (L-230), so one in
+            # another process can commit after `pre_mtime_ns` and its change
+            # would be re-keyed under the old value: `coverage` gates absence
+            # claims (#566). Read their keys from the .db as it stands now and
+            # carry them, the way `incremental_save`'s own patch refreshes
+            # `coverage`; if the .db moves during the read, evict instead.
+            mtime_ns = _db_mtime_ns(db_path)
+            from .generation import connect_readonly
+
+            ro = connect_readonly(db_path)
+            try:
+                meta = {
+                    k: v
+                    for k, v in ro.execute(
+                        "SELECT key, value FROM meta WHERE key IN "
+                        "('coverage', 'parser_generation', 'source_root', 'git_root')"
+                    ).fetchall()
+                }
+            finally:
+                ro.close()
+            if _db_mtime_ns(db_path) != mtime_ns:
+                _cache_evict(owner, safe_name)
+                return
+            old = entry.code_index
+            # `heal_pack_index_paths` clears the two roots; the cached values
+            # are remapped, so only the clearing can be compared.
+            for key in ("source_root", "git_root"):
+                if not (meta.get(key) or "") and (getattr(old, key, "") or ""):
+                    _cache_evict(owner, safe_name)
+                    return
+            bm25 = {"_tokens", "_tf", "_dl"}
+            symbols = [
+                {**{k: v for k, v in s.items() if k not in bm25}, "summary": written[s["id"]]}
+                if s.get("id") in written
+                else s
+                for s in old.symbols
+            ]
+            patched = dataclasses.replace(old, symbols=symbols)
+            if generation is not None:
+                patched.summaries_generation = str(generation)
+            if "coverage" in meta:
+                patched.coverage = json.loads(meta["coverage"] or "{}") or {}
+            if meta.get("parser_generation"):
+                patched.parser_generation = int(meta["parser_generation"])
+            _stamp_load_provenance(patched, db_path, mtime_ns)
+            _cache_evict(owner, safe_name)
+            _cache_put(owner, safe_name, mtime_ns, patched)
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not patch the cached index after a summary write", exc_info=True)
+            _cache_evict(owner, safe_name)
+
     def _incremental_save_locked(
         self,
         owner: str,
@@ -2056,7 +2501,27 @@ class SQLiteIndexStore:
 
         conn = self._connect(db_path)
         try:
-            conn.execute("BEGIN")
+            # Per-file write lock, then the stored identity: see save_index.
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT value FROM meta WHERE key = 'repo'").fetchone()
+            if row is not None and _meta_names_other_repo({"repo": row[0]}, owner, name):
+                raise IndexIdentityConflict(f"{owner}/{name}", row[0])
+
+            # A delta re-reads some files, so it cannot end a provider cut that
+            # a full pass recorded (L-190). The caller's dict REPLACES the stored
+            # one, and `index_file` and the watcher build theirs from the active
+            # providers alone; carrying the record here covers every writer.
+            if context_metadata is not None and PROVIDERS_CUT_KEY not in context_metadata:
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key = 'context_metadata'"
+                ).fetchone()
+                try:
+                    stored_cut = (json.loads(row["value"]) or {}).get(PROVIDERS_CUT_KEY) if row else None
+                except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                    logger.debug("incremental_save: unreadable stored context_metadata", exc_info=True)
+                    stored_cut = None
+                if stored_cut:
+                    context_metadata = {**context_metadata, PROVIDERS_CUT_KEY: stored_cut}
 
             # Delete symbols for changed + deleted files
             files_to_remove: set[str] = set(deleted_files) | set(changed_files)
@@ -2530,8 +2995,6 @@ class SQLiteIndexStore:
         _pairs = parse_path_map()
         repos = []
         for db_file in self.base_path.glob("*.db"):
-            if db_file.name in _NON_REPO_DB_FILES:
-                continue
             try:
                 entry = self._list_repo_from_db(db_file, _pairs)
                 if entry:
@@ -2556,16 +3019,14 @@ class SQLiteIndexStore:
         tool call): `list_repos()` pays `SELECT COUNT(*)` over symbols and
         files per repo, a full b-tree scan the roots never needed.
         """
-        from .generation import connect_readonly
         _pairs = parse_path_map()
         roots: list[str] = []
         for db_file in self.base_path.glob("*.db"):
-            if db_file.name in _NON_REPO_DB_FILES:
-                continue
             try:
-                conn = connect_readonly(db_file)
-                conn.row_factory = sqlite3.Row  # _read_meta indexes by name
+                conn = self._open_read(db_file)
                 try:
+                    if _classify_index_conn(conn) != INDEX_DB_INDEX:
+                        continue
                     meta = self._read_meta(conn)
                 finally:
                     conn.close()
@@ -2577,21 +3038,37 @@ class SQLiteIndexStore:
         return roots
 
     def _list_repo_from_db(self, db_path: Path, _pairs: Optional[list] = None) -> Optional[dict]:
-        """Read repo metadata from a .db file for list_repos."""
+        """Read repo metadata from a .db file for list_repos.
+
+        Returns None for a file that is not an index (``classify_index_db``).
+        ⚠⚠ Read-only, never `_connect` (LEDGER L-144): `_connect` creates the
+        index schema in a file with no `meta` and runs every migration on one
+        with no version row, so listing wrote 16 tables into a foreign
+        `parse_cache.db` and stamped `index_version` into a half-built index,
+        on every server start (`cleanup_orphan_indexes`,
+        `heal_pack_index_paths`).
+        """
+        # ⚠ `_INDEX_VERSION` is bound lazily here, and `_connect` used to do
+        # it as a side effect; a fresh process listing first saw None.
+        _ensure_index_store_deps()
         if _pairs is None:
             _pairs = parse_path_map()
         slug = db_path.stem
         parts = slug.split("-", 1)
         owner, name = parts if len(parts) == 2 else ("local", slug)
-        conn = self._connect(db_path)
+        conn = self._open_read(db_path)
         try:
-            meta = self._read_meta(conn)
-            if not meta or not meta.get("repo"):
+            kind = _classify_index_conn(conn)
+            if kind == INDEX_DB_NOT_INDEX:
+                return None
+            if kind == INDEX_DB_DAMAGED:
+                # Before `_read_meta`: a damaged index may have no `meta` table.
                 status = self.inspect_index(owner, name)
                 return {
                     "repo": status.repo,
                     **status.as_fields(include_empty=True),
                 }
+            meta = self._read_meta(conn)
             symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
             file_count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             # Read branch info if branch tables exist
@@ -2666,8 +3143,8 @@ class SQLiteIndexStore:
     def delete_index(self, owner: str, name: str) -> bool:
         """Delete a repo's .db, .db-wal, .db-shm, and content dir."""
         safe_name = self._safe_repo_component(name, "name")
+        db_path = self._db_path(owner, name)  # raises before anything is touched
         _cache_evict(owner, safe_name)
-        db_path = self._db_path(owner, name)
         deleted = False
 
         if db_path.exists():
@@ -2822,12 +3299,23 @@ class SQLiteIndexStore:
 
         return self._read_cached_text(content_path)
 
+    def read_cached_source(self, owner: str, name: str, file_path: str) -> Optional[str]:
+        """A file's text from the content cache, without requiring a saved index row
+        (a full index writes the cache before it saves). None when the path leaves the
+        cache or nothing is cached."""
+        content_path = self._safe_content_path(self._content_dir(owner, name), file_path)
+        if not content_path or not content_path.exists():
+            return None
+        return self._read_cached_text(content_path)
+
     # ── Content cache helpers (reused from IndexStore) ──────────────
 
     def _content_dir(self, owner: str, name: str) -> Path:
-        """Path to raw content directory."""
-        self._db_path(owner, name)
-        return self.base_path / self._repo_slug(owner, name)
+       """Path to raw content directory. Guarded like ``_db_path``: the
+       directory belongs to whichever repository the slot's index records."""
+       slug = self._repo_slug(owner, name)
+       self._guard_slot(self.base_path / f"{slug}.db", owner, name)
+       return self.base_path / slug
 
     def _safe_content_path(self, content_dir: Path, relative_path: str) -> Optional[Path]:
         """Resolve a content path and ensure it stays within content_dir."""
@@ -3140,6 +3628,7 @@ class SQLiteIndexStore:
             owner=old.owner,
             name=old.name,
             indexed_at=meta.get("indexed_at", old.indexed_at),
+            summaries_generation=meta.get("summaries_generation", getattr(old, "summaries_generation", "")),
             source_files=patched_source_files,
             languages=computed_langs,
             symbols=patched_symbols,
@@ -3241,6 +3730,7 @@ class SQLiteIndexStore:
             owner=meta.get("owner", owner),
             name=meta.get("name", name),
             indexed_at=meta.get("indexed_at", ""),
+            summaries_generation=meta.get("summaries_generation", ""),
             source_files=source_files,
             languages=languages,
             symbols=symbols,

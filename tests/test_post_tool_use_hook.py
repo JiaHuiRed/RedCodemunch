@@ -8,6 +8,18 @@ import pytest
 class TestEnforcementHooksConstant:
     """Tests for _enforcement_hooks() builder (upstream v1.21.27; absolute-path fix v1.80.5)."""
 
+    @pytest.fixture(autouse=True)
+    def _no_own_executable(self, monkeypatch):
+        # These tests feed a path through PATH; the running install's own
+        # executable is asked first since `install_layout.own_executable`, so
+        # this box's venv would answer instead. Take it out of the question.
+        import sys
+
+        from jcodemunch_mcp import install_layout
+
+        monkeypatch.setattr(sys, "argv", ["pytest"])
+        monkeypatch.setattr(install_layout, "_scripts_dir", lambda: None)
+
     def test_enforcement_hooks_has_post_tool_use(self):
         """_enforcement_hooks() must contain PostToolUse with Edit|Write matcher."""
         from jcodemunch_mcp.cli.init import _enforcement_hooks
@@ -89,7 +101,7 @@ class TestInstallEnforcementHooksIntegration:
             "jcodemunch_mcp.cli.init._settings_json_path",
             lambda: tmp_path / "settings.json"
         )
-        install_enforcement_hooks(backup=False)
+        install_enforcement_hooks(backup=False, guidance=True)
         data = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
 
         assert "PostToolUse" in data["hooks"]
@@ -102,8 +114,8 @@ class TestInstallEnforcementHooksIntegration:
             "jcodemunch_mcp.cli.init._settings_json_path",
             lambda: tmp_path / "settings.json"
         )
-        install_enforcement_hooks(backup=False)
-        install_enforcement_hooks(backup=False)
+        install_enforcement_hooks(backup=False, guidance=True)
+        install_enforcement_hooks(backup=False, guidance=True)
         data = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
         assert len(data["hooks"]["PostToolUse"]) == 1
         assert len(data["hooks"]["PreToolUse"]) == 1

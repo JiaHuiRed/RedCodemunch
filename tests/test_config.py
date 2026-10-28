@@ -530,15 +530,14 @@ class TestGetDescriptions:
 
 
 class TestEnvVarFallback:
-    """Test deprecated env var fallback with warnings."""
+    """Env var fallback: applied where the config file is silent, and never warned about (L-193)."""
 
     def test_env_var_used_when_config_key_absent(self, monkeypatch, caplog):
         """Should use env var value when config key not set."""
-        from jcodemunch_mcp.config import load_config, get, _GLOBAL_CONFIG, _DEPRECATED_ENV_VARS_LOGGED
+        from jcodemunch_mcp.config import load_config, get, _GLOBAL_CONFIG
         import logging
 
         _GLOBAL_CONFIG.clear()
-        _DEPRECATED_ENV_VARS_LOGGED.clear()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Config without max_folder_files
@@ -554,13 +553,13 @@ class TestEnvVarFallback:
             # Should use env var value
             assert get("max_folder_files") == 5000
 
-    def test_warning_logged_once_per_deprecated_var(self, monkeypatch, caplog):
-        """Should log one warning per deprecated env var found."""
-        from jcodemunch_mcp.config import load_config, _GLOBAL_CONFIG, _DEPRECATED_ENV_VARS_LOGGED
+    def test_env_vars_log_no_deprecation_warning(self, monkeypatch, caplog):
+        """Env vars are supported, so using one logs no warning (L-193; this used to
+        require one warning per var naming a v2.0 removal that is not planned)."""
+        from jcodemunch_mcp.config import load_config, _GLOBAL_CONFIG
         import logging
 
         _GLOBAL_CONFIG.clear()
-        _DEPRECATED_ENV_VARS_LOGGED.clear()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.jsonc"
@@ -572,22 +571,15 @@ class TestEnvVarFallback:
             with caplog.at_level(logging.WARNING):
                 load_config(tmpdir)
 
-            # Should have warnings (one per env var)
-            warning_count = sum(1 for rec in caplog.records if rec.levelname == "WARNING")
-            assert warning_count >= 2
-
-            # Each warning should mention v2.0 removal
-            for rec in caplog.records:
-                if "deprecated" in rec.message.lower():
-                    assert "v2.0" in rec.message
+            assert not any("deprecat" in rec.message.lower() for rec in caplog.records), caplog.text
+            assert not any("2.0" in rec.message for rec in caplog.records), caplog.text
 
     def test_no_warning_when_config_key_present(self, monkeypatch, caplog):
         """Should NOT log warning when config key is present."""
-        from jcodemunch_mcp.config import load_config, get, _GLOBAL_CONFIG, _DEPRECATED_ENV_VARS_LOGGED
+        from jcodemunch_mcp.config import load_config, get, _GLOBAL_CONFIG
         import logging
 
         _GLOBAL_CONFIG.clear()
-        _DEPRECATED_ENV_VARS_LOGGED.clear()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.jsonc"
@@ -613,12 +605,10 @@ class TestEnvVarFallback:
             load_config,
             get,
             _GLOBAL_CONFIG,
-            _DEPRECATED_ENV_VARS_LOGGED,
         )
         import logging
 
         _GLOBAL_CONFIG.clear()
-        _DEPRECATED_ENV_VARS_LOGGED.clear()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.jsonc"
@@ -637,12 +627,10 @@ class TestEnvVarFallback:
             load_config,
             get,
             _GLOBAL_CONFIG,
-            _DEPRECATED_ENV_VARS_LOGGED,
         )
         import logging
 
         _GLOBAL_CONFIG.clear()
-        _DEPRECATED_ENV_VARS_LOGGED.clear()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.jsonc"
@@ -672,11 +660,10 @@ class TestEnvVarFallback:
         self, monkeypatch, caplog, env_key, env_value, expected_key, expected_value
     ):
         """Legacy encoding env vars should map through config fallback."""
-        from jcodemunch_mcp.config import load_config, get, _GLOBAL_CONFIG, _DEPRECATED_ENV_VARS_LOGGED
+        from jcodemunch_mcp.config import load_config, get, _GLOBAL_CONFIG
         import logging
 
         _GLOBAL_CONFIG.clear()
-        _DEPRECATED_ENV_VARS_LOGGED.clear()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.jsonc"
@@ -688,7 +675,9 @@ class TestEnvVarFallback:
                 load_config(tmpdir)
 
             assert get(expected_key) == expected_value
-            assert any(env_key in rec.message for rec in caplog.records)
+            # This asserted the deprecation warning named the variable; env vars
+            # are supported and log nothing now (L-193).
+            assert not any("deprecat" in rec.message.lower() for rec in caplog.records)
 
 
 class TestTrustedFoldersConfig:
@@ -1681,7 +1670,8 @@ class TestClaudeMdDriftCheck:
             assert "one-line form" in out
 
     def test_check_warns_when_claude_md_absent(self, capsys, monkeypatch):
-        """check should warn (not error) when CLAUDE.md is not found."""
+        """check should report (not error) when CLAUDE.md is not found. Since the
+        policy became opt-in (2026-10-22) the report names it as opt-in."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # No CLAUDE.md created — only config
             fn = self._run_check(monkeypatch, tmpdir, claude_md_content=None)
@@ -1692,7 +1682,7 @@ class TestClaudeMdDriftCheck:
                 out_lines = capsys.readouterr().out.splitlines()
             except SystemExit:
                 out_lines = capsys.readouterr().out.splitlines()
-            assert any("CLAUDE.md not found" in l or "not mentioned" in l for l in out_lines)
+            assert any("No CLAUDE.md at" in l and "init --policy" in l for l in out_lines)
 
 
 class TestClaudeMdGenerate:

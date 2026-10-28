@@ -34,7 +34,8 @@ from .policy import (  # noqa: F401,E402
 # Constants
 # ---------------------------------------------------------------------------
 
-_CLAUDE_MD_MARKER = "## Code Exploration Policy"
+from .backup import backup_path as _backup_path  # noqa: E402  (L-203)
+from .policy import POLICY_MARKER as _CLAUDE_MD_MARKER  # noqa: E402, F401  (#871: one marker; re-exported, L-186)
 
 
 
@@ -72,7 +73,9 @@ def _hook_invocation() -> str:
     Windows API that accepts a path and don't trigger bash escape
     parsing.
     """
-    resolved = shutil.which("jcodemunch-mcp")
+    from ..install_layout import executable_for_commands
+
+    resolved = executable_for_commands()
     if not resolved:
         # Fall back to bare name; user will get a clear error if PATH is wrong.
         return "jcodemunch-mcp"
@@ -97,7 +100,39 @@ def _worktree_hooks() -> dict[str, Any]:
     }
 
 
-def _enforcement_hooks() -> dict[str, Any]:
+def _silent_hooks() -> dict[str, Any]:
+    """Hooks whose output the model never sees: the default install.
+
+    PostToolUse re-indexes an edited file, PreCompact registers the transcript
+    root, and TaskCompleted's note goes to the user (``systemMessage``), not to
+    the model.
+    """
+    exe = _hook_invocation()
+    return {
+        "PostToolUse": [{
+            "matcher": "Edit|Write",
+            "hooks": [{"type": "command", "command": f"{exe} hook-posttooluse"}],
+        }],
+        "PreCompact": [{
+            "matcher": "",
+            "hooks": [{"type": "command", "command": f"{exe} hook-precompact"}],
+        }],
+        "TaskCompleted": [{
+            "matcher": "",
+            "hooks": [{"type": "command", "command": f"{exe} hook-taskcomplete"}],
+        }],
+    }
+
+
+def _guidance_hooks() -> dict[str, Any]:
+    """Hooks that put text in front of the model: opt-in (``init --guidance``).
+
+    The PreToolUse advice on Read/Grep/Glob/Bash, the SubagentStart briefing and
+    the SessionStart restore after compaction each cost tokens on the turns they
+    fire, and in Claude Code sessions we measured the advice did not change
+    which tools the agent used, so they are no longer installed by default. An
+    install that already has them keeps them (see ``install_enforcement_hooks``).
+    """
     exe = _hook_invocation()
     return {
         # Bash and Glob are in the matcher because they are the dominant
@@ -107,22 +142,10 @@ def _enforcement_hooks() -> dict[str, Any]:
             "matcher": "Read|Grep|Glob|Bash",
             "hooks": [{"type": "command", "command": f"{exe} hook-pretooluse"}],
         }],
-        "PostToolUse": [{
-            "matcher": "Edit|Write",
-            "hooks": [{"type": "command", "command": f"{exe} hook-posttooluse"}],
-        }],
-        "PreCompact": [{
-            "matcher": "",
-            "hooks": [{"type": "command", "command": f"{exe} hook-precompact"}],
-        }],
         # Restore only sources whose persisted journal still describes this session.
         "SessionStart": [{
             "matcher": "compact|resume|fork",
             "hooks": [{"type": "command", "command": f"{exe} hook-sessionstart"}],
-        }],
-        "TaskCompleted": [{
-            "matcher": "",
-            "hooks": [{"type": "command", "command": f"{exe} hook-taskcomplete"}],
         }],
         "SubagentStart": [{
             "matcher": "",
@@ -130,16 +153,26 @@ def _enforcement_hooks() -> dict[str, Any]:
         }],
     }
 
+
+def _enforcement_hooks() -> dict[str, Any]:
+    """Every hook `init` can install: the silent ones and the guidance ones."""
+    return {**_guidance_hooks(), **_silent_hooks()}
+
 # Cursor rules use MDC format (frontmatter + markdown).
 # alwaysApply: true ensures the rule is in context for every agent turn,
 # including subagents — which is the main reliability complaint.
-_CURSOR_RULES_CONTENT = """\
+# ONE copy: the rules constant and `install_cursor_rules` both prepend it, so
+# the description cannot say one thing for the full policy and another for a
+# filtered one (L-175: it was written twice and only one copy was tested).
+_CURSOR_FRONTMATTER = """\
 ---
-description: Use jCodemunch MCP tools for all code navigation instead of built-in search
+description: When jCodemunch MCP tools are the cheaper route for code navigation, and when the built-in search is
 alwaysApply: true
 ---
 
-""" + _CLAUDE_MD_POLICY
+"""
+
+_CURSOR_RULES_CONTENT = _CURSOR_FRONTMATTER + _CLAUDE_MD_POLICY
 
 # Windsurf uses a plain-text .windsurfrules file in the project root.
 _WINDSURF_RULES_CONTENT = _CLAUDE_MD_POLICY
@@ -276,7 +309,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_json(path: Path, data: dict[str, Any], *, backup: bool = True) -> None:
     """Write JSON, optionally creating a .bak backup first."""
     if backup and path.exists():
-        bak = path.with_suffix(path.suffix + ".bak")
+        bak = _backup_path(path)
         shutil.copy2(path, bak)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -343,7 +376,9 @@ def _codex_command() -> Optional[str]:
     cannot resolve a real binary has to say so instead of writing a config
     that appears to work.
     """
-    return shutil.which("jcodemunch-mcp")
+    from ..install_layout import executable_for_commands
+
+    return executable_for_commands()
 
 
 def _has_codex_entry(text: str) -> bool:
@@ -383,7 +418,7 @@ def _patch_codex_config(
         return f"  would add [mcp_servers.jcodemunch] to {path} (command = {exe})"
 
     if backup and path.exists():
-        shutil.copy2(path, path.with_suffix(".toml.bak"))
+        shutil.copy2(path, _backup_path(path))
 
     block = (
         "\n[mcp_servers.jcodemunch]\n"
@@ -550,10 +585,17 @@ def _claude_md_path(scope: str) -> Path:
 
 
 def _has_policy(path: Path) -> bool:
-    """Check if the Code Exploration Policy marker already exists."""
+    """Does *path* hold the Code Exploration Policy block?
+
+    Asks the one boundary rule (`policy.policy_block_span`), so `init`, the
+    drift check and `claude-md --refresh` agree: a sentence that names the
+    policy is not a block, and `init` installs one beside it.
+    """
     if not path.exists():
         return False
-    return _CLAUDE_MD_MARKER in path.read_text(encoding="utf-8")
+    from .policy import installed_policy_block
+
+    return installed_policy_block(path.read_text(encoding="utf-8")) is not None
 
 
 def with_scoped_config(fn):
@@ -647,13 +689,32 @@ def install_claude_md(scope: str = "global", *, dry_run: bool = False, backup: b
     """
     path = _claude_md_path(scope)
     if _has_policy(path):
+        # (#871) Present is not current: a corrected policy never reaches an
+        # install that already holds the marker. Say so; never rewrite it.
+        from .policy import installed_policy_drift
+
+        drift = installed_policy_drift(path.read_text(encoding="utf-8"))
+        if drift and drift["state"] == "differs":
+            from .policy_refresh import matches_server_policy
+
+            if matches_server_policy(path.read_text(encoding="utf-8")):
+                # (L-185) Written for the server's settings by `--match-server`.
+                return (
+                    f"  policy already present in {path}; it matches the policy for the settings the server "
+                    "had when it last said a block differs, which this shell's settings do not select."
+                )
+            return (
+                f"  policy already present in {path}, but it differs from the policy this "
+                "version installs (outdated, or edited on purpose; this cannot tell which). "
+                "`jcodemunch-mcp claude-md --refresh` shows the difference and replaces it after asking."
+            )
         return f"  policy already present in {path}"
     if dry_run:
         return f"  would append policy to {path}"
 
     path.parent.mkdir(parents=True, exist_ok=True)
     if backup and path.exists():
-        shutil.copy2(path, path.with_suffix(".md.bak"))
+        shutil.copy2(path, _backup_path(path))
 
     policy = active_policy()
     with open(path, "a", encoding="utf-8") as f:
@@ -679,14 +740,14 @@ def install_cursor_rules(*, dry_run: bool = False, backup: bool = True) -> str:
     Returns a status message.
     """
     path = _cursor_rules_path()
-    if path.exists() and _CLAUDE_MD_MARKER in path.read_text(encoding="utf-8"):
+    if _has_policy(path):  # (L-186) a heading, by the one boundary rule, never a substring
         return f"  already present in {path}"
     if dry_run:
         return f"  would write {path}"
 
     path.parent.mkdir(parents=True, exist_ok=True)
     if backup and path.exists():
-        shutil.copy2(path, path.with_suffix(".mdc.bak"))
+        shutil.copy2(path, _backup_path(path))
 
     # Cursor gets the same surface-matched policy as everyone else; only the MDC
     # frontmatter differs. Reading the policy from `active_policy` rather than
@@ -694,12 +755,7 @@ def install_cursor_rules(*, dry_run: bool = False, backup: bool = True) -> str:
     policy = active_policy()
     content = _CURSOR_RULES_CONTENT
     if policy != _CLAUDE_MD_POLICY:
-        content = (
-            "---\n"
-            "description: Use jCodemunch MCP tools for all code navigation instead of built-in search\n"
-            "alwaysApply: true\n"
-            "---\n\n"
-        ) + policy
+        content = _CURSOR_FRONTMATTER + policy
     path.write_text(content, encoding="utf-8")
     return f"  wrote {path}"
 
@@ -719,13 +775,13 @@ def install_windsurf_rules(*, dry_run: bool = False, backup: bool = True) -> str
     Returns a status message.
     """
     path = _windsurf_rules_path()
-    if path.exists() and _CLAUDE_MD_MARKER in path.read_text(encoding="utf-8"):
+    if _has_policy(path):  # (L-186) a heading, by the one boundary rule, never a substring
         return f"  already present in {path}"
     if dry_run:
         return f"  would append policy to {path}"
 
     if backup and path.exists():
-        shutil.copy2(path, path.with_suffix(".windsurfrules.bak"))
+        shutil.copy2(path, _backup_path(path))
 
     policy = active_policy()
     with open(path, "a", encoding="utf-8") as f:
@@ -752,12 +808,12 @@ def install_agents_md(*, dry_run: bool = False, backup: bool = True) -> str:
     policy = active_policy()
     if target.exists():
         existing = target.read_text(encoding="utf-8")
-        if _CLAUDE_MD_MARKER in existing:
+        if _has_policy(target):  # (L-186) as above
             return f"  already present in {target}"
         if dry_run:
             return f"  would append policy to {target}"
         if backup:
-            shutil.copy2(target, target.with_suffix(".md.bak"))
+            shutil.copy2(target, _backup_path(target))
         target.write_text(existing.rstrip() + "\n\n" + policy + "\n", encoding="utf-8")
     else:
         if dry_run:
@@ -1040,7 +1096,7 @@ def install_copilot_hooks(*, dry_run: bool = False, backup: bool = True) -> str:
             data.setdefault("version", 1)
             msg = f"  appended Copilot postToolUse hook to {hooks_path}"
         if backup:
-            hooks_path.with_suffix(".json.bak").write_text(raw, encoding="utf-8")
+            _backup_path(hooks_path).write_text(raw, encoding="utf-8")
         hooks_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         return msg
 
@@ -1052,15 +1108,32 @@ def install_copilot_hooks(*, dry_run: bool = False, backup: bool = True) -> str:
     return f"  wrote {hooks_path} with jcodemunch postToolUse hook"
 
 
+def _installed_jcm_subcommands(data: dict[str, Any]) -> "set[str]":
+    """Every jcm subcommand a settings.json hook rule already runs."""
+    found: set[str] = set()
+    for rules in (data.get("hooks") or {}).values():
+        if isinstance(rules, list):
+            for rule in rules:
+                if isinstance(rule, dict):
+                    found |= _rule_subs(rule)
+    return found
+
+
 def install_enforcement_hooks(
     *, dry_run: bool = False, backup: bool = True, strict: bool = False,
+    guidance: bool = False,
 ) -> str:
-    """Merge PreToolUse/PostToolUse enforcement hooks into ~/.claude/settings.json.
+    """Merge jcodemunch's Claude Code hooks into ~/.claude/settings.json.
 
-    PreToolUse (Read|Grep|Glob|Bash) — steer Claude toward jCodemunch for code
-        files and searches inside an indexed repo (Bash only when the command
-        line opens with a search command like grep/rg/find).
-    PostToolUse (Edit|Write) — auto-reindex modified files.
+    Always: the silent hooks (``_silent_hooks``: reindex after Edit/Write,
+    PreCompact registration, the TaskCompleted note to the user).
+
+    The guidance hooks (``_guidance_hooks``: the PreToolUse advice, the
+    SubagentStart briefing, the SessionStart restore) are added only when
+    ``guidance`` is True. ``strict`` adds the PreToolUse hook it strengthens.
+    ⚠ An install that ALREADY has a guidance hook keeps it, converged in place
+    like any other jcm rule: a default re-run (and `upgrade`, which runs
+    `init --hooks --yes`) never removes one. `init --remove-guidance` does.
 
     When ``strict`` is True, also persist ``env.JCODEMUNCH_ENFORCE = "strict"``
     so the PreToolUse hook **denies** (rather than warns on) a native Read/Grep
@@ -1072,11 +1145,18 @@ def install_enforcement_hooks(
     """
     path = _settings_json_path()
     data = _read_json(path)
+    defs = _silent_hooks()
+    present = _installed_jcm_subcommands(data)
+    for event, rules in _guidance_hooks().items():
+        wanted = guidance or (strict and event == "PreToolUse")
+        already = any(_rule_subs(rule) & present for rule in rules)
+        if wanted or already:
+            defs[event] = rules
     # Marker is only the legacy substring fallback; primary duplicate detection is
     # per-subcommand via _extract_jcm_subcommand, so hooks outside the "hook-p"
     # prefix (hook-sessionstart, hook-taskcomplete, hook-subagent-start) merge
     # correctly and are added to an existing install on re-run.
-    added, updated = _merge_hooks(data, _enforcement_hooks(), "jcodemunch-mcp hook-p")  # matches hook-pretooluse & hook-posttooluse & hook-precompact
+    added, updated = _merge_hooks(data, defs, "jcodemunch-mcp hook-p")  # matches hook-pretooluse & hook-posttooluse & hook-precompact
 
     # Persist (or revert) the strict-enforce env flag the hook reads at runtime.
     env_changed = False
@@ -1125,12 +1205,43 @@ def run_index(*, dry_run: bool = False) -> str:
 
     try:
         from ..tools.index_folder import index_folder
-        result = index_folder(path=cwd)
-        files = result.get("files_indexed", "?")
-        symbols = result.get("symbols_indexed", "?")
-        return f"  indexed {cwd} ({files} files, {symbols} symbols)"
+        return _index_summary(cwd, index_folder(path=cwd))
     except Exception as e:
         return f"  indexing failed: {e}"
+
+
+def _index_summary(cwd: str, result: dict) -> str:
+    """One line for what `index_folder` answered. It answers in four shapes:
+    a refusal (`success` false, `error`), a full index (`file_count`), a run
+    that re-indexed some files (`changed`/`new`/`deleted`, `symbol_count`) and
+    a run that found nothing changed (the three counts at 0, no symbol count).
+    A count the result does not carry is left out, never printed as `?`.
+    Any successful shape can also say the file cap cut the walk short
+    (`truncated`); the line then says how many files the index holds."""
+    if not result.get("success"):
+        return f"  indexing failed: {result.get('error') or 'the indexer gave no reason'}"
+    parts = []
+    unchanged = False
+    if "file_count" in result:
+        parts.append(f"{result['file_count']} files")
+    elif "changed" in result:
+        touched = [result.get(key, 0) for key in ("changed", "new", "deleted")]
+        unchanged = not any(touched)
+        parts.append(
+            "nothing changed since the last index" if unchanged
+            else "{} changed, {} new, {} deleted".format(*touched)
+        )
+    if result.get("symbol_count") is not None:
+        parts.append(f"{result['symbol_count']} symbols")
+    detail = ", ".join(parts)
+    if result.get("truncated"):
+        capped = "the file cap was reached, {} of {} files are in the index".format(
+            result.get("files_indexed", "some"), result.get("files_discovered", "the")
+        )
+        detail = f"{detail}; {capped}" if detail else capped
+    if unchanged:
+        return f"  {cwd} is up to date ({detail})"
+    return f"  indexed {cwd} ({detail})" if detail else f"  indexed {cwd}"
 
 
 # ---------------------------------------------------------------------------
@@ -1239,6 +1350,30 @@ def _prompt_scope(message: str) -> Optional[str]:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+#: jjg (DECISIONS 2026-10-17): the license line belongs "in the install/init
+#: output a person reads, not in the agent's answers". ⚠⚠ Printed only at the
+#: end of a real run, never in a tool response, a relayed notice or the policy
+#: text; `tests/test_init_licence_line.py` fails if any other `src/` module
+#: carries it. Wording is Marketing's (2026-10-17); $79 is Builder, README's price.
+_LICENCE_LINES = (
+    "Using jCodeMunch at work? A commercial license is $79, one time: https://jcodemunch.com/descriptions.php?utm_source=cli&utm_medium=install&utm_campaign=license-line",
+    "(30-day money-back guarantee; terms: https://jcodemunch.com/guarantee.php?utm_source=cli&utm_medium=install&utm_campaign=license-line)",
+)
+
+
+def _licence_key_configured() -> bool:
+    """A licensed install never sees the license line (`org.license.licence_key_configured`)."""
+    from ..org.license import licence_key_configured
+
+    return licence_key_configured()
+
+
+#: Set by `upgrade` on the `init --hooks` it runs: the line is shown once per
+#: install, never on every upgrade (Chief of Staff, 2026-10-17). An env var, not
+#: a flag, so an older executable that `upgrade` may find on PATH ignores it.
+UPGRADE_REFRESH_ENV = "_JCODEMUNCH_UPGRADE_REFRESH"
+
+
 @with_scoped_config
 def run_init(
     *,
@@ -1263,8 +1398,17 @@ def run_init(
     share_savings: Optional[str] = None,
     minimal: bool = False,
     strict: bool = False,
+    guidance: bool = False,
+    policy: bool = False,
+    remove_guidance: bool = False,
 ) -> int:
     """Run the init flow. Returns exit code (0 = success).
+
+    A default install registers the server and adds only the hooks whose
+    output the model never sees. ``guidance`` adds the model-facing hooks,
+    ``policy`` (or an explicit ``claude_md`` scope) the policy pastes. An
+    install that already has either keeps it; ``remove_guidance`` removes them
+    and does nothing else.
 
     ``share_savings`` accepts ``"on"`` or ``"off"`` (or ``None`` to leave unchanged).
     When set, writes the explicit value into ``~/.code-index/config.jsonc`` before
@@ -1284,6 +1428,16 @@ def run_init(
     backup = not no_backup
     interactive = not yes and sys.stdin.isatty()
     hooks = bool(hooks)
+
+    if remove_guidance:
+        print("\njCodeMunch init -- removing model-facing hooks and policy blocks\n")
+        for line in remove_guidance_lines(dry_run=dry_run, backup=backup):
+            print(line)
+        print()
+        print("Dry run complete -- no changes were made." if dry_run
+              else "Done. Restart your MCP client(s) to load the change.")
+        print()
+        return 0
     # P1.7: --minimal forces all channels beyond MCP server registration to
     # OFF and turns off interactive prompts. Combined with --yes (which is
     # how `install <agent>` calls into run_init) this becomes a clean
@@ -1387,12 +1541,15 @@ def run_init(
     selected_names = {c.name for c in targets}
 
     # 2a: CLAUDE.md (Claude Code / Claude Desktop)
+    # ⚠ Opt-in since the default install was made light (2026-10-22): the policy block is paid for on
+    # every request. `--policy` or an explicit `--claude-md SCOPE` adds it; an
+    # existing block is left as it is (and `claude-md --refresh` still updates it).
     md_scope = claude_md
-    if md_scope is None and interactive:
+    if md_scope is None and policy and interactive:
         print()
         md_scope = _prompt_scope("Install CLAUDE.md policy?")
-    elif md_scope is None and yes:
-        md_scope = "global"  # default for --yes mode
+    elif md_scope is None and policy:
+        md_scope = "global"
 
     if md_scope in ("global", "project"):
         msg = install_claude_md(md_scope, dry_run=dry_run, backup=backup)
@@ -1405,7 +1562,7 @@ def run_init(
             ))
 
     # 2b: Cursor rules (.cursor/rules/jcodemunch.mdc)
-    if "Cursor" in selected_names and not minimal:
+    if "Cursor" in selected_names and policy and not minimal:
         do_cursor_rules = yes or not interactive
         if interactive:
             print()
@@ -1422,7 +1579,7 @@ def run_init(
                 ))
 
     # 2c: Windsurf rules (.windsurfrules)
-    if "Windsurf" in selected_names and not minimal:
+    if "Windsurf" in selected_names and policy and not minimal:
         do_windsurf_rules = yes or not interactive
         if interactive:
             print()
@@ -1439,8 +1596,8 @@ def run_init(
                 ))
 
     # 2d: AGENTS.md (OpenCode, Codex, etc.)
-    do_agents_md = (yes or not interactive) and not minimal
-    if interactive:
+    do_agents_md = policy and (yes or not interactive) and not minimal
+    if policy and interactive:
         print()
         do_agents_md = _prompt_yn(
             "Install AGENTS.md (OpenCode/Codex policy)?",
@@ -1486,16 +1643,20 @@ def run_init(
     do_enforce = hooks  # same flag enables enforcement hooks
     if strict:
         do_enforce = True  # --strict implies installing the hooks it strengthens
+    elif guidance:
+        do_enforce = True  # --guidance asks for hooks by name
     elif not do_enforce and interactive:
         print()
         do_enforce = _prompt_yn(
-            "Install enforcement hooks (intercept Read on large code files, auto-reindex after Edit/Write)?",
+            "Install the silent hooks (re-index after Edit/Write, keep the session across compaction)?",
             default=True,
         )
     elif not do_enforce and yes and not minimal:
         do_enforce = True  # default for --yes mode (suppressed under --minimal)
     if do_enforce:
-        msg = install_enforcement_hooks(dry_run=dry_run, backup=backup, strict=strict)
+        msg = install_enforcement_hooks(
+            dry_run=dry_run, backup=backup, strict=strict, guidance=guidance,
+        )
         print(f"  Enforcement:{msg}")
         if strict and not dry_run:
             print(
@@ -1510,11 +1671,18 @@ def run_init(
             pass
         if demo and "would" in msg:
             _demo_actions.append((
-                "Install PreToolUse + PostToolUse enforcement hooks in ~/.claude/settings.json",
-                "Large code files would be routed through jCodemunch (get_file_outline + get_symbol_source) "
-                "instead of raw Read, and the index would auto-update after every Edit/Write — "
-                "eliminating staleness anxiety and enforcing token-efficient navigation",
+                "Install the silent hooks in ~/.claude/settings.json"
+                + (" plus the model-facing guidance hooks" if guidance or strict else ""),
+                "The index would update after every Edit/Write, with nothing added to the model's context"
+                + ("; the guidance hooks add advice and briefings to it" if guidance or strict else ""),
             ))
+
+    if do_hooks or do_enforce:
+        from ..install_layout import substitution_note
+
+        _note = substitution_note()
+        if _note:
+            print(f"  Note: {_note}")
 
     # ----- Step 3c: Copilot hooks (.github/hooks/hooks.json) -----
     if copilot_hooks:
@@ -1560,6 +1728,18 @@ def run_init(
                 "Stale symbols, oversized instructions, and repeated boilerplate would be flagged — reducing context overhead on every Claude turn",
             ))
 
+    # ----- Offer, never apply: what an older install still carries -----
+    if not (guidance or policy or strict or claude_md in ("global", "project") or minimal):
+        try:
+            _offer = _leftovers_offer_lines(guidance_leftovers())
+        except Exception:
+            logger.debug("guidance leftovers check failed", exc_info=True)
+            _offer = []
+        if _offer:
+            print()
+            for line in _offer:
+                print(line)
+
     # ----- Done -----
     print()
     if demo:
@@ -1577,6 +1757,12 @@ def run_init(
         print("Dry run complete -- no changes were made.")
     else:
         print("Done. Restart your MCP client(s) to connect.")
+        if os.environ.get(UPGRADE_REFRESH_ENV) != "1":
+            print(ASK_BY_NAME_LINE)
+        if os.environ.get(UPGRADE_REFRESH_ENV) != "1" and not _licence_key_configured():
+            print()
+            for line in _LICENCE_LINES:
+                print(line)
     print()
     return 0
 
@@ -1585,55 +1771,34 @@ def run_init(
 # Uninstall — reverses every install_* function above
 # ---------------------------------------------------------------------------
 
-# Headings emitted by _CLAUDE_MD_POLICY. Used by uninstall to recognise the
-# region we own when stripping the policy back out of a CLAUDE.md / AGENTS.md /
-# .windsurfrules file.
-_POLICY_HEADINGS: tuple[str, ...] = (
-    "## Code Exploration Policy",
-    "## Session-Aware Routing",
-    "## Model-Driven Tool Tiering",
-)
-
-
 def _strip_policy_blocks(text: str) -> tuple[str, bool]:
     """Remove the jCodemunch policy region from a markdown body.
 
-    Treats the first `## Code Exploration Policy` heading as the start of the
-    region. Consumes any of `_POLICY_HEADINGS` blocks that follow contiguously
-    (so partial / tier-filtered installs are still removed cleanly). Stops at
-    the first `## ` heading that is *not* one of ours, preserving any
-    user-added sections after the policy.
+    The region is `policy.policy_block_span`'s, THE boundary rule `init`, the
+    drift check and `claude-md --refresh` share (LEDGER L-186). This function
+    had a rule of its own that ended the block only at a `## ` heading, so a
+    user's `#` or `###` section right after the policy was deleted with it.
+    The shared rule ends at a heading of any level that is not one of the
+    policy's own sections, and ignores `#` inside a code fence.
 
     Returns (new_text, changed).
     """
-    lines = text.splitlines(keepends=True)
-    start = None
-    for i, line in enumerate(lines):
-        stripped = line.rstrip("\n")
-        if stripped in _POLICY_HEADINGS:
-            start = i
-            break
-    if start is None:
-        return text, False
+    from .policy import policy_block_span
 
-    # Walk forward, consuming contiguous policy blocks.
-    end = len(lines)
-    i = start + 1
-    while i < len(lines):
-        stripped = lines[i].rstrip("\n")
-        if stripped.startswith("## "):
-            if stripped in _POLICY_HEADINGS:
-                i += 1
-                continue
-            end = i
-            break
-        i += 1
+    # A byte-order mark is kept aside and put back, so a block on the first
+    # line does not take it with it.
+    bom = chr(0xFEFF) if text.startswith(chr(0xFEFF)) else ""
+    lines = text[len(bom):].splitlines(keepends=True)
+    span = policy_block_span([ln.rstrip("\r\n") for ln in lines])
+    if span is None:
+        return text, False
+    start, end = span
 
     # Trim trailing blank lines we leave behind.
     before = "".join(lines[:start]).rstrip() + ("\n" if start > 0 else "")
     after = "".join(lines[end:])
     new_text = before + ("\n" + after if after.strip() else "")
-    return new_text, True
+    return (bom + new_text if new_text else new_text), True
 
 
 def _unpatch_mcp_config(path: Path, *, backup: bool, dry_run: bool) -> str:
@@ -1699,7 +1864,7 @@ def uninstall_claude_md(scope: str = "global", *, dry_run: bool = False, backup:
     if dry_run:
         return f"  would strip policy from {path}"
     if backup:
-        shutil.copy2(path, path.with_suffix(".md.bak"))
+        shutil.copy2(path, _backup_path(path))
     if new_text.strip():
         path.write_text(new_text, encoding="utf-8")
         return f"  stripped policy from {path}"
@@ -1715,7 +1880,7 @@ def uninstall_cursor_rules(*, dry_run: bool = False, backup: bool = True) -> str
     if dry_run:
         return f"  would remove {path}"
     if backup:
-        shutil.copy2(path, path.with_suffix(".mdc.bak"))
+        shutil.copy2(path, _backup_path(path))
     path.unlink()
     return f"  removed {path}"
 
@@ -1731,7 +1896,7 @@ def uninstall_windsurf_rules(*, dry_run: bool = False, backup: bool = True) -> s
     if dry_run:
         return f"  would strip policy from {path}"
     if backup:
-        shutil.copy2(path, path.with_suffix(".windsurfrules.bak"))
+        shutil.copy2(path, _backup_path(path))
     if new_text.strip():
         path.write_text(new_text, encoding="utf-8")
         return f"  stripped policy from {path}"
@@ -1750,7 +1915,7 @@ def uninstall_agents_md(*, dry_run: bool = False, backup: bool = True) -> str:
     if dry_run:
         return f"  would strip policy from {path}"
     if backup:
-        shutil.copy2(path, path.with_suffix(".md.bak"))
+        shutil.copy2(path, _backup_path(path))
     if new_text.strip():
         path.write_text(new_text, encoding="utf-8")
         return f"  stripped policy from {path}"
@@ -1793,6 +1958,162 @@ def _strip_jcm_hooks(data: dict[str, Any]) -> list[str]:
     return touched
 
 
+def _guidance_subcommands() -> "set[str]":
+    subs: set[str] = set()
+    for rules in _guidance_hooks().values():
+        for rule in rules:
+            subs |= _rule_subs(rule)
+    return subs
+
+
+def _strip_guidance_hooks(data: dict[str, Any]) -> list[str]:
+    """Drop only the jcm guidance hook entries (``_guidance_hooks``).
+
+    A user's own hook in the same rule stays, and so does every silent jcm
+    hook. A rule left with no hooks, an event left with no rules and an empty
+    top-level ``hooks`` are pruned. Returns the events that lost an entry.
+    """
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    targets = _guidance_subcommands()
+    touched: list[str] = []
+    for event_name in list(hooks.keys()):
+        rules = hooks[event_name]
+        if not isinstance(rules, list):
+            continue
+        kept_rules = []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                kept_rules.append(rule)
+                continue
+            entries = rule.get("hooks", [])
+            kept = [
+                h for h in entries
+                if not (isinstance(h, dict) and _extract_jcm_subcommand(h.get("command", "") or "") in targets)
+            ]
+            if len(kept) != len(entries) and event_name not in touched:
+                touched.append(event_name)
+            if kept:
+                rule["hooks"] = kept
+                kept_rules.append(rule)
+        if kept_rules:
+            hooks[event_name] = kept_rules
+        else:
+            del hooks[event_name]
+    if not hooks:
+        data.pop("hooks", None)
+    # `--strict` only strengthens the PreToolUse advice hook; with that hook
+    # gone the setting governs nothing, so it leaves with it.
+    env = data.get("env")
+    if "PreToolUse" in touched and isinstance(env, dict) and env.get("JCODEMUNCH_ENFORCE") == "strict":
+        del env["JCODEMUNCH_ENFORCE"]
+        if not env:
+            data.pop("env", None)
+    return touched
+
+
+REMOVE_GUIDANCE_COMMAND = "jcodemunch-mcp init --remove-guidance"
+
+# Asking for the tool by name is what gets an agent to use it; a default
+# install adds no instructions that would ask on the user's behalf.
+ASK_BY_NAME_LINE = (
+    'Tip: ask your agent to use jcodemunch by name ("use jcodemunch to find '
+    'where X is handled").'
+)
+
+
+def _policy_targets() -> "list[tuple[str, Path]]":
+    """Every file a policy paste can live in, by its install-status label."""
+    return [
+        ("claude_md_global", _claude_md_path("global")),
+        ("claude_md_project", _claude_md_path("project")),
+        ("cursor_rules", _cursor_rules_path()),
+        ("windsurf_rules", _windsurf_rules_path()),
+        ("agents_md", Path.cwd() / "AGENTS.md"),
+    ]
+
+
+def guidance_leftovers() -> dict[str, list[str]]:
+    """The model-facing hooks and policy blocks this install still carries.
+
+    Read-only. ``hooks`` lists settings.json events running a guidance hook;
+    ``policies`` lists the policy files (by install-status label) holding a
+    jcodemunch policy block. Both empty means a light install.
+    """
+    path = _settings_json_path()
+    data = _read_json(path) if path.exists() else {}
+    targets = _guidance_subcommands()
+    events: list[str] = []
+    for event_name, rules in (data.get("hooks") or {}).items():
+        if isinstance(rules, list) and any(
+            isinstance(r, dict) and (_rule_subs(r) & targets) for r in rules
+        ):
+            events.append(event_name)
+    policies = [label for label, p in _policy_targets() if _has_policy(p)]
+    # The same file can be both labels (a project run from the home directory).
+    return {"hooks": sorted(events), "policies": policies}
+
+
+def _leftovers_offer_lines(left: dict[str, list[str]]) -> list[str]:
+    """What init prints when an install still carries guidance, or nothing."""
+    parts = []
+    if left["hooks"]:
+        parts.append("model-facing hooks (" + ", ".join(left["hooks"]) + ")")
+    if left["policies"]:
+        parts.append("policy blocks (" + ", ".join(left["policies"]) + ")")
+    if not parts:
+        return []
+    return [
+        "  This install still has " + " and ".join(parts) + ".",
+        "  A default install no longer adds these: they put text in front of the model",
+        "  on every turn they fire. Nothing was removed. To remove them, with backups:",
+        f"    {REMOVE_GUIDANCE_COMMAND}",
+    ]
+
+
+def remove_guidance_lines(*, dry_run: bool = False, backup: bool = True) -> list[str]:
+    """Remove the guidance hooks and every policy block; keep the silent hooks.
+
+    Explicit only (`init --remove-guidance`): nothing calls this on a default
+    run. Each changed file is backed up first unless ``backup`` is False.
+    Returns the status lines.
+    """
+    lines: list[str] = []
+    path = _settings_json_path()
+    if path.exists():
+        data = _read_json(path)
+        touched = _strip_guidance_hooks(data)
+        if not touched:
+            lines.append(f"  Hooks:  no model-facing hooks in {path}")
+        elif dry_run:
+            lines.append(f"  Hooks:  would remove {', '.join(touched)} guidance hooks from {path}")
+        else:
+            _write_json(path, data, backup=backup)
+            lines.append(f"  Hooks:  removed {', '.join(touched)} guidance hooks from {path}")
+    else:
+        lines.append(f"  Hooks:  no settings at {path}")
+
+    seen: set[Path] = set()
+    for label, target in _policy_targets():
+        resolved = target.resolve() if target.exists() else target
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if label.startswith("claude_md"):
+            msg = uninstall_claude_md(label.rsplit("_", 1)[1], dry_run=dry_run, backup=backup)
+        elif label == "cursor_rules":
+            if not _has_policy(target):
+                continue
+            msg = uninstall_cursor_rules(dry_run=dry_run, backup=backup)
+        elif label == "windsurf_rules":
+            msg = uninstall_windsurf_rules(dry_run=dry_run, backup=backup)
+        else:
+            msg = uninstall_agents_md(dry_run=dry_run, backup=backup)
+        lines.append(f"  {label}:{msg}")
+    return lines
+
+
 def uninstall_hooks(*, dry_run: bool = False, backup: bool = True) -> str:
     """Reverse install_hooks + install_enforcement_hooks (single ~/.claude/settings.json)."""
     path = _settings_json_path()
@@ -1828,7 +2149,7 @@ def uninstall_copilot_hooks(*, dry_run: bool = False, backup: bool = True) -> st
     if dry_run:
         return f"  would remove jcodemunch Copilot hook from {hooks_path}"
     if backup:
-        hooks_path.with_suffix(".json.bak").write_text(
+        _backup_path(hooks_path).write_text(
             hooks_path.read_text(encoding="utf-8"), encoding="utf-8"
         )
     if kept:
@@ -2205,6 +2526,13 @@ def install_status() -> dict[str, Any]:
         "events_with_jcm_rules": jcm_events,
     }
 
+    # What a light install would not have (offer, never apply).
+    _left = guidance_leftovers()
+    _guidance: dict[str, Any] = dict(_left)
+    if _left["hooks"] or _left["policies"]:
+        _guidance["remove_with"] = REMOVE_GUIDANCE_COMMAND
+    report["guidance"] = _guidance
+
     # Copilot hooks
     copilot_path = Path.cwd() / ".github" / "hooks" / "hooks.json"
     copilot_present = False
@@ -2298,6 +2626,12 @@ def print_status(report: Optional[dict[str, Any]] = None, *, as_json: bool = Fal
     cp = report["hooks"]["copilot"]
     flag = "[x]" if cp["present"] else "[ ]"
     print(f"  {flag} Copilot hooks  ({cp['path']})")
+
+    g = report.get("guidance") or {}
+    if g.get("remove_with"):
+        print("\nModel-facing extras (a default install no longer adds these):")
+        for line in _leftovers_offer_lines({"hooks": g.get("hooks", []), "policies": g.get("policies", [])}):
+            print(line)
 
     if "skills" in report:
         print("\nClaude Agent Skill (v1.107.0):")
