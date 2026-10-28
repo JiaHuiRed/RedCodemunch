@@ -74,11 +74,6 @@ def _existing_git_identity(path: Path, store) -> Optional[IdentityDecision]:
         entries = store.list_repos()
     except Exception:
         return None
-    # Nearest enclosing working tree of the queried path. Used to refuse
-    # containment matches that cross a worktree boundary (#372): a path
-    # inside `<repo>/.claude/worktrees/<name>` is path-contained in the
-    # parent's git_root but belongs to the worktree's own index.
-    nearest_root = _find_git_root(path)
     for entry in entries:
         repo_id = entry.get("repo", "")
         if "/" not in repo_id:
@@ -93,11 +88,7 @@ def _existing_git_identity(path: Path, store) -> Optional[IdentityDecision]:
                 index = None
             git_root = getattr(index, "git_root", "") if index is not None else ""
         if _contains_path(git_root, path):
-            if (
-                nearest_root is not None
-                and nearest_root != Path(git_root).expanduser().resolve()
-                and is_linked_worktree(nearest_root)
-            ):
+            if _separate_checkout_between(path, Path(git_root).expanduser().resolve()):
                 continue
             return IdentityDecision(
                 mode="git",
@@ -107,6 +98,32 @@ def _existing_git_identity(path: Path, store) -> Optional[IdentityDecision]:
                 walk_root=str(Path(git_root).resolve()),
             )
     return None
+
+
+def _separate_checkout_between(path: Path, root: Path) -> bool:
+    for directory in (path, *path.parents):
+        if directory == root:
+            return False
+        dotgit = directory / ".git"
+        if dotgit.is_dir() or is_linked_worktree(directory):
+            return True
+        if dotgit.is_file():
+            try:
+                text = dotgit.read_text(encoding="utf-8", errors="ignore").strip()
+            except OSError:
+                continue
+            if not text.startswith("gitdir:"):
+                continue
+            target = Path(text[len("gitdir:"):].strip())
+            if not target.is_absolute():
+                target = directory / target
+            if target.parent.name == "modules" or any(
+                ancestor.name == "modules" and ancestor.parent.name == ".git"
+                for ancestor in target.parents
+            ):
+                continue
+            return True
+    return False
 
 
 def _configured_identity_mode(folder_path: Path) -> str:

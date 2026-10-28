@@ -18,7 +18,9 @@ from jcodemunch_mcp import config as config_module
 from jcodemunch_mcp.storage import IndexStore
 from jcodemunch_mcp.storage.git_root import (
     GitRootIdentity,
+    IdentityModeConflict,
     detect_git_root,
+    resolve_index_identity,
     _parse_owner_repo,
 )
 from jcodemunch_mcp.tools.index_folder import (
@@ -189,6 +191,60 @@ class TestResolveRepoIdentity:
 
 
 class TestIndexFolderIdentity:
+    @pytest.mark.parametrize("separate_git_dir", [False, True])
+    def test_nested_independent_clone_does_not_inherit_parent_index(self, tmp_path, monkeypatch, separate_git_dir):
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        _git("init", cwd=parent)
+        _set_origin(parent, "https://github.com/example/parent.git")
+        (parent / "main.py").write_text("def main(): pass\n", encoding="utf-8")
+        nested = parent / "nested"
+        nested.mkdir()
+        if separate_git_dir:
+            _git("init", "--separate-git-dir", str(tmp_path / "child-git"), cwd=nested)
+        else:
+            _git("init", cwd=nested)
+        _set_origin(nested, "https://github.com/example/child.git")
+        subdir = nested / "src"
+        subdir.mkdir()
+        (subdir / "child.py").write_text("def child(): pass\n", encoding="utf-8")
+        store_path = tmp_path / "store"
+        result = index_folder(str(parent), use_ai_summaries=False, storage_path=str(store_path), identity_mode="git")
+        assert result["success"] is True
+        store = IndexStore(base_path=str(store_path))
+        monkeypatch.setattr(config_module, "get", lambda key, default=None, repo=None: "git" if key == "identity_mode" else default)
+
+        for path in (nested, subdir):
+            decision = resolve_index_identity(str(path), mode="git", store=store)
+            assert (decision.owner, decision.name, decision.git_root) == ("example", "child", str(nested.resolve()))
+            assert resolve_index_identity(str(path), mode="config", store=store) == decision
+            assert resolve_index_identity(str(path), mode="local", store=store).mode == "local"
+
+        assert resolve_index_identity(str(parent), mode="config", store=store).name == "parent"
+        with pytest.raises(IdentityModeConflict):
+            resolve_index_identity(str(parent), mode="local", store=store)
+
+    def test_submodule_preserves_parent_identity_but_nested_clone_is_separate(self, tmp_path):
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        _git("init", cwd=parent)
+        _set_origin(parent, "https://github.com/example/parent.git")
+        (parent / "main.py").write_text("def main(): pass\n", encoding="utf-8")
+        module = parent / "module"
+        module.mkdir()
+        (module / ".git").write_text("gitdir: ../.git/modules/module\n", encoding="utf-8")
+        nested = module / "nested"
+        nested.mkdir()
+        _git("init", cwd=nested)
+        _set_origin(nested, "https://github.com/example/child.git")
+        store_path = tmp_path / "store"
+        result = index_folder(str(parent), use_ai_summaries=False, storage_path=str(store_path), identity_mode="git")
+        assert result["success"] is True
+        store = IndexStore(base_path=str(store_path))
+
+        assert resolve_index_identity(str(module), mode="config", store=store).name == "parent"
+        assert resolve_index_identity(str(nested), mode="local", store=store).mode == "local"
+
     def test_knob_off_skips_retarget_git_root_probe(self, tmp_path, monkeypatch):
         repo = tmp_path / "kibana"
         repo.mkdir()
