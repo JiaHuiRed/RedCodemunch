@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed - selective upstream reliability and indexing updates
+
+- Escape SQLite read-only URI paths, including the immutable fallback, so
+  reserved characters cannot redirect a read to the wrong database.
+- Keep nested independent Git checkouts separate from their parent index.
+- Reject index-slot identity collisions before reads, writes, and JSON
+  migration; serialize writes and SCIP imports by slot. Existing indexes
+  without readable identity retain their previous compatibility behavior.
+- Cache SQL stem resolution for immutable file sets and invalidate the cache
+  with the other index caches. On a 12,001-path synthetic sample, 5,000
+  repeated unresolved imports fell from 3.07–3.22 seconds to 0.050–0.053 seconds.
+- Make repeated indexing of an already recorded subdirectory incremental,
+  restricting deletions to that subdirectory.
+
 ### Added
 
 - **Background indexing with an honest job handle** (`index_folder` / `index_repo`
@@ -50,6 +64,28 @@ dispatch chain, AST-checked).
   failures pre-existing Windows grammar issues in
   `tree-sitter-language-pack` (C/Arduino/Bash/Ada/Apex/Clojure parsing),
   confirmed by failing identically on clean HEAD before the cut.
+### Changed - upstream sync (v1.108.316 → v1.108.319)
+
+Merged 434 upstream commits. Three themes absorbed:
+- **Parser correctness sweep (gen 8):** C++ export-macro classes and
+  out-of-class member definitions, JS/TS class expressions named by their
+  binder, TS constructor parameter properties, Vue/Svelte/Astro/Razor
+  embedded-script symbol ownership, Kotlin/PHP properties, Swift deinit,
+  and class members for Zig/PowerShell/MATLAB/Pascal/F#/Nim.
+- **Watcher / process-lock hardening (Windows-relevant):** deleted watched
+  folders reported as deleted, stale-PID lock eviction (create-time
+  compared), watcher startup reconciliation (registration gaps, moved-out
+  subtrees, empty-scan honesty), symlink graph avoidance, 0o600 lock files.
+- **Retrieval quality:** exact-name matches no longer evicted by same-named
+  locals, deterministic symbol-id tie-breaks, embedding batch failures name
+  their cause, dead-code absence claims scoped to the measured repo.
+
+After the merge re-introduced upstream tool registrations, the catalog was
+re-trimmed to the fork baseline (52 tools + `get_index_job`); upstream tools
+added since the fork (e.g. `import_runtime_signal`) stay unregistered while
+their implementations remain where live code (CLI, runtime) references them.
+grammar_pack generation detection from upstream is included; `get_index_job`
+/ background indexing is preserved intact.
 ### Fixed - a C++ class declared behind an export macro is a class (LEDGER L-45)
 
 `class LEVELDB_EXPORT Status { bool ok() const; };` is how most exported
