@@ -119,6 +119,10 @@ def lock_path(scope: str, target: str, storage_path: Optional[str]) -> Path:
         "owner/name" slug for index-write locks.
     """
     safe_scope = scope.replace("/", "_").replace("\\", "_")
+    if scope == "indexwrite" and target.count("/") == 1:
+        from .sqlite_store import SQLiteIndexStore
+        owner, name = target.split("/", 1)
+        target = SQLiteIndexStore._repo_slug(owner, name)
     return _lock_dir(storage_path) / f"_{safe_scope}_{_path_hash(target)}.lock"
 
 

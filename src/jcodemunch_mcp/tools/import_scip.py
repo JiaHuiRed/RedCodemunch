@@ -64,13 +64,6 @@ def import_scip(
 
     store = IndexStore(base_path=storage_path)
     sqlite_store = store._sqlite  # type: ignore[attr-defined]
-    db_path = sqlite_store._db_path(owner, name)
-    if not db_path.exists():
-        return {
-            "success": False,
-            "error": f"index database not found for {owner}/{name}; run `jcodemunch-mcp index` first.",
-        }
-
     # Serialise the scip_edges write against concurrent full/incremental
     # reindexes of the same .db via the indexwrite lock (audit V9). Uses the
     # exact lock_target/storage_root save_index uses so they actually block
@@ -92,6 +85,12 @@ def import_scip(
                         f"could not acquire index-write lock for {lock_target} "
                         f"after 60s{detail}"
                     ),
+                }
+            db_path = sqlite_store._db_path(owner, name)
+            if not db_path.exists():
+                return {
+                    "success": False,
+                    "error": f"index database not found for {owner}/{name}; run `jcodemunch-mcp index` first.",
                 }
             result = ingest_scip_file(
                 db_path=str(db_path),

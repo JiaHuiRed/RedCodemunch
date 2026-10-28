@@ -938,6 +938,7 @@ class IndexStore:
 
     def _index_path(self, owner: str, name: str) -> Path:
         """Path to index JSON file."""
+        self._sqlite._db_path(owner, name)
         return self.base_path / f"{self._repo_slug(owner, name)}.json"
 
     def _lock_path(self, owner: str, name: str) -> Path:
@@ -1010,6 +1011,7 @@ class IndexStore:
 
     def _content_dir(self, owner: str, name: str) -> Path:
         """Path to raw content directory."""
+        self._sqlite._db_path(owner, name)
         return self.base_path / self._repo_slug(owner, name)
 
     def _safe_content_path(self, content_dir: Path, relative_path: str) -> Optional[Path]:
@@ -1522,9 +1524,9 @@ class IndexStore:
             if len(parts) != 2:
                 continue
             owner, name = parts
-            if self._sqlite.inspect_index(owner, name).loadable:
-                continue  # already migrated and loadable
             try:
+                if self._sqlite.inspect_index(owner, name).loadable:
+                    continue  # already migrated and loadable
                 logger.info("Eager-migrating %s from JSON to SQLite", json_path)
                 self._sqlite.migrate_from_json(json_path, owner, name)
             except Exception:

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Callable, NamedTuple, Optional, cast
 
 from ..parser.symbols import Symbol
 from ..path_map import parse_path_map, remap
+from .generation import readonly_uri
 
 # Cache of base_path strings that have already had mkdir called — avoids
 # a redundant CreateDirectoryW syscall on every tool call.
@@ -872,7 +873,46 @@ class SQLiteIndexStore:
     def _db_path(self, owner: str, name: str) -> Path:
         """Path to the SQLite database file for a repo."""
         slug = self._repo_slug(owner, name)
-        return self.base_path / f"{slug}.db"
+        path = self.base_path / f"{slug}.db"
+        self._guard_slot(path, owner, name)
+        return path
+
+    @staticmethod
+    def _check_identity(data: dict, owner: str, name: str, path: Path) -> None:
+        recorded = data.get("repo")
+        if not recorded and data.get("owner") and data.get("name"):
+            recorded = f"{data['owner']}/{data['name']}"
+        requested = f"{owner}/{name}"
+        if recorded and recorded != requested:
+            raise ValueError(f"Index slot {path} belongs to {recorded}, not {requested}")
+
+    def _guard_slot(self, db_path: Path, owner: str, name: str) -> None:
+        json_path = db_path.with_suffix(".json")
+        if json_path.exists():
+            try:
+                with json_path.open(encoding="utf-8") as source:
+                    data = json.load(source)
+            except OSError as exc:
+                raise ValueError(f"Cannot read index identity in {json_path}: {exc}") from exc
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                self._check_identity(data, owner, name, json_path)
+        if not db_path.exists():
+            return
+        try:
+            conn = sqlite3.connect(readonly_uri(db_path), uri=True)
+            try:
+                if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
+                    return
+                data = dict(conn.execute("SELECT key, value FROM meta WHERE key IN ('repo', 'owner', 'name')"))
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as exc:
+            raise ValueError(f"Cannot read index identity in {db_path}: {exc}") from exc
+        except sqlite3.DatabaseError:
+            return
+        self._check_identity(data, owner, name, db_path)
 
     def _connect(self, db_path: Path) -> sqlite3.Connection:
         """Open a connection with WAL pragmas and schema ensured on first visit."""
@@ -1510,6 +1550,7 @@ class SQLiteIndexStore:
         imports,
     ):
         """Inner body of save_index; runs under the indexwrite lock."""
+        self._guard_slot(db_path, owner, name)
         conn = self._connect(db_path)
         try:
             conn.execute("BEGIN")
@@ -1584,7 +1625,7 @@ class SQLiteIndexStore:
         _ensure_index_store_deps()
         # Sanitize name so "my project (v2)" maps to the same .db as save_index
         safe_name = self._safe_repo_component(name, "name")
-        db_path = self._db_path(owner, safe_name)
+        db_path = self._db_path(owner, name)
         if not db_path.exists():
             return None
 
@@ -1712,7 +1753,7 @@ class SQLiteIndexStore:
         if branch:
             return None
         safe_name = self._safe_repo_component(name, "name")
-        db_path = self._db_path(owner, safe_name)
+        db_path = self._db_path(owner, name)
         if not db_path.exists():
             return None
 
@@ -1818,7 +1859,7 @@ class SQLiteIndexStore:
         from .index_store import IndexLoadStatus
 
         safe_name = self._safe_repo_component(name, "name")
-        db_path = self._db_path(owner, safe_name)
+        db_path = self._db_path(owner, name)
         repo_id = f"{owner}/{safe_name}"
         if not db_path.exists():
             return IndexLoadStatus(
@@ -1922,7 +1963,7 @@ class SQLiteIndexStore:
     def has_index(self, owner: str, name: str) -> bool:
         """Return True if a .db file exists for this repo."""
         safe_name = self._safe_repo_component(name, "name")
-        return self._db_path(owner, safe_name).exists()
+        return self._db_path(owner, name).exists()
 
     def incremental_save(
         self,
@@ -2785,6 +2826,7 @@ class SQLiteIndexStore:
 
     def _content_dir(self, owner: str, name: str) -> Path:
         """Path to raw content directory."""
+        self._db_path(owner, name)
         return self.base_path / self._repo_slug(owner, name)
 
     def _safe_content_path(self, content_dir: Path, relative_path: str) -> Optional[Path]:
@@ -3320,13 +3362,15 @@ class SQLiteIndexStore:
             counts[lang] = counts.get(lang, 0) + 1
         return counts
 
-    def _repo_slug(self, owner: str, name: str) -> str:
+    @staticmethod
+    def _repo_slug(owner: str, name: str) -> str:
         """Stable slug for file paths (same as IndexStore._repo_slug)."""
-        safe_owner = self._safe_repo_component(owner, "owner")
-        safe_name = self._safe_repo_component(name, "name")
+        safe_owner = SQLiteIndexStore._safe_repo_component(owner, "owner")
+        safe_name = SQLiteIndexStore._safe_repo_component(name, "name")
         return f"{safe_owner}-{safe_name}"
 
-    def _safe_repo_component(self, value: str, field_name: str) -> str:
+    @staticmethod
+    def _safe_repo_component(value: str, field_name: str) -> str:
         """Validate/sanitize owner/name for filesystem paths (matches IndexStore._safe_repo_component)."""
         import re
 
@@ -3373,6 +3417,8 @@ class SQLiteIndexStore:
                     owner, name, owner, name,
                 )
             return None
+
+        self._check_identity(data, owner, name, json_path)
 
         source_files = data.get("source_files", [])
         symbols = data.get("symbols", [])
@@ -3430,6 +3476,7 @@ class SQLiteIndexStore:
     ) -> Optional["CodeIndex"]:
         """Inner body of migrate_from_json; runs under the indexwrite lock."""
         db_path = self._db_path(owner, name)
+        self._check_identity(data, owner, name, json_path)
         conn = self._connect(db_path)
         try:
             conn.execute("BEGIN")
