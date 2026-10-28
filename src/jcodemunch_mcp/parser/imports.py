@@ -1179,14 +1179,25 @@ def resolve_php_namespace(
 _sql_stem_cache: dict[frozenset, dict[str, str]] = {}
 _SQL_STEM_CACHE_MAX = 4
 _SQL_STEM_LOCK = threading.Lock()
+_sql_stem_by_files: dict[frozenset, dict[str, str]] = {}
 
 
 def _get_sql_stems(source_files: set[str]) -> dict[str, str]:
     """Return a lowered-stem -> file_path dict for .sql files, cached by content."""
+    whole = source_files if isinstance(source_files, frozenset) else None
+    if whole is not None:
+        with _SQL_STEM_LOCK:
+            cached = _sql_stem_by_files.get(whole)
+            if cached is not None:
+                return cached
     key = frozenset(f for f in source_files if f.endswith(".sql"))
     with _SQL_STEM_LOCK:
         cached = _sql_stem_cache.get(key)
         if cached is not None:
+            if whole is not None:
+                if len(_sql_stem_by_files) >= _SQL_STEM_CACHE_MAX:
+                    _sql_stem_by_files.pop(next(iter(_sql_stem_by_files)))
+                _sql_stem_by_files[whole] = cached
             return cached
 
     # Miss: build without holding the lock
@@ -1200,6 +1211,10 @@ def _get_sql_stems(source_files: set[str]) -> dict[str, str]:
         if len(_sql_stem_cache) >= _SQL_STEM_CACHE_MAX:
             _sql_stem_cache.pop(next(iter(_sql_stem_cache)))
         _sql_stem_cache[key] = stems
+        if whole is not None:
+            if len(_sql_stem_by_files) >= _SQL_STEM_CACHE_MAX:
+                _sql_stem_by_files.pop(next(iter(_sql_stem_by_files)))
+            _sql_stem_by_files[whole] = stems
     return stems
 
 
