@@ -2627,18 +2627,25 @@ def index_folder(
         except ImportError:
             pass
 
-        # Incremental path: detect changes using mtime fast-path.  Disabled
-        # when v1.96 subdir-merge mode is active (`_merge_with_existing`)
-        # because the new walk only covers `walk_prefix` while the existing
-        # index covers other subdirs — incremental's "changed/new/deleted"
-        # accounting against the full existing file set would mis-attribute
-        # carryover files as deleted.
-        if incremental and existing_index is not None and _merge_with_existing is None:
+        # Repeat walks of a recorded subdir can diff incrementally, provided
+        # deletions are restricted to that subdir.
+        _subdir_incremental = (
+            _merge_with_existing is not None
+            and walk_prefix in (existing_index.source_roots or [])
+        )
+        if incremental and existing_index is not None and (
+            _merge_with_existing is None or _subdir_incremental
+        ):
             changed, new, deleted, computed_hashes, updated_mtimes = (
                 store.detect_changes_with_mtimes(
                     owner, repo_name, file_mtimes, _hash_file
                 )
             )
+            if _subdir_incremental:
+                deleted = [
+                    fp for fp in deleted
+                    if not _file_outside_walk_prefix(fp, walk_prefix)
+                ]
 
             # Subset refresh (paths=[...]): detect_changes_with_mtimes diffs the
             # supplied subset against the ENTIRE stored index, so every unlisted
