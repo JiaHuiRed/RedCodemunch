@@ -2735,7 +2735,7 @@ def _build_tools_list(
                 "required": ["repo", "symbol"],
             },
         ),
-       Tool(
+        Tool(
             name="check_rename_safe",
             description=(
                 "Check whether renaming a symbol to a new name would cause name collisions. "

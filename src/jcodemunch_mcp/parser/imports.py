@@ -2928,6 +2928,22 @@ def clear_resolution_caches() -> None:
         _tail_memos.clear()
 
 
+def _alias_signature(alias_map):
+    """A hashable content signature of an alias map, or None for the empty map.
+
+    261028 Red identity is NOT enough here. Upstream's memo matched the map by
+    object identity on the assumption that maps "are never edited in place",
+    which its own call path happens to satisfy. This fork's contract is
+    stronger: resolution must stay sensitive to input changes, and a caller
+    (tests/test_sql_stem_resolution_cache.py) edits a map in place between
+    calls. Same lesson as the stem cache's C7-A note -- content identity, not
+    object identity. The cost is one small tuple build per call.
+    """
+    if not alias_map:
+        return None
+    return tuple(sorted((k, tuple(v)) for k, v in alias_map.items()))
+
+
 def _tail_memo(source_files, alias_map) -> Optional[dict]:
     """The specifier memo for one file set and alias map, or None if not cacheable."""
     if not isinstance(source_files, frozenset):
@@ -2940,14 +2956,14 @@ def _tail_memo(source_files, alias_map) -> Optional[dict]:
             entries = _tail_memos[source_files] = []
         # An empty map and None resolve alike (the alias step is skipped), and
         # callers often pass a fresh `{}`, so both share one memo.
-        alias_map = alias_map or None
-        for held_map, memo in entries:
-            if held_map is alias_map:
+        alias_key = _alias_signature(alias_map)
+        for held_key, memo in entries:
+            if held_key == alias_key:
                 return memo
         memo = {}
         if len(entries) >= _TAIL_MEMO_MAX:
             entries.pop(0)
-        entries.append((alias_map, memo))
+        entries.append((alias_key, memo))
         return memo
 
 

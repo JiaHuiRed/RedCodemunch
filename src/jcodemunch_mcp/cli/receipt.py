@@ -35,11 +35,11 @@ from ..savings_credit import TEXT_SEARCH_STYLE_TOOLS
 _TOOL_MULTIPLIERS: dict[str, float] = {
     # Pure retrieval — narrow query against indexed corpus.
     "search_symbols": 20.0,
-   # ⚠ L-180: search_text and check_references are absent ON PURPOSE. Their
-   # answer is the matching lines, which Grep returns as well, so they earn no
-   # credit until a measurement supports one (savings_credit.py). Listing a
-   # multiplier for either here is refused by tests/test_text_search_no_credit.py.
-   "search_columns": 15.0,
+    # ⚠ L-180: search_text and check_references are absent ON PURPOSE. Their
+    # answer is the matching lines, which Grep returns as well, so they earn no
+    # credit until a measurement supports one (savings_credit.py). Listing a
+    # multiplier for either here is refused by tests/test_text_search_no_credit.py.
+    "search_columns": 15.0,
     "search_ast": 18.0,
     "get_ranked_context": 18.0,
     "winnow_symbols": 15.0,

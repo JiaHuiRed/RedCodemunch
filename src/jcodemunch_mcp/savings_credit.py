@@ -54,21 +54,9 @@ NOT_TEXT_SEARCH_STYLE: dict[str, str] = {
         "answers from the resolved import graph (re-exports, dbt refs, "
         "resolved specifiers), not from a scan of file text"
     ),
-    "search_columns": (
-        "returns column metadata that providers emit into the index (dbt "
-        "manifests, catalogs), not lines of files"
-    ),
     "winnow_symbols": (
         "the regex filters symbol names inside a multi-signal index query; "
         "the answer is ranked symbols, not lines"
-    ),
-    "get_decorator_census": (
-        "the substring filters normalised decorator names; the answer is "
-        "counts aggregated from the index"
-    ),
-    "find_hot_paths": (
-        "the substring filters symbol names; the answer is runtime trace "
-        "counts and latencies"
     ),
     "list_repos": (
         "the answer is the list of indexed repositories; its description "

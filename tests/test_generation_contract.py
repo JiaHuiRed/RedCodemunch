@@ -85,7 +85,10 @@ class TestReadContract:
             writer.close()
 
     def test_uri_escapes_query_character(self, tmp_path):
-        assert "%3F" in gen.readonly_uri(tmp_path / "question?mark.db")
+        # 261028 Red upstream's official escaping emits lowercase hex (%3f);
+        # URI escapes are case-insensitive to SQLite, the fork's quote()-based
+        # form was uppercase. Assert the form the implementation writes.
+        assert "%3f" in gen.readonly_uri(tmp_path / "question?mark.db")
 
     def test_fallback_uses_encoded_path(self, tmp_path, monkeypatch):
         db = tmp_path / "hash#name.db"

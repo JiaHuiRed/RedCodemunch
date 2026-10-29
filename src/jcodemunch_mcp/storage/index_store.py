@@ -1166,8 +1166,8 @@ class IndexStore:
             logger.debug("Failed to write meta sidecar", exc_info=True)
 
     def _content_dir(self, owner: str, name: str) -> Path:
-       """Path to raw content directory (guarded: see ``_slot``)."""
-       return self.base_path / self._slot(owner, name)
+        """Path to raw content directory (guarded: see ``_slot``)."""
+        return self.base_path / self._slot(owner, name)
 
     def _safe_content_path(self, content_dir: Path, relative_path: str) -> Optional[Path]:
         """Resolve a content path and ensure it stays within content_dir.
