@@ -2950,22 +2950,21 @@ def index_folder(
         except ImportError:
             pass
 
-       # Incremental path: detect changes using mtime fast-path.  Disabled
-       # when v1.96 subdir-merge mode is active (`_merge_with_existing`)
-       # because the new walk only covers `walk_prefix` while the existing
-       # index covers other subdirs — incremental's "changed/new/deleted"
-       # accounting against the full existing file set would mis-attribute
-       # carryover files as deleted.
-       #
-       # Exception: a RE-walk of a subdir already recorded in `source_roots`.
-       # Scoping `deleted` to `walk_prefix` removes the mis-attribution, and
-       # `incremental_save` leaves every unlisted (carried) file untouched, so
-       # a scheduled `index <subdir>` no longer re-parses the whole subdir.
-       _subdir_incremental = (
-           _merge_with_existing is not None
-           and not _is_branch_delta
-           and walk_prefix in (getattr(_merge_with_existing, "source_roots", None) or [])
-       )
+        # Incremental path: detect changes using mtime fast-path.  Disabled
+        # when v1.96 subdir-merge mode is active (`_merge_with_existing`)
+        # because the new walk only covers `walk_prefix` while the existing
+        # index covers other subdirs — incremental's "changed/new/deleted"
+        # accounting against the full existing file set would mis-attribute
+        # carryover files as deleted.
+        #
+        # Exception: a RE-walk of a subdir already recorded in `source_roots`.
+        # Scoping `deleted` to `walk_prefix` removes the mis-attribution, and
+        # `incremental_save` leaves every unlisted (carried) file untouched, so
+        # a scheduled `index <subdir>` no longer re-parses the whole subdir.
+        _subdir_incremental = (
+            _merge_with_existing is not None
+            and not _is_branch_delta
+            and walk_prefix in (getattr(_merge_with_existing, "source_roots", None) or [])
         )
         if incremental and existing_index is not None and (
             _merge_with_existing is None or _subdir_incremental

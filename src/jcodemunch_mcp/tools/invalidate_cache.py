@@ -60,7 +60,7 @@ def invalidate_cache(
             _cfg._PROJECT_CONFIG_HASHES.pop(source_root, None)
     with _BARE_NAME_LOCK:
         _bare_name_cache.pop(str(store.base_path), None)
-   clear_resolution_caches()
+    clear_resolution_caches()
     if source_root:
         with _ALIAS_MAP_LOCK:
             _alias_map_cache.pop(source_root, None)

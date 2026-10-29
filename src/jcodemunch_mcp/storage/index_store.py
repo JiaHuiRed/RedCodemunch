@@ -1095,7 +1095,7 @@ class IndexStore:
 
     def _index_path(self, owner: str, name: str) -> Path:
         """Path to index JSON file."""
-       return self.base_path / f"{self._slot(owner, name)}.json"
+        return self.base_path / f"{self._slot(owner, name)}.json"
 
     def _lock_path(self, owner: str, name: str) -> Path:
         """Path to per-repo advisory lock file."""

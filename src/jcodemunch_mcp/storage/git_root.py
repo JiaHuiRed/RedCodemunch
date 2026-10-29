@@ -76,10 +76,10 @@ def _existing_git_identity(path: Path, store) -> Optional[IdentityDecision]:
         entries = store.list_repos()
     except Exception:
         return None
-   # Containment is a filesystem fact; the index wants a repository one. A
-   # linked worktree (#372) or an independent clone nested inside an indexed
-   # checkout is path-contained in the parent's git_root but has its own index.
-   # One rule for both, shared with resolve_repo and the hooks (#1202).
+    # Containment is a filesystem fact; the index wants a repository one. A
+    # linked worktree (#372) or an independent clone nested inside an indexed
+    # checkout is path-contained in the parent's git_root but has its own index.
+    # One rule for both, shared with resolve_repo and the hooks (#1202).
     for entry in entries:
         repo_id = entry.get("repo", "")
         if "/" not in repo_id:
@@ -94,10 +94,10 @@ def _existing_git_identity(path: Path, store) -> Optional[IdentityDecision]:
                 index = None
             git_root = getattr(index, "git_root", "") if index is not None else ""
         if _contains_path(git_root, path):
-           if (
-               separate_checkout_between(path, Path(git_root).expanduser().resolve(), worktrees=True)
-               is not None
-           ):
+            if (
+                separate_checkout_between(path, Path(git_root).expanduser().resolve(), worktrees=True)
+                is not None
+            ):
                 continue
             return IdentityDecision(
                 mode="git",

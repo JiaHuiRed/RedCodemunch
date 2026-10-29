@@ -1057,45 +1057,45 @@ class SQLiteIndexStore:
         self._guard_slot(path, owner, name)
         return path
 
-   # (str(db path), mtime_ns, size) -> the identity that file records, or
-   # None. Process-wide: keyed by the file's own stat, so a rewrite misses.
-   _slot_identity_cache: dict[str, tuple[int, int, Optional[str]]] = {}
+    # (str(db path), mtime_ns, size) -> the identity that file records, or
+    # None. Process-wide: keyed by the file's own stat, so a rewrite misses.
+    _slot_identity_cache: dict[str, tuple[int, int, Optional[str]]] = {}
 
-   def _guard_slot(self, db_path: Path, owner: str, name: str) -> None:
-       """Refuse a slot whose index records a DIFFERENT repository.
+    def _guard_slot(self, db_path: Path, owner: str, name: str) -> None:
+        """Refuse a slot whose index records a DIFFERENT repository.
 
-       A missing file, or one recording no identity, passes: an index written
-       before the identity was recorded must keep working. A file whose
-       identity cannot be read at all is refused, and that answer is never
-       cached. One ``stat`` per call on a cache hit.
-       """
-       key = str(db_path)
-       try:
-           st = os.stat(key)
-       except OSError:
-           return  # no file: nothing to belong to anyone
-       hit = SQLiteIndexStore._slot_identity_cache.get(key)
-       if hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
-           stored = hit[2]
-       else:
-           readable, stored = _stored_identity(db_path)
-           if not readable:
-               # Never cached: a transient failure must not open the slot
-               # until the file next changes. Fail closed for every caller.
-               raise IndexIdentityConflict(
-                   f"{owner}/{name}", "", unreadable_path=key)
-           SQLiteIndexStore._slot_identity_cache[key] = (st.st_mtime_ns, st.st_size, stored)
-       if stored is not None and _meta_names_other_repo({"repo": stored}, owner, name):
-           raise IndexIdentityConflict(f"{owner}/{name}", stored)
+        A missing file, or one recording no identity, passes: an index written
+        before the identity was recorded must keep working. A file whose
+        identity cannot be read at all is refused, and that answer is never
+        cached. One ``stat`` per call on a cache hit.
+        """
+        key = str(db_path)
+        try:
+            st = os.stat(key)
+        except OSError:
+            return  # no file: nothing to belong to anyone
+        hit = SQLiteIndexStore._slot_identity_cache.get(key)
+        if hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+            stored = hit[2]
+        else:
+            readable, stored = _stored_identity(db_path)
+            if not readable:
+                # Never cached: a transient failure must not open the slot
+                # until the file next changes. Fail closed for every caller.
+                raise IndexIdentityConflict(
+                    f"{owner}/{name}", "", unreadable_path=key)
+            SQLiteIndexStore._slot_identity_cache[key] = (st.st_mtime_ns, st.st_size, stored)
+        if stored is not None and _meta_names_other_repo({"repo": stored}, owner, name):
+            raise IndexIdentityConflict(f"{owner}/{name}", stored)
 
-   @staticmethod
-   def _check_identity(data: dict, owner: str, name: str, path: Path) -> None:
-       recorded = data.get("repo")
-       if not recorded and data.get("owner") and data.get("name"):
-           recorded = f"{data['owner']}/{data['name']}"
-       requested = f"{owner}/{name}"
-       if recorded and recorded != requested:
-           raise ValueError(f"Index slot {path} belongs to {recorded}, not {requested}")
+    @staticmethod
+    def _check_identity(data: dict, owner: str, name: str, path: Path) -> None:
+        recorded = data.get("repo")
+        if not recorded and data.get("owner") and data.get("name"):
+            recorded = f"{data['owner']}/{data['name']}"
+        requested = f"{owner}/{name}"
+        if recorded and recorded != requested:
+            raise ValueError(f"Index slot {path} belongs to {recorded}, not {requested}")
 
     def _connect(self, db_path: Path) -> sqlite3.Connection:
         """Open a connection with WAL pragmas and schema ensured on first visit."""
@@ -1845,12 +1845,12 @@ class SQLiteIndexStore:
         _ensure_index_store_deps()
         # Sanitize name so "my project (v2)" maps to the same .db as save_index
         safe_name = self._safe_repo_component(name, "name")
-       try:
-           db_path = self._db_path(owner, safe_name)
-       except IndexIdentityConflict as e:
-           # Never serve another repository's index under this name.
-           logger.warning("%s", e)
-           return None
+        try:
+            db_path = self._db_path(owner, safe_name)
+        except IndexIdentityConflict as e:
+            # Never serve another repository's index under this name.
+            logger.warning("%s", e)
+            return None
         if not db_path.exists():
             return None
 
@@ -1986,10 +1986,10 @@ class SQLiteIndexStore:
         if branch:
             return None
         safe_name = self._safe_repo_component(name, "name")
-       try:
-           db_path = self._db_path(owner, safe_name)
-       except IndexIdentityConflict:
-           return None  # load_index refuses it, and says why
+        try:
+            db_path = self._db_path(owner, safe_name)
+        except IndexIdentityConflict:
+            return None  # load_index refuses it, and says why
         if not db_path.exists():
             return None
 
@@ -2223,10 +2223,10 @@ class SQLiteIndexStore:
         """Return True if a .db file exists for this repo. Another repository's
         index in this slot is not this repository's: False."""
         safe_name = self._safe_repo_component(name, "name")
-       try:
-           return self._db_path(owner, safe_name).exists()
-       except IndexIdentityConflict:
-           return False
+        try:
+            return self._db_path(owner, safe_name).exists()
+        except IndexIdentityConflict:
+            return False
 
     def incremental_save(
         self,
@@ -3311,11 +3311,11 @@ class SQLiteIndexStore:
     # ── Content cache helpers (reused from IndexStore) ──────────────
 
     def _content_dir(self, owner: str, name: str) -> Path:
-       """Path to raw content directory. Guarded like ``_db_path``: the
-       directory belongs to whichever repository the slot's index records."""
-       slug = self._repo_slug(owner, name)
-       self._guard_slot(self.base_path / f"{slug}.db", owner, name)
-       return self.base_path / slug
+        """Path to raw content directory. Guarded like ``_db_path``: the
+        directory belongs to whichever repository the slot's index records."""
+        slug = self._repo_slug(owner, name)
+        self._guard_slot(self.base_path / f"{slug}.db", owner, name)
+        return self.base_path / slug
 
     def _safe_content_path(self, content_dir: Path, relative_path: str) -> Optional[Path]:
         """Resolve a content path and ensure it stays within content_dir."""
